@@ -34,41 +34,96 @@ jobs:
           node-version: "24"
           cache: npm
 
-      - name: Read package version
-        id: version
+      - name: Plan automatic release
+        id: plan
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          node <<'NODE'
+          const fs = require("fs");
+          const { execFileSync, spawnSync } = require("child_process");
 
-      - name: Check existing tag
-        id: tag
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          const relevantPaths = ["src", "package.json", "package-lock.json", "tsconfig.json", "README.md", "LICENSE"];
+
+          function git(args, options = {}) {
+            return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", options.quiet ? "ignore" : "pipe"] }).trim();
+          }
+
+          function tagExists(tag) {
+            return spawnSync("git", ["rev-parse", "-q", "--verify", `refs/tags/${tag}`], { stdio: "ignore" }).status === 0;
+          }
+
+          function currentVersion() {
+            return JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+          }
+
+          function changedSinceLatestTag() {
+            const latest = spawnSync("git", ["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"], { encoding: "utf8" });
+            if (latest.status !== 0) {
+              return ["<initial-release>"];
+            }
+            return git(["diff", "--name-only", `${latest.stdout.trim()}..HEAD`]).split(/\r?\n/).filter(Boolean);
+          }
+
+          function isRelevant(path) {
+            return relevantPaths.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+          }
+
+          function bumpPatch(version) {
+            const match = version.match(/^(\d+)\.(\d+)\.(\d+)$/);
+            if (!match) {
+              throw new Error(`Cannot auto-bump non-standard version: ${version}`);
+            }
+            return `${Number(match[1])}.${Number(match[2])}.${Number(match[3]) + 1}`;
+          }
+
+          function replace(path, oldText, newText) {
+            fs.writeFileSync(path, fs.readFileSync(path, "utf8").replaceAll(oldText, newText));
+          }
+
+          function writeOutput(values) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(""));
+          }
+
+          const changed = changedSinceLatestTag();
+          if (changed[0] !== "<initial-release>" && !changed.some(isRelevant)) {
+            const version = currentVersion();
+            writeOutput({ release_needed: "false", version, tag: `v${version}`, release_sha: git(["rev-parse", "HEAD"]) });
+            console.log("No release-relevant SDK changes since the latest tag.");
+            process.exit(0);
+          }
+
+          let version = currentVersion();
+          if (tagExists(`v${version}`)) {
+            const nextVersion = bumpPatch(version);
+            execFileSync("npm", ["version", nextVersion, "--no-git-tag-version"], { stdio: "inherit" });
+            replace("src/constants.ts", `ThalovantNodeSDK/${version}`, `ThalovantNodeSDK/${nextVersion}`);
+            git(["config", "user.name", "github-actions[bot]"]);
+            git(["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"]);
+            git(["add", "package.json", "package-lock.json", "src/constants.ts"]);
+            git(["commit", "-m", `release: bump Node SDK to ${nextVersion}`]);
+            git(["push", "origin", "HEAD:main"]);
+            version = nextVersion;
+          }
+
+          writeOutput({ release_needed: "true", version, tag: `v${version}`, release_sha: git(["rev-parse", "HEAD"]) });
+          NODE
 
       - name: Install dependencies
-        if: steps.tag.outputs.exists == 'false'
+        if: steps.plan.outputs.release_needed == 'true'
         run: npm ci
 
       - name: Run tests
-        if: steps.tag.outputs.exists == 'false'
+        if: steps.plan.outputs.release_needed == 'true'
         run: npm test
 
       - name: Check package contents
-        if: steps.tag.outputs.exists == 'false'
+        if: steps.plan.outputs.release_needed == 'true'
         run: npm pack --dry-run
 
       - name: Check whether version is already on npm
-        if: steps.tag.outputs.exists == 'false'
+        if: steps.plan.outputs.release_needed == 'true'
         id: registry
         env:
-          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_VERSION: ${{ steps.plan.outputs.version }}
         run: |
           if npm view "@thalovant/sdk@$PACKAGE_VERSION" version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -77,19 +132,19 @@ jobs:
           fi
 
       - name: Publish skipped
-        if: steps.tag.outputs.exists == 'false' && steps.registry.outputs.exists == 'true'
-        run: echo "@thalovant/sdk ${{ steps.version.outputs.version }} is already published on npm."
+        if: steps.plan.outputs.release_needed == 'true' && steps.registry.outputs.exists == 'true'
+        run: echo "@thalovant/sdk ${{ steps.plan.outputs.version }} is already published on npm."
 
       - name: Publish to npm
-        if: steps.tag.outputs.exists == 'false' && steps.registry.outputs.exists == 'false'
+        if: steps.plan.outputs.release_needed == 'true' && steps.registry.outputs.exists == 'false'
         run: npm publish --access public --tag "$NPM_DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Verify npm version
-        if: steps.tag.outputs.exists == 'false'
+        if: steps.plan.outputs.release_needed == 'true'
         env:
-          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_VERSION: ${{ steps.plan.outputs.version }}
         run: |
           for attempt in $(seq 1 12); do
             PUBLISHED_VERSION="$(npm view "@thalovant/sdk@$PACKAGE_VERSION" version 2>/dev/null || true)"
@@ -103,8 +158,9 @@ jobs:
           exit 1
 
       - name: Create GitHub release
-        if: steps.tag.outputs.exists == 'false'
+        if: steps.plan.outputs.release_needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes "Release $TAG"
+          TAG: ${{ steps.plan.outputs.tag }}
+          RELEASE_SHA: ${{ steps.plan.outputs.release_sha }}
+        run: gh release create "$TAG" --target "$RELEASE_SHA" --title "$TAG" --notes "Release $TAG"
