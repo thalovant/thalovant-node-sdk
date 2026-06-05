@@ -13,6 +13,14 @@ on:
         options:
           - latest
           - next
+      auth:
+        description: Authentication method
+        required: true
+        default: trusted
+        type: choice
+        options:
+          - trusted
+          - token
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -32,7 +40,7 @@ jobs:
       id-token: write
     env:
       NPM_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}
-      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+      NPM_AUTH_METHOD: ${{ github.event_name == 'workflow_dispatch' && inputs.auth || 'trusted' }}
 
     steps:
       - name: Check out repository
@@ -58,11 +66,11 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish with npm token
-        if: env.HAS_NPM_TOKEN == 'true'
+        if: env.NPM_AUTH_METHOD == 'token'
         run: npm publish --access public --tag "$NPM_DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish with trusted publishing
-        if: env.HAS_NPM_TOKEN != 'true'
+        if: env.NPM_AUTH_METHOD == 'trusted'
         run: npm publish --access public --tag "$NPM_DIST_TAG"
