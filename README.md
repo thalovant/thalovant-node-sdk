@@ -1,6 +1,8 @@
 # Thalovant Node.js SDK
 
-TypeScript SDK for direct Thalovant HiveMind HTTPS clients and agents.
+TypeScript SDK for direct Thalovant hub HTTPS clients and agents.
+
+Full documentation: <https://docs.thalovant.com/developers/sdks/node/>
 
 ```bash
 npm install @thalovant/sdk
@@ -19,8 +21,8 @@ await client.close();
 
 This package is an alpha SDK scaffold. It includes the shared Thalovant identity,
 event, session, conversation, AES-GCM preshared-key, and HTTP transport shape.
-The live transport currently targets HiveMind HTTP hubs using the preshared-key
-handshake path used by Thalovant public hubs.
+The live transport targets the preshared-key HTTP path used by Thalovant public
+hubs.
 
 ## Identity
 
@@ -32,7 +34,7 @@ handshake path used by Thalovant public hubs.
   "site_id": "my-client-site",
   "default_master": "https://hub.example.com",
   "default_port": 443,
-  "default_path": "/hivemind/public"
+  "default_path": "/public"
 }
 ```
 
@@ -42,13 +44,12 @@ handshake path used by Thalovant public hubs.
 import { buildClientContext } from "@thalovant/sdk";
 
 const context = buildClientContext({}, {
-  userId: "operator-42",
+  userId: "user-42",
   userName: "Ada",
-  authToken: "access-token",
   authProvider: "oidc",
-  roles: ["operator"],
-  platform: "mobile",
-  source: "line-a-tablet-3",
+  roles: ["member"],
+  platform: "kiosk",
+  source: "checkout-kiosk",
   channel: "chat",
 });
 
