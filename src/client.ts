@@ -19,6 +19,7 @@ import {
   utterancePayload,
 } from "./events.js";
 import { ThalovantIdentity } from "./identity.js";
+import { stripSsml, ThalovantDisplayItem } from "./rich.js";
 import { HiveMindHttpTransport, TransportHealth } from "./transport.js";
 
 export type EventHandler = (event: ThalovantEvent) => void | Promise<void>;
@@ -135,6 +136,41 @@ export class ThalovantClient {
     );
   }
 
+  async sendAction(
+    payload: string,
+    options: { title?: string; lang?: string; context?: EventContext; sessionId?: string; requestId?: string } = {},
+  ): Promise<void> {
+    const prompt = payload.trim();
+    if (!prompt) throw new Error("sendAction() requires a non-empty payload.");
+    await this.sendUtterance(prompt, {
+      ...options,
+      context: mergeContext(options.context, {
+        input: { kind: "action", title: options.title, payload: prompt },
+      }),
+    });
+  }
+
+  async sendCode(
+    value: string,
+    options: { kind?: string; label?: string; lang?: string; context?: EventContext; sessionId?: string; requestId?: string } = {},
+  ): Promise<void> {
+    const code = value.trim();
+    if (!code) throw new Error("sendCode() requires a non-empty value.");
+    const lang = options.lang ?? "en-us";
+    const requestId = options.requestId ?? newRequestId();
+    const input = { kind: options.kind ?? "code", label: options.label, value: code, exact: true };
+    await this.emit(
+      EVENT_RECOGNIZER_LOOP_UTTERANCE,
+      { ...utterancePayload(code, lang), input },
+      contextWithCorrelation(mergeContext(options.context, { input }), {
+        sessionId: options.sessionId,
+        siteId: this.identity.siteId,
+        lang,
+        requestId,
+      }),
+    );
+  }
+
   async ask(
     text: string,
     options: { timeoutMs?: number; lang?: string; context?: EventContext; sessionId?: string; requestId?: string } = {},
@@ -175,6 +211,7 @@ export class ThalovantClient {
       }
       return {
         text: fragments.join(" "),
+        displayText: stripSsml(fragments.join(" ")),
         utterances: fragments,
         handled: !failureEvent,
         ok: !failureEvent,
@@ -182,6 +219,10 @@ export class ThalovantClient {
         requestId,
         events,
         failureEvent,
+        displayItems(options: { maxTextChars?: number } = {}): ThalovantDisplayItem[] {
+          const items = events.flatMap(event => event.displayItems(options));
+          return items.length ? items : [{ kind: "text", text: stripSsml(fragments.join(" ")) }];
+        },
       };
     } finally {
       handlers.forEach(handler => handler.close());
@@ -211,6 +252,24 @@ export class ThalovantConversation {
 
   sendUtterance(text: string, options: { lang?: string; context?: EventContext; requestId?: string } = {}): Promise<void> {
     return this.client.sendUtterance(text, {
+      ...options,
+      lang: options.lang ?? this.lang,
+      context: mergeContext(this.context, options.context),
+      sessionId: this.sessionId,
+    });
+  }
+
+  sendAction(payload: string, options: { title?: string; lang?: string; context?: EventContext; requestId?: string } = {}): Promise<void> {
+    return this.client.sendAction(payload, {
+      ...options,
+      lang: options.lang ?? this.lang,
+      context: mergeContext(this.context, options.context),
+      sessionId: this.sessionId,
+    });
+  }
+
+  sendCode(value: string, options: { kind?: string; label?: string; lang?: string; context?: EventContext; requestId?: string } = {}): Promise<void> {
+    return this.client.sendCode(value, {
       ...options,
       lang: options.lang ?? this.lang,
       context: mergeContext(this.context, options.context),

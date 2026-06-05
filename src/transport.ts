@@ -39,10 +39,7 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   get baseUrl(): string {
-    let host = this.identity.defaultMaster;
-    if (host.startsWith("ws://")) host = host.replace("ws://", "http://");
-    if (host.startsWith("wss://")) host = host.replace("wss://", "https://");
-    return `${host}:${this.identity.defaultPort}`;
+    return this.identity.endpointBase();
   }
 
   get authorization(): string {

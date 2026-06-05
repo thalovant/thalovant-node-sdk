@@ -21,6 +21,11 @@ export interface IdentityInput {
   default_port?: number | string;
   hub_http_port?: number | string;
   port?: number | string;
+  defaultPath?: string;
+  default_path?: string;
+  hub_http_path?: string;
+  path?: string;
+  uri_path?: string;
   publicKey?: string;
   public_key?: string;
 }
@@ -30,6 +35,7 @@ export class ThalovantIdentity {
   readonly password: string;
   readonly defaultMaster: string;
   readonly defaultPort: number;
+  readonly defaultPath: string;
   readonly siteId: string;
   readonly cryptoKey?: string;
   readonly publicKey?: string;
@@ -43,6 +49,7 @@ export class ThalovantIdentity {
     ).replace(/\/+$/, "");
     this.siteId = required(input.siteId ?? input.site_id ?? input.site, "site_id");
     this.defaultPort = numberValue(input.defaultPort ?? input.default_port ?? input.hub_http_port ?? input.port ?? 5679);
+    this.defaultPath = normalizePath(input.defaultPath ?? input.default_path ?? input.hub_http_path ?? input.path ?? input.uri_path);
     this.cryptoKey = optional(input.cryptoKey ?? input.crypto_key);
     this.publicKey = optional(input.publicKey ?? input.public_key);
   }
@@ -69,7 +76,28 @@ export class ThalovantIdentity {
       site_id: process.env[`${prefix}SITE_ID`],
       default_master: process.env[`${prefix}HUB_HTTP_HOST`] ?? process.env[`${prefix}DEFAULT_MASTER`],
       default_port: process.env[`${prefix}HUB_HTTP_PORT`] ?? process.env[`${prefix}DEFAULT_PORT`],
+      default_path: process.env[`${prefix}HUB_HTTP_PATH`] ?? process.env[`${prefix}DEFAULT_PATH`],
     });
+  }
+
+  endpointBase(): string {
+    const master = this.defaultMaster.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://");
+    try {
+      const url = new URL(master);
+      if (!url.port) {
+        url.port = String(this.defaultPort);
+      }
+      const path = [url.pathname, this.defaultPath]
+        .map(part => part.replace(/^\/+|\/+$/g, ""))
+        .filter(Boolean)
+        .join("/");
+      url.pathname = path ? `/${path}` : "";
+      url.search = "";
+      url.hash = "";
+      return url.toString().replace(/\/$/, "");
+    } catch {
+      return `${master.replace(/\/+$/, "")}:${this.defaultPort}${this.defaultPath}`;
+    }
   }
 
   asObject(includeSecrets = false): Record<string, unknown> {
@@ -77,6 +105,7 @@ export class ThalovantIdentity {
       site_id: this.siteId,
       default_master: this.defaultMaster,
       default_port: this.defaultPort,
+      default_path: this.defaultPath,
     };
     if (includeSecrets) {
       data.access_key = this.accessKey;
@@ -109,4 +138,9 @@ function numberValue(value: unknown): number {
     throw new ThalovantIdentityError("Identity field must be a positive integer: default_port");
   }
   return parsed;
+}
+
+function normalizePath(value: unknown): string {
+  const normalized = optional(value)?.replace(/^\/+|\/+$/g, "");
+  return normalized ? `/${normalized}` : "";
 }

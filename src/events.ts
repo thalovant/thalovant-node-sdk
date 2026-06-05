@@ -1,4 +1,5 @@
 import { FAILURE_EVENTS } from "./constants.js";
+import { displayItemsFromEventData, richMediaFromData, stripSsml, ThalovantDisplayItem } from "./rich.js";
 
 export interface SessionContext {
   session_id?: string;
@@ -54,6 +55,10 @@ export class ThalovantEvent {
     return typeof utterance === "string" ? [utterance] : [];
   }
 
+  get displayText(): string {
+    return stripSsml(this.text);
+  }
+
   get sessionId(): string | undefined {
     return sessionIdFromContext(this.context);
   }
@@ -66,6 +71,14 @@ export class ThalovantEvent {
     return FAILURE_EVENTS.has(this.name);
   }
 
+  get richMedia(): Record<string, unknown> {
+    return richMediaFromData(this.data);
+  }
+
+  displayItems(options: { maxTextChars?: number } = {}): ThalovantDisplayItem[] {
+    return displayItemsFromEventData(this.data, { eventName: this.name, ...options });
+  }
+
   matchesContext(expected?: EventContext): boolean {
     return eventMatchesContext(this, expected);
   }
@@ -76,14 +89,17 @@ export class ThalovantEvent {
       data: this.data,
       context: this.context,
       text: this.text,
+      display_text: this.displayText,
       session_id: this.sessionId,
       request_id: this.requestId,
+      display_items: this.displayItems(),
     };
   }
 }
 
 export interface ThalovantReply {
   text: string;
+  displayText: string;
   utterances: string[];
   handled: boolean;
   ok: boolean;
@@ -91,6 +107,7 @@ export interface ThalovantReply {
   requestId?: string;
   events: ThalovantEvent[];
   failureEvent?: ThalovantEvent;
+  displayItems(options?: { maxTextChars?: number }): ThalovantDisplayItem[];
 }
 
 export function newSessionId(): string {
