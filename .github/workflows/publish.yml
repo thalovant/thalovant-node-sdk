@@ -40,7 +40,7 @@ jobs:
       id-token: write
     env:
       NPM_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}
-      NPM_AUTH_METHOD: ${{ github.event_name == 'workflow_dispatch' && inputs.auth || 'trusted' }}
+      NPM_AUTH_METHOD: ${{ github.event_name == 'workflow_dispatch' && inputs.auth || 'token' }}
 
     steps:
       - name: Check out repository
@@ -59,18 +59,54 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Read package version
+        id: version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether version is already on npm
+        id: registry
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if npm view "@thalovant/sdk@$PACKAGE_VERSION" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run tests
         run: npm test
 
       - name: Check package contents
         run: npm pack --dry-run
 
+      - name: Publish skipped
+        if: steps.registry.outputs.exists == 'true'
+        run: echo "@thalovant/sdk ${{ steps.version.outputs.version }} is already published on npm."
+
       - name: Publish with npm token
-        if: env.NPM_AUTH_METHOD == 'token'
+        if: steps.registry.outputs.exists == 'false' && env.NPM_AUTH_METHOD == 'token'
         run: npm publish --access public --tag "$NPM_DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish with trusted publishing
-        if: env.NPM_AUTH_METHOD == 'trusted'
+        if: steps.registry.outputs.exists == 'false' && env.NPM_AUTH_METHOD == 'trusted'
         run: npm publish --access public --tag "$NPM_DIST_TAG"
+
+      - name: Verify npm version
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for attempt in $(seq 1 12); do
+            PUBLISHED_VERSION="$(npm view "@thalovant/sdk@$PACKAGE_VERSION" version 2>/dev/null || true)"
+            if [ "$PUBLISHED_VERSION" = "$PACKAGE_VERSION" ]; then
+              echo "Verified @thalovant/sdk $PACKAGE_VERSION on npm."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "@thalovant/sdk $PACKAGE_VERSION was not visible on npm after waiting."
+          exit 1
