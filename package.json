@@ -1,0 +1,49 @@
+{
+  "name": "@thalovant/sdk",
+  "version": "0.1.0",
+  "description": "Node.js and TypeScript SDK for direct Thalovant HiveMind HTTPS clients and agents",
+  "type": "module",
+  "license": "MIT",
+  "author": "Thalovant",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thalovant/thalovant-node-sdk.git"
+  },
+  "homepage": "https://thalovant.github.io/thalovant-python-sdk/",
+  "bugs": {
+    "url": "https://github.com/thalovant/thalovant-node-sdk/issues"
+  },
+  "keywords": [
+    "thalovant",
+    "hivemind",
+    "openvoiceos",
+    "ovos",
+    "sdk",
+    "agent",
+    "voice"
+  ],
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
