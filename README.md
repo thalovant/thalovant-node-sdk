@@ -1,6 +1,6 @@
 # Thalovant Node.js SDK
 
-TypeScript SDK for direct Thalovant hub HTTPS clients and agents.
+TypeScript SDK for direct Thalovant hub data-plane clients and agents.
 
 Full documentation: <https://docs.thalovant.com/developers/sdks/node/>
 
@@ -20,9 +20,9 @@ await client.close();
 ## Status
 
 This package is an alpha SDK scaffold. It includes the shared Thalovant identity,
-event, session, conversation, AES-GCM preshared-key, and HTTP transport shape.
-The live transport targets the preshared-key HTTP path used by Thalovant public
-hubs.
+event, session, conversation, AES-GCM preshared-key, protocol endpoint helpers,
+and HTTP transport shape. The live transport targets the preshared-key HTTPS
+HTTP-protocol path used by Thalovant public hubs.
 
 ## Identity
 
@@ -34,8 +34,29 @@ hubs.
   "site_id": "my-client-site",
   "default_master": "https://hub.example.com",
   "default_port": 443,
-  "default_path": "/public"
+  "default_path": "/public",
+  "data_plane_endpoints": {
+    "https": "https://hub.example.com/public",
+    "wss": "wss://hub.example.com/public",
+    "mqtt": "mqtts://mqtt.example.com:8883"
+  },
+  "protocols": {
+    "wss": {"enabled": true},
+    "http": {"enabled": true},
+    "mqtt": {"enabled": false}
+  }
 }
+```
+
+```ts
+import { ThalovantIdentity } from "@thalovant/sdk";
+
+const identity = await ThalovantIdentity.fromFile("_identity.json");
+
+console.log(identity.enabledProtocols());
+console.log(identity.endpointFor("https"));
+console.log(identity.endpointFor("wss"));
+console.log(identity.endpointFor("mqtt"));
 ```
 
 ## Generic Client Context

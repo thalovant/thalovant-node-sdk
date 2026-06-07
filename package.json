@@ -1,7 +1,7 @@
 {
   "name": "@thalovant/sdk",
-  "version": "0.2.0",
-  "description": "Node.js and TypeScript SDK for direct Thalovant hub HTTPS clients and agents",
+  "version": "0.2.1",
+  "description": "Node.js and TypeScript SDK for direct Thalovant hub data-plane clients and agents",
   "type": "module",
   "license": "MIT",
   "author": "Thalovant",

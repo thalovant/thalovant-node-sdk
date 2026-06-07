@@ -4,6 +4,7 @@ import { buildClientContext } from "../src/context.js";
 import { decryptFromJson, encryptAsJson, runtimeCryptoKey } from "../src/crypto.js";
 import { contextWithCorrelation, eventMatchesContext, ThalovantEvent } from "../src/events.js";
 import { ThalovantIdentity } from "../src/identity.js";
+import { HubDataPlaneEndpoints } from "../src/protocols.js";
 import { displayItemsFromEventData } from "../src/rich.js";
 
 test("identity normalizes aliases", () => {
@@ -22,6 +23,50 @@ test("identity normalizes aliases", () => {
   assert.equal(identity.defaultPort, 443);
   assert.equal(identity.defaultPath, "/hivemind/public");
   assert.equal(identity.endpointBase(), "https://hub.example.com/hivemind/public");
+});
+
+test("identity uses protocol aware data plane endpoints", () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "wss://hub.example.com",
+    port: 443,
+    path: "/hivemind/public",
+    data_plane_endpoints: {
+      https: "https://api.example.com/hivemind/public",
+      wss: "wss://socket.example.com/hivemind/public",
+      mqtt: "mqtts://mqtt.example.com:8883",
+    },
+    protocols: {
+      wss: { enabled: true },
+      http: { enabled: true },
+      mqtt: { enabled: true },
+    },
+  });
+
+  assert.equal(identity.endpointBase(), "https://api.example.com/hivemind/public");
+  assert.equal(identity.endpointFor("wss"), "wss://socket.example.com/hivemind/public");
+  assert.equal(identity.endpointFor("mqtt"), "mqtts://mqtt.example.com:8883");
+  assert.deepEqual(identity.enabledProtocols(), ["wss", "https", "mqtt"]);
+  assert.equal(identity.supportsProtocol("https"), true);
+});
+
+test("data plane endpoints can be derived from a hub resource", () => {
+  const endpoints = HubDataPlaneEndpoints.fromHub({
+    domain: "jokes.thalovant.io",
+    spec: {
+      protocols: {
+        wss: { enabled: true },
+        http: { enabled: true },
+        mqtt: { enabled: false },
+      },
+    },
+  });
+
+  assert.equal(endpoints.wss, "wss://jokes.thalovant.io");
+  assert.equal(endpoints.https, "https://jokes.thalovant.io");
+  assert.equal(endpoints.mqtt, undefined);
 });
 
 test("runtime crypto key truncates to HiveMind key size", () => {

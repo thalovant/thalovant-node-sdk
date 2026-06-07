@@ -9,4 +9,4 @@ export const FAILURE_EVENTS = new Set([
   EVENT_POLICY_DENIED,
 ]);
 
-export const DEFAULT_USER_AGENT = "ThalovantNodeSDK/0.2.0";
+export const DEFAULT_USER_AGENT = "ThalovantNodeSDK/0.2.1";
