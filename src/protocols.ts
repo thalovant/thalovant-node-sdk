@@ -1,6 +1,12 @@
 export type HubProtocol = "wss" | "https" | "mqtt";
+export const DEFAULT_PROTOCOL_PREFERENCE: HubProtocol[] = ["https", "wss", "mqtt"];
 
 type UnknownRecord = Record<string, unknown>;
+
+export interface SelectedHubEndpoint {
+  protocol: HubProtocol;
+  endpoint: string;
+}
 
 export class HubProtocolSettings {
   readonly wss: boolean;
@@ -118,6 +124,19 @@ export class HubDataPlaneEndpoints {
     }
     return data;
   }
+}
+
+export function selectDataPlaneEndpoint(
+  endpoints: HubDataPlaneEndpoints,
+  protocols: HubProtocolSettings,
+  preferredProtocols: readonly HubProtocol[] = DEFAULT_PROTOCOL_PREFERENCE,
+): SelectedHubEndpoint | undefined {
+  for (const protocol of preferredProtocols) {
+    if (!protocols.isEnabled(protocol)) continue;
+    const endpoint = endpoints.endpointFor(protocol);
+    if (endpoint) return { protocol, endpoint };
+  }
+  return undefined;
 }
 
 export function endpointFromDomain(domain: string, protocol: HubProtocol): string {

@@ -59,6 +59,23 @@ console.log(identity.endpointFor("wss"));
 console.log(identity.endpointFor("mqtt"));
 ```
 
+You can also create a hub client through the Thalovant API:
+
+```ts
+import { ThalovantClient, ThalovantControlPlane } from "@thalovant/sdk";
+
+const api = new ThalovantControlPlane("https://dash.thalovant.com/api");
+await api.login("you@example.com", "password");
+
+const result = await api.createClientIdentity("hub-id", { name: "kiosk-1" });
+const client = new ThalovantClient(result.identity);
+```
+
+The SDK generates `apiKey`, `password`, and `cryptoKey` locally and sends them
+to the API once. The API can store them in Vault and return only secret
+references; `result.identity` is the usable local client identity. Do not log
+`result.asObject({ includeSecrets: true })`.
+
 ## Generic Client Context
 
 ```ts
@@ -102,6 +119,8 @@ npm test
 
 - `ThalovantClient.fromIdentityFile(path)`
 - `ThalovantClient.fromEnv()`
+- `ThalovantControlPlane`
+- `controlPlane.createClientIdentity(hubId, options)`
 - `client.ask(text)`
 - `client.sendUtterance(text)`
 - `client.sendAction(payload)`

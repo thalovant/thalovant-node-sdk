@@ -4,8 +4,11 @@ import { buildClientContext } from "../src/context.js";
 import { decryptFromJson, encryptAsJson, runtimeCryptoKey } from "../src/crypto.js";
 import { contextWithCorrelation, eventMatchesContext, ThalovantEvent } from "../src/events.js";
 import { ThalovantIdentity } from "../src/identity.js";
-import { HubDataPlaneEndpoints } from "../src/protocols.js";
+import { HubDataPlaneEndpoints, HubProtocolSettings, selectDataPlaneEndpoint } from "../src/protocols.js";
 import { displayItemsFromEventData } from "../src/rich.js";
+import { ThalovantControlPlane } from "../src/control.js";
+import { ThalovantClient } from "../src/client.js";
+import { ThalovantUnsupportedProtocolError } from "../src/errors.js";
 
 test("identity normalizes aliases", () => {
   const identity = new ThalovantIdentity({
@@ -69,9 +72,95 @@ test("data plane endpoints can be derived from a hub resource", () => {
   assert.equal(endpoints.mqtt, undefined);
 });
 
+test("selectDataPlaneEndpoint chooses the first enabled endpoint from preference", () => {
+  const selected = selectDataPlaneEndpoint(
+    new HubDataPlaneEndpoints({
+      https: "https://hub.example.com/public",
+      wss: "wss://hub.example.com/public",
+    }),
+    new HubProtocolSettings({ wss: true, http: true }),
+    ["mqtt", "wss", "https"],
+  );
+
+  assert.deepEqual(selected, { protocol: "wss", endpoint: "wss://hub.example.com/public" });
+});
+
+test("client rejects unsupported runtime protocol without custom transport", () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+
+  assert.throws(() => new ThalovantClient(identity, { protocol: "mqtt" }), ThalovantUnsupportedProtocolError);
+});
+
+test("control plane bootstrap keeps generated secrets local", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).endsWith("/v1/auth/token")) {
+      return jsonResponse(200, { access_token: "token", expires_in: 3600 });
+    }
+    if (String(url).endsWith("/v1/hubs/hub-1")) {
+      return jsonResponse(200, {
+        id: "hub-1",
+        name: "joke-garden",
+        domain: "jokes.thalovant.io",
+        spec: {
+          protocols: {
+            wss: { enabled: true },
+            http: { enabled: true },
+            mqtt: { enabled: false },
+          },
+        },
+      });
+    }
+    if (String(url).endsWith("/v1/clients")) {
+      const payload = JSON.parse(String(init?.body)) as Record<string, any>;
+      assert.equal(typeof payload.spec.apiKey, "string");
+      assert.equal(typeof payload.spec.password, "string");
+      assert.equal(typeof payload.spec.cryptoKey, "string");
+      return jsonResponse(201, {
+        id: "client-1",
+        name: payload.name,
+        hub_id: payload.hub_id,
+        spec: { version: "1", apiKeyRef: { name: "secret", key: "apiKey" } },
+      });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api");
+    await api.login("ada@example.com", "secret");
+    const result = await api.createClientIdentity("hub-1", { name: "kiosk" });
+
+    assert.equal(result.identity.siteId, "kiosk");
+    assert.ok(result.identity.accessKey);
+    assert.ok(result.identity.password);
+    assert.equal(result.identity.endpointFor("https"), "https://jokes.thalovant.io");
+    assert.equal(result.selectedProtocol, "https");
+    assert.equal("access_key" in (result.asObject().identity as object), false);
+    assert.ok((result.asObject({ includeSecrets: true }).identity as Record<string, unknown>).access_key);
+    assert.equal((requests[2].init?.headers as Record<string, string>).authorization, "Bearer token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("runtime crypto key truncates to HiveMind key size", () => {
   assert.deepEqual(runtimeCryptoKey("0123456789abcdef-extra"), Buffer.from("0123456789abcdef"));
 });
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
 
 test("encryptAsJson round trips AES-GCM JSON-HEX payloads", () => {
   const encrypted = encryptAsJson("0123456789abcdef-extra", "hello");

@@ -1,5 +1,6 @@
 export * from "./client.js";
 export * from "./constants.js";
+export * from "./control.js";
 export * from "./context.js";
 export * from "./crypto.js";
 export * from "./errors.js";

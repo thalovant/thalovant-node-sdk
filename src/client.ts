@@ -5,7 +5,7 @@ import {
   EVENT_SPEAK,
   EVENT_UTTERANCE_HANDLED,
 } from "./constants.js";
-import { ThalovantRuntimeError, ThalovantTimeoutError } from "./errors.js";
+import { ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
 import {
   contextWithCorrelation,
   eventFromBusPayload,
@@ -19,6 +19,7 @@ import {
   utterancePayload,
 } from "./events.js";
 import { ThalovantIdentity } from "./identity.js";
+import { HubProtocol } from "./protocols.js";
 import { stripSsml, ThalovantDisplayItem } from "./rich.js";
 import { HiveMindHttpTransport, TransportHealth } from "./transport.js";
 
@@ -40,8 +41,15 @@ export class ThalovantClient {
   private readonly transport: HiveMindHttpTransport;
   private connected = false;
 
-  constructor(identity: ThalovantIdentity, options: { transport?: HiveMindHttpTransport } = {}) {
+  constructor(identity: ThalovantIdentity, options: { transport?: HiveMindHttpTransport; protocol?: HubProtocol } = {}) {
     this.identity = identity;
+    if (!options.transport && options.protocol && options.protocol !== "https") {
+      const endpoint = identity.endpointFor(options.protocol);
+      const detail = endpoint ? ` at ${endpoint}` : "";
+      throw new ThalovantUnsupportedProtocolError(
+        `${options.protocol.toUpperCase()} is enabled${detail}, but this SDK runtime currently connects through the HTTPS HiveMind HTTP protocol transport.`,
+      );
+    }
     this.transport = options.transport ?? new HiveMindHttpTransport(identity);
   }
 
