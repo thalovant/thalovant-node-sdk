@@ -11,7 +11,7 @@ import {
   selectDataPlaneEndpoint,
 } from "./protocols.js";
 
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.2";
+const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.3";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -106,7 +106,12 @@ export class ThalovantControlPlane {
       protocols,
       options.preferredProtocols ?? DEFAULT_PROTOCOL_PREFERENCE,
     );
-    const identity = new ThalovantIdentity({
+    const initialIdentify = isRecord(client.initial_identify) ? client.initial_identify : undefined;
+    const identity = new ThalovantIdentity(initialIdentify ? {
+      ...initialIdentify,
+      data_plane_endpoints: endpoints.asObject(),
+      protocols: protocols.asObject(),
+    } : {
       access_key: apiKey,
       password,
       crypto_key: cryptoKey,
@@ -135,6 +140,11 @@ export class ThalovantControlPlane {
   }
 
   requireRuntimeProtocol(result: BootstrapIdentityResult, protocol: HubProtocol = "https"): SelectedHubEndpoint {
+    if (protocol === "mqtt") {
+      throw new ThalovantUnsupportedProtocolError(
+        "MQTT broker credentials are exposed on identity.mqtt when the hub enables MQTT, but native MQTT runtime transport is not enabled in this SDK yet.",
+      );
+    }
     if (protocol !== "https") {
       throw new ThalovantUnsupportedProtocolError(
         `${protocol.toUpperCase()} endpoint metadata is available, but this SDK runtime currently connects through the HTTPS HiveMind HTTP protocol transport.`,

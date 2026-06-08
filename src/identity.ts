@@ -34,6 +34,64 @@ export interface IdentityInput {
   spec?: unknown;
   publicKey?: string;
   public_key?: string;
+  mqtt?: unknown;
+}
+
+export interface MqttBrokerCredentialsInput {
+  endpoint?: string;
+  broker_url?: string;
+  brokerUrl?: string;
+  username?: string;
+  broker_username?: string;
+  brokerUsername?: string;
+  password?: string;
+  broker_password?: string;
+  brokerPassword?: string;
+  topic_prefix?: string;
+  topicPrefix?: string;
+  tls?: boolean | string | number;
+}
+
+export class MqttBrokerCredentials {
+  readonly endpoint: string;
+  readonly username: string;
+  readonly password: string;
+  readonly topicPrefix?: string;
+  readonly tls: boolean;
+
+  constructor(input: MqttBrokerCredentialsInput) {
+    this.endpoint = required(input.endpoint ?? input.broker_url ?? input.brokerUrl, "mqtt.endpoint");
+    this.username = required(input.username ?? input.broker_username ?? input.brokerUsername, "mqtt.username");
+    this.password = required(input.password ?? input.broker_password ?? input.brokerPassword, "mqtt.password");
+    this.topicPrefix = optional(input.topic_prefix ?? input.topicPrefix);
+    this.tls = boolValue(input.tls, this.endpoint.startsWith("mqtts://"));
+  }
+
+  static from(input: unknown): MqttBrokerCredentials | undefined {
+    if (!isRecord(input)) {
+      return undefined;
+    }
+    try {
+      return new MqttBrokerCredentials(input);
+    } catch {
+      return undefined;
+    }
+  }
+
+  asObject(includeSecrets = false): Record<string, unknown> {
+    const data: Record<string, unknown> = {
+      endpoint: this.endpoint,
+      tls: this.tls,
+    };
+    if (includeSecrets) {
+      data.username = this.username;
+      data.password = this.password;
+      if (this.topicPrefix) {
+        data.topic_prefix = this.topicPrefix;
+      }
+    }
+    return data;
+  }
 }
 
 export class ThalovantIdentity {
@@ -47,6 +105,7 @@ export class ThalovantIdentity {
   readonly dataPlaneEndpoints: HubDataPlaneEndpoints;
   readonly protocols: HubProtocolSettings;
   readonly publicKey?: string;
+  readonly mqtt?: MqttBrokerCredentials;
 
   constructor(input: IdentityInput) {
     this.accessKey = required(input.accessKey ?? input.access_key ?? input.api_key ?? input.key, "access_key");
@@ -62,6 +121,7 @@ export class ThalovantIdentity {
     this.dataPlaneEndpoints = HubDataPlaneEndpoints.from(input);
     this.protocols = HubProtocolSettings.from(input);
     this.publicKey = optional(input.publicKey ?? input.public_key);
+    this.mqtt = MqttBrokerCredentials.from(input.mqtt);
   }
 
   static async fromFile(path: string): Promise<ThalovantIdentity> {
@@ -91,6 +151,12 @@ export class ThalovantIdentity {
         https: process.env[`${prefix}HUB_HTTPS_HOST`] ?? process.env[`${prefix}HUB_HTTP_HOST`],
         wss: process.env[`${prefix}HUB_WSS_HOST`] ?? process.env[`${prefix}HUB_WEBSOCKET_HOST`],
         mqtt: process.env[`${prefix}HUB_MQTT_HOST`],
+      },
+      mqtt: {
+        endpoint: process.env[`${prefix}MQTT_ENDPOINT`] ?? process.env[`${prefix}HUB_MQTT_HOST`],
+        username: process.env[`${prefix}MQTT_USERNAME`],
+        password: process.env[`${prefix}MQTT_PASSWORD`],
+        topic_prefix: process.env[`${prefix}MQTT_TOPIC_PREFIX`],
       },
     });
   }
@@ -130,8 +196,15 @@ export class ThalovantIdentity {
       data.password = this.password;
       data.crypto_key = this.cryptoKey;
     }
+    if (this.mqtt) {
+      data.mqtt = this.mqtt.asObject(includeSecrets);
+    }
     return data;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function required(value: unknown, field: string): string {
@@ -156,6 +229,25 @@ function numberValue(value: unknown): number {
     throw new ThalovantIdentityError("Identity field must be a positive integer: default_port");
   }
   return parsed;
+}
+
+function boolValue(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return fallback;
 }
 
 function normalizePath(value: unknown): string {

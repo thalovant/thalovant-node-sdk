@@ -44,6 +44,12 @@ HTTP-protocol path used by Thalovant public hubs.
     "wss": {"enabled": true},
     "http": {"enabled": true},
     "mqtt": {"enabled": false}
+  },
+  "mqtt": {
+    "endpoint": "mqtts://mqtt.example.com:8883",
+    "username": "client-access-key",
+    "password": "mqtt-broker-password",
+    "topic_prefix": "hivemind/hub-id/client-access-key"
   }
 }
 ```
@@ -57,6 +63,7 @@ console.log(identity.enabledProtocols());
 console.log(identity.endpointFor("https"));
 console.log(identity.endpointFor("wss"));
 console.log(identity.endpointFor("mqtt"));
+console.log(identity.mqtt?.endpoint);
 ```
 
 You can also create a hub client through the Thalovant API:
@@ -73,7 +80,8 @@ const client = new ThalovantClient(result.identity);
 
 The SDK generates `apiKey`, `password`, and `cryptoKey` locally and sends them
 to the API once. The API can store them in Vault and return only secret
-references; `result.identity` is the usable local client identity. Do not log
+references. When MQTT is enabled for the hub, the API returns the client-scoped
+broker credentials on `result.identity.mqtt`. Do not log
 `result.asObject({ includeSecrets: true })`.
 
 ## Generic Client Context

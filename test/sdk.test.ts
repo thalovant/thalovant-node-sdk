@@ -55,6 +55,36 @@ test("identity uses protocol aware data plane endpoints", () => {
   assert.equal(identity.supportsProtocol("https"), true);
 });
 
+test("identity loads MQTT credentials and redacts them by default", () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "wss://hub.example.com",
+    mqtt: {
+      endpoint: "mqtts://mqtt.example.com:8883",
+      username: "access",
+      password: "broker-password",
+      topic_prefix: "hivemind/hub/access",
+    },
+  });
+
+  assert.ok(identity.mqtt);
+  assert.equal(identity.mqtt.endpoint, "mqtts://mqtt.example.com:8883");
+  assert.equal(identity.mqtt.username, "access");
+  assert.deepEqual(identity.asObject().mqtt, {
+    endpoint: "mqtts://mqtt.example.com:8883",
+    tls: true,
+  });
+  assert.deepEqual(identity.asObject(true).mqtt, {
+    endpoint: "mqtts://mqtt.example.com:8883",
+    tls: true,
+    username: "access",
+    password: "broker-password",
+    topic_prefix: "hivemind/hub/access",
+  });
+});
+
 test("data plane endpoints can be derived from a hub resource", () => {
   const endpoints = HubDataPlaneEndpoints.fromHub({
     domain: "jokes.thalovant.io",
@@ -146,6 +176,70 @@ test("control plane bootstrap keeps generated secrets local", async () => {
     assert.equal("access_key" in (result.asObject().identity as object), false);
     assert.ok((result.asObject({ includeSecrets: true }).identity as Record<string, unknown>).access_key);
     assert.equal((requests[2].init?.headers as Record<string, string>).authorization, "Bearer token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane bootstrap preserves API returned MQTT credentials", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/v1/hubs/hub-mqtt")) {
+      return jsonResponse(200, {
+        id: "hub-mqtt",
+        name: "mqtt-hub",
+        domain: "mqtt.thalovant.io",
+        data_plane_endpoints: {
+          https: "https://mqtt.thalovant.io",
+          wss: "wss://mqtt.thalovant.io",
+          mqtt: "mqtts://broker.thalovant.io:8883",
+        },
+        spec: {
+          protocols: {
+            wss: { enabled: true },
+            http: { enabled: true },
+            mqtt: { enabled: true, brokerUrl: "mqtts://broker.thalovant.io:8883" },
+          },
+        },
+      });
+    }
+    if (String(url).endsWith("/v1/clients")) {
+      const payload = JSON.parse(String(init?.body)) as Record<string, any>;
+      return jsonResponse(201, {
+        id: "client-mqtt",
+        name: payload.name,
+        hub_id: payload.hub_id,
+        spec: { version: "1", apiKeyRef: { name: "secret", key: "apiKey" } },
+        initial_identify: {
+          access_key: payload.spec.apiKey,
+          password: payload.spec.password,
+          crypto_key: payload.spec.cryptoKey,
+          site_id: payload.spec.siteId,
+          default_master: "wss://mqtt.thalovant.io",
+          mqtt: {
+            endpoint: "mqtts://broker.thalovant.io:8883",
+            username: payload.spec.apiKey,
+            password: "broker-password",
+            topic_prefix: `hivemind/hub-mqtt/${payload.spec.apiKey}`,
+          },
+        },
+      });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    const result = await api.createClientIdentity("hub-mqtt", { name: "kiosk" });
+
+    assert.ok(result.identity.mqtt);
+    assert.equal(result.identity.mqtt.endpoint, "mqtts://broker.thalovant.io:8883");
+    assert.equal(result.identity.mqtt.password, "broker-password");
+    assert.equal(result.identity.endpointFor("mqtt"), "mqtts://broker.thalovant.io:8883");
+    assert.deepEqual((result.asObject().identity as Record<string, any>).mqtt, {
+      endpoint: "mqtts://broker.thalovant.io:8883",
+      tls: true,
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
