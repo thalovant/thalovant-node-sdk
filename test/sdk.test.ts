@@ -9,6 +9,7 @@ import { displayItemsFromEventData } from "../src/rich.js";
 import { ThalovantControlPlane } from "../src/control.js";
 import { ThalovantClient } from "../src/client.js";
 import { ThalovantUnsupportedProtocolError } from "../src/errors.js";
+import { mqttTopicsForIdentity } from "../src/transport.js";
 
 test("identity normalizes aliases", () => {
   const identity = new ThalovantIdentity({
@@ -115,7 +116,7 @@ test("selectDataPlaneEndpoint chooses the first enabled endpoint from preference
   assert.deepEqual(selected, { protocol: "wss", endpoint: "wss://hub.example.com/public" });
 });
 
-test("client rejects unsupported runtime protocol without custom transport", () => {
+test("client requires MQTT broker credentials for MQTT runtime", () => {
   const identity = new ThalovantIdentity({
     key: "access",
     password: "secret",
@@ -124,6 +125,35 @@ test("client rejects unsupported runtime protocol without custom transport", () 
   });
 
   assert.throws(() => new ThalovantClient(identity, { protocol: "mqtt" }), ThalovantUnsupportedProtocolError);
+});
+
+test("client selects WSS and MQTT runtime transports", () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    crypto_key: "0123456789abcdef",
+    site: "site",
+    host: "https://hub.example.com",
+    data_plane_endpoints: {
+      https: "https://hub.example.com",
+      wss: "wss://hub.example.com",
+      mqtt: "mqtts://mqtt.example.com:8883",
+    },
+    mqtt: {
+      endpoint: "mqtts://mqtt.example.com:8883",
+      username: "access",
+      password: "broker-password",
+      topic_prefix: "hivemind/hub/access",
+    },
+  });
+
+  assert.doesNotThrow(() => new ThalovantClient(identity, { protocol: "wss" }));
+  assert.doesNotThrow(() => new ThalovantClient(identity, { protocol: "mqtt" }));
+  assert.deepEqual(mqttTopicsForIdentity(identity), {
+    c2s: "hivemind/hub/c2s/access",
+    s2c: "hivemind/hub/s2c/access",
+    status: "hivemind/hub/status/access",
+  });
 });
 
 test("control plane bootstrap keeps generated secrets local", async () => {
@@ -236,6 +266,10 @@ test("control plane bootstrap preserves API returned MQTT credentials", async ()
     assert.equal(result.identity.mqtt.endpoint, "mqtts://broker.thalovant.io:8883");
     assert.equal(result.identity.mqtt.password, "broker-password");
     assert.equal(result.identity.endpointFor("mqtt"), "mqtts://broker.thalovant.io:8883");
+    assert.deepEqual(api.requireRuntimeProtocol(result, "mqtt"), {
+      protocol: "mqtt",
+      endpoint: "mqtts://broker.thalovant.io:8883",
+    });
     assert.deepEqual((result.asObject().identity as Record<string, any>).mqtt, {
       endpoint: "mqtts://broker.thalovant.io:8883",
       tls: true,

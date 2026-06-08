@@ -21,8 +21,8 @@ await client.close();
 
 This package is an alpha SDK scaffold. It includes the shared Thalovant identity,
 event, session, conversation, AES-GCM preshared-key, protocol endpoint helpers,
-and HTTP transport shape. The live transport targets the preshared-key HTTPS
-HTTP-protocol path used by Thalovant public hubs.
+and HTTPS, WSS, and MQTT runtime transports. MQTT uses the per-client broker
+credentials returned by the Thalovant API.
 
 ## Identity
 

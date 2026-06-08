@@ -21,7 +21,13 @@ import {
 import { ThalovantIdentity } from "./identity.js";
 import { HubProtocol } from "./protocols.js";
 import { stripSsml, ThalovantDisplayItem } from "./rich.js";
-import { HiveMindHttpTransport, TransportHealth } from "./transport.js";
+import {
+  HiveMindHttpTransport,
+  HiveMindMqttTransport,
+  HiveMindRuntimeTransport,
+  HiveMindWSSTransport,
+  TransportHealth,
+} from "./transport.js";
 
 export type EventHandler = (event: ThalovantEvent) => void | Promise<void>;
 export type EventPredicate = (event: ThalovantEvent) => boolean;
@@ -38,19 +44,12 @@ export class ThalovantSubscription {
 
 export class ThalovantClient {
   readonly identity: ThalovantIdentity;
-  private readonly transport: HiveMindHttpTransport;
+  private readonly transport: HiveMindRuntimeTransport;
   private connected = false;
 
-  constructor(identity: ThalovantIdentity, options: { transport?: HiveMindHttpTransport; protocol?: HubProtocol } = {}) {
+  constructor(identity: ThalovantIdentity, options: { transport?: HiveMindRuntimeTransport; protocol?: HubProtocol } = {}) {
     this.identity = identity;
-    if (!options.transport && options.protocol && options.protocol !== "https") {
-      const endpoint = identity.endpointFor(options.protocol);
-      const detail = endpoint ? ` at ${endpoint}` : "";
-      throw new ThalovantUnsupportedProtocolError(
-        `${options.protocol.toUpperCase()} is enabled${detail}, but this SDK runtime currently connects through the HTTPS HiveMind HTTP protocol transport.`,
-      );
-    }
-    this.transport = options.transport ?? new HiveMindHttpTransport(identity);
+    this.transport = options.transport ?? transportForProtocol(identity, options.protocol ?? "https");
   }
 
   static async fromIdentityFile(path: string): Promise<ThalovantClient> {
@@ -236,6 +235,25 @@ export class ThalovantClient {
       handlers.forEach(handler => handler.close());
     }
   }
+}
+
+function transportForProtocol(identity: ThalovantIdentity, protocol: HubProtocol): HiveMindRuntimeTransport {
+  if (protocol === "https") {
+    return new HiveMindHttpTransport(identity);
+  }
+  if (protocol === "wss") {
+    if (!identity.endpointFor("wss")) {
+      throw new ThalovantUnsupportedProtocolError("WSS is enabled, but the identity does not include a WSS endpoint.");
+    }
+    return new HiveMindWSSTransport(identity);
+  }
+  if (protocol === "mqtt") {
+    if (!identity.mqtt) {
+      throw new ThalovantUnsupportedProtocolError("MQTT is enabled, but the identity does not include MQTT broker credentials.");
+    }
+    return new HiveMindMqttTransport(identity);
+  }
+  throw new ThalovantUnsupportedProtocolError(`Unsupported protocol: ${protocol}`);
 }
 
 export class ThalovantConversation {
