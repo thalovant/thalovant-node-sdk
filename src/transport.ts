@@ -4,9 +4,10 @@ import WebSocket from "ws";
 
 import { DEFAULT_USER_AGENT } from "./constants.js";
 import { ThalovantConnectionError, ThalovantRuntimeError } from "./errors.js";
-import { decryptFromJson, encryptAsJson, runtimeCryptoKey } from "./crypto.js";
+import { decryptBinary, decryptFromJson, encryptAsBinary, encryptAsJson, runtimeCryptoKey } from "./crypto.js";
 import { BusPayload, EventContext } from "./events.js";
 import { ThalovantIdentity } from "./identity.js";
+import { decodeHiveBinaryFrame, encodeHiveBinaryFrame } from "./wire.js";
 
 export interface HiveMessage {
   msg_type: string;
@@ -146,20 +147,8 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   protected async handleRawMessage(raw: unknown): Promise<void> {
-    let decoded = raw;
-    if (Buffer.isBuffer(raw)) {
-      decoded = raw.toString("utf8");
-    }
-    if (typeof raw === "string") {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      decoded = "ciphertext" in parsed && this.identity.cryptoKey
-        ? JSON.parse(decryptFromJson(this.identity.cryptoKey, parsed))
-        : parsed;
-    } else if (typeof raw === "object" && raw && "ciphertext" in raw && this.identity.cryptoKey) {
-      decoded = JSON.parse(decryptFromJson(this.identity.cryptoKey, raw as Record<string, unknown>));
-    }
-    const message = decoded as HiveMessage;
-    if (message.msg_type === "handshake") {
+    const message = decodeRawHiveMessage(raw, this.identity.cryptoKey);
+    if (message.msg_type === "handshake" || message.msg_type === "shake") {
       await this.handleHandshake(message.payload);
     } else if (message.msg_type === "bus") {
       this.dispatchEvent(new CustomEvent<BusPayload>("bus", { detail: message.payload as unknown as BusPayload }));
@@ -326,7 +315,7 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
     await mqttSubscribe(client, this.topics.s2c, this.identity.mqtt.qos);
     await mqttPublish(client, this.topics.status, "online", { qos: 1, retain: true });
     this.connected = true;
-    await this.sendHiveMessage(this.helloMessage(), false);
+    await this.sendHiveMessage(this.helloMessage());
     const deadline = Date.now() + timeoutMs;
     while (!this.handshakeComplete && Date.now() < deadline) {
       await sleep(100);
@@ -361,10 +350,10 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
     if (!client?.connected) {
       throw new ThalovantConnectionError("HiveMind MQTT transport is not connected.");
     }
-    const serialized = JSON.stringify(message);
-    const payload = encrypt && this.handshakeComplete && this.identity.cryptoKey
-      ? encryptAsJson(this.identity.cryptoKey, serialized)
-      : serialized;
+    let payload = encodeHiveBinaryFrame(message);
+    if (this.identity.cryptoKey) {
+      payload = encryptAsBinary(this.identity.cryptoKey, payload);
+    }
     await mqttPublish(client, this.topics.c2s, payload, { qos: this.identity.mqtt?.qos ?? 1, retain: false });
   }
 
@@ -417,8 +406,12 @@ export function mqttTopicsForIdentity(identity: ThalovantIdentity): MqttTopicSet
     base = [identity.accessKey, credentials.username, satelliteId].includes(parts.at(-1) ?? "")
       ? parts.slice(0, -1).join("/")
       : parts.join("/");
+    const hubId = credentials.hubId?.replace(/^\/+|\/+$/g, "");
+    if (hubId && !base.split("/").includes(hubId)) {
+      base = `${base}/${hubId}`;
+    }
   } else if (credentials.hubId) {
-    base = `hivemind/${credentials.hubId}`;
+    base = `hivemind/${credentials.hubId.replace(/^\/+|\/+$/g, "")}`;
   }
   if (!base) {
     throw new ThalovantConnectionError("MQTT credentials must include topic_prefix, hub_id, or explicit c2s/s2c topics.");
@@ -485,13 +478,47 @@ function mqttSubscribe(client: MqttClient, topic: string, qos: number): Promise<
   });
 }
 
-function mqttPublish(client: MqttClient, topic: string, payload: string, options: { qos: number; retain: boolean }): Promise<void> {
+function mqttPublish(client: MqttClient, topic: string, payload: string | Buffer, options: { qos: number; retain: boolean }): Promise<void> {
   return new Promise((resolve, reject) => {
     client.publish(topic, payload, { qos: options.qos === 0 ? 0 : 1, retain: options.retain }, error => {
       if (error) reject(error);
       else resolve();
     });
   });
+}
+
+function decodeRawHiveMessage(raw: unknown, cryptoKey?: string): HiveMessage {
+  if (Buffer.isBuffer(raw)) {
+    const text = raw.toString("utf8");
+    try {
+      return decodeTextHiveMessage(text, cryptoKey);
+    } catch {
+      // MQTT may deliver opaque encrypted binary frames.
+    }
+    if (cryptoKey) {
+      try {
+        return decodeHiveBinaryFrame(decryptBinary(cryptoKey, raw)) as HiveMessage;
+      } catch {
+        // Fall through and try plaintext binary.
+      }
+    }
+    return decodeHiveBinaryFrame(raw) as HiveMessage;
+  }
+  if (typeof raw === "string") {
+    return decodeTextHiveMessage(raw, cryptoKey);
+  }
+  if (typeof raw === "object" && raw && "ciphertext" in raw && cryptoKey) {
+    return JSON.parse(decryptFromJson(cryptoKey, raw as Record<string, unknown>)) as HiveMessage;
+  }
+  return raw as HiveMessage;
+}
+
+function decodeTextHiveMessage(raw: string, cryptoKey?: string): HiveMessage {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  if ("ciphertext" in parsed && cryptoKey) {
+    return JSON.parse(decryptFromJson(cryptoKey, parsed)) as HiveMessage;
+  }
+  return parsed as unknown as HiveMessage;
 }
 
 function sleep(ms: number): Promise<void> {

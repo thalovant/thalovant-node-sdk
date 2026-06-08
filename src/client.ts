@@ -120,7 +120,7 @@ export class ThalovantClient {
 
   async emit(eventType: string, data: Record<string, unknown> = {}, context: EventContext = {}): Promise<void> {
     await this.connect();
-    await this.transport.emitBus(eventType, data, context);
+    await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
   }
 
   async sendUtterance(
@@ -235,6 +235,24 @@ export class ThalovantClient {
       handlers.forEach(handler => handler.close());
     }
   }
+
+  private contextWithIdentityMetadata(context: EventContext): EventContext {
+    if (Object.keys(this.identity.metadata).length === 0) {
+      return context;
+    }
+    const existing = isRecord(context.metadata) ? context.metadata : {};
+    return {
+      ...context,
+      metadata: {
+        ...this.identity.metadata,
+        ...existing,
+      },
+    };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function transportForProtocol(identity: ThalovantIdentity, protocol: HubProtocol): HiveMindRuntimeTransport {

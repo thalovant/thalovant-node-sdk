@@ -34,6 +34,7 @@ export interface IdentityInput {
   spec?: unknown;
   publicKey?: string;
   public_key?: string;
+  metadata?: Record<string, unknown>;
   mqtt?: unknown;
 }
 
@@ -146,6 +147,7 @@ export class ThalovantIdentity {
   readonly dataPlaneEndpoints: HubDataPlaneEndpoints;
   readonly protocols: HubProtocolSettings;
   readonly publicKey?: string;
+  readonly metadata: Record<string, unknown>;
   readonly mqtt?: MqttBrokerCredentials;
 
   constructor(input: IdentityInput) {
@@ -162,6 +164,7 @@ export class ThalovantIdentity {
     this.dataPlaneEndpoints = HubDataPlaneEndpoints.from(input);
     this.protocols = HubProtocolSettings.from(input);
     this.publicKey = optional(input.publicKey ?? input.public_key);
+    this.metadata = isRecord(input.metadata) ? { ...input.metadata } : {};
     this.mqtt = MqttBrokerCredentials.from(input.mqtt);
   }
 
@@ -237,6 +240,9 @@ export class ThalovantIdentity {
     const endpoints = this.dataPlaneEndpoints.asObject({ redactCredentials: !includeSecrets });
     if (Object.keys(endpoints).length > 0) {
       data.data_plane_endpoints = endpoints;
+    }
+    if (Object.keys(this.metadata).length > 0) {
+      data.metadata = { ...this.metadata };
     }
     if (includeSecrets) {
       data.access_key = this.accessKey;

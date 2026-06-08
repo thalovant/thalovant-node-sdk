@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildClientContext } from "../src/context.js";
-import { decryptFromJson, encryptAsJson, runtimeCryptoKey } from "../src/crypto.js";
+import { decryptBinary, decryptFromJson, encryptAsBinary, encryptAsJson, runtimeCryptoKey } from "../src/crypto.js";
 import { contextWithCorrelation, eventMatchesContext, ThalovantEvent } from "../src/events.js";
 import { ThalovantIdentity } from "../src/identity.js";
 import { HubDataPlaneEndpoints, HubProtocolSettings, selectDataPlaneEndpoint } from "../src/protocols.js";
@@ -10,6 +10,7 @@ import { ThalovantControlPlane } from "../src/control.js";
 import { ThalovantClient } from "../src/client.js";
 import { ThalovantUnsupportedProtocolError } from "../src/errors.js";
 import { mqttTopicsForIdentity } from "../src/transport.js";
+import { decodeHiveBinaryFrame, encodeHiveBinaryFrame } from "../src/wire.js";
 
 test("identity normalizes aliases", () => {
   const identity = new ThalovantIdentity({
@@ -20,6 +21,7 @@ test("identity normalizes aliases", () => {
     host: "https://hub.example.com/",
     port: "443",
     path: "/hivemind/public",
+    metadata: { thalovant_owner_id: "owner-1" },
   });
 
   assert.equal(identity.accessKey, "access");
@@ -27,6 +29,7 @@ test("identity normalizes aliases", () => {
   assert.equal(identity.defaultPort, 443);
   assert.equal(identity.defaultPath, "/hivemind/public");
   assert.equal(identity.endpointBase(), "https://hub.example.com/hivemind/public");
+  assert.deepEqual(identity.metadata, { thalovant_owner_id: "owner-1" });
 });
 
 test("identity uses protocol aware data plane endpoints", () => {
@@ -153,6 +156,28 @@ test("client selects WSS and MQTT runtime transports", () => {
     c2s: "hivemind/hub/c2s/access",
     s2c: "hivemind/hub/s2c/access",
     status: "hivemind/hub/status/access",
+  });
+});
+
+test("MQTT topic prefixes append hub id for scoped ACLs", () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+    mqtt: {
+      endpoint: "mqtts://mqtt.example.com:8883",
+      username: "access",
+      password: "broker-password",
+      topic_prefix: "hivemind",
+      hub_id: "hub-1",
+    },
+  });
+
+  assert.deepEqual(mqttTopicsForIdentity(identity), {
+    c2s: "hivemind/hub-1/c2s/access",
+    s2c: "hivemind/hub-1/s2c/access",
+    status: "hivemind/hub-1/status/access",
   });
 });
 
@@ -294,6 +319,34 @@ test("encryptAsJson round trips AES-GCM JSON-HEX payloads", () => {
   const encrypted = encryptAsJson("0123456789abcdef-extra", "hello");
 
   assert.equal(decryptFromJson("0123456789abcdef-extra", encrypted), "hello");
+});
+
+test("encryptAsBinary round trips HiveMind MQTT payload bytes", () => {
+  const plaintext = Buffer.from("hello", "utf8");
+  const encrypted = encryptAsBinary("0123456789abcdef-extra", plaintext);
+
+  assert.deepEqual(decryptBinary("0123456789abcdef-extra", encrypted), plaintext);
+});
+
+test("HiveMind binary frames round trip message payloads", () => {
+  const encoded = encodeHiveBinaryFrame({
+    msg_type: "bus",
+    payload: {
+      type: "test.event",
+      data: { ok: true },
+      context: { metadata: { thalovant_owner_id: "owner-1" } },
+    },
+    metadata: {},
+  });
+  const decoded = decodeHiveBinaryFrame(encoded);
+
+  assert.equal(encoded[0], 0x82);
+  assert.equal(decoded.msg_type, "bus");
+  assert.deepEqual(decoded.payload, {
+    type: "test.event",
+    data: { ok: true },
+    context: { metadata: { thalovant_owner_id: "owner-1" } },
+  });
 });
 
 test("events expose text and match compatible context", () => {

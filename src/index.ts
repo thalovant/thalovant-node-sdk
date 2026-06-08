@@ -9,3 +9,4 @@ export * from "./identity.js";
 export * from "./protocols.js";
 export * from "./rich.js";
 export * from "./transport.js";
+export * from "./wire.js";
