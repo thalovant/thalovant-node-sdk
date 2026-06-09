@@ -236,6 +236,18 @@ test("control plane bootstrap keeps generated secrets local", async () => {
   }
 });
 
+test("control plane uses public API default and normalizes v1 roots", () => {
+  assert.equal(new ThalovantControlPlane().apiUrl, "https://api.thalovant.com/");
+  assert.equal(
+    new ThalovantControlPlane("https://api.thalovant.com/v1").apiUrl,
+    "https://api.thalovant.com/",
+  );
+  assert.equal(
+    new ThalovantControlPlane("https://dash.example.com/api/v1").apiUrl,
+    "https://dash.example.com/api/",
+  );
+});
+
 test("control plane lists public hubs without auth", async () => {
   const originalFetch = globalThis.fetch;
   const requests: Array<{ url: string; init?: RequestInit }> = [];

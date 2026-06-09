@@ -11,7 +11,8 @@ import {
   selectDataPlaneEndpoint,
 } from "./protocols.js";
 
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.6";
+export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
+const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.7";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -39,8 +40,8 @@ export class ThalovantControlPlane {
   accessToken?: string;
   readonly userAgent: string;
 
-  constructor(apiUrl: string, options: { accessToken?: string; userAgent?: string } = {}) {
-    this.apiUrl = `${apiUrl.replace(/\/+$/, "")}/`;
+  constructor(apiUrl = DEFAULT_CONTROL_API_URL, options: { accessToken?: string; userAgent?: string } = {}) {
+    this.apiUrl = normalizeControlApiUrl(apiUrl);
     this.accessToken = options.accessToken;
     this.userAgent = options.userAgent ?? DEFAULT_CONTROL_USER_AGENT;
   }
@@ -195,6 +196,14 @@ export class ThalovantControlPlane {
 
 function newSecret(): string {
   return randomBytes(32).toString("base64url");
+}
+
+function normalizeControlApiUrl(apiUrl: string): string {
+  let normalized = (apiUrl || DEFAULT_CONTROL_API_URL).trim().replace(/\/+$/, "");
+  if (normalized.endsWith("/v1")) {
+    normalized = normalized.slice(0, -3);
+  }
+  return `${normalized.replace(/\/+$/, "")}/`;
 }
 
 function requiredString(values: JsonRecord, key: string): string {

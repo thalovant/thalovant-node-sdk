@@ -28,7 +28,7 @@ Node.js 20 or newer is required.
 ```ts
 import { ThalovantClient, ThalovantControlPlane } from "@thalovant/sdk";
 
-const api = new ThalovantControlPlane("https://dash.thalovant.com/api");
+const api = new ThalovantControlPlane();
 
 // Public hub discovery does not require auth.
 const publicHubs = await api.listPublicHubs({ limit: 12 });
@@ -53,6 +53,9 @@ try {
 }
 ```
 
+`new ThalovantControlPlane()` uses `https://api.thalovant.com` by default. Pass
+a different URL only for local development or a self-hosted control plane.
+
 Keep `result.identity` secret. It contains the client credentials used by the
 hub. Do not log `result.asObject({ includeSecrets: true })`.
 
@@ -61,7 +64,7 @@ hub. Do not log `result.asObject({ includeSecrets: true })`.
 Authenticated accounts can list owned or visible hubs:
 
 ```ts
-const api = new ThalovantControlPlane("https://dash.thalovant.com/api");
+const api = new ThalovantControlPlane();
 await api.login("you@example.com", "password");
 
 const page = await api.listHubs({ limit: 50 });
@@ -228,7 +231,8 @@ for (const item of reply.displayItems({ maxTextChars: 600 })) {
 
 ## API Shape
 
-- `new ThalovantControlPlane(apiUrl, options)`
+- `new ThalovantControlPlane()`
+- `new ThalovantControlPlane(apiUrl, options)` for local or self-hosted control planes
 - `controlPlane.login(email, password, options)`
 - `controlPlane.listPublicHubs(options)`
 - `controlPlane.getPublicHub(hubRef)`
