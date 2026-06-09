@@ -11,7 +11,7 @@ import {
   selectDataPlaneEndpoint,
 } from "./protocols.js";
 
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.4";
+const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.6";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -64,8 +64,18 @@ export class ThalovantControlPlane {
     return this.request("GET", `/v1/hubs?${params.toString()}`);
   }
 
+  listPublicHubs(options: { limit?: number; cursor?: string } = {}): Promise<JsonRecord> {
+    const params = new URLSearchParams({ limit: String(options.limit ?? 24) });
+    if (options.cursor) params.set("cursor", options.cursor);
+    return this.request("GET", `/v1/public/hubs?${params.toString()}`, { auth: false });
+  }
+
   getHub(hubId: string): Promise<JsonRecord> {
     return this.request("GET", `/v1/hubs/${encodeURIComponent(hubId)}`);
+  }
+
+  getPublicHub(hubRef: string): Promise<JsonRecord> {
+    return this.request("GET", `/v1/public/hubs/${encodeURIComponent(hubRef)}`, { auth: false });
   }
 
   createClient(payload: JsonRecord, options: { idempotencyKey?: string } = {}): Promise<JsonRecord> {

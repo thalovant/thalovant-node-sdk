@@ -74,6 +74,11 @@ import { ThalovantClient, ThalovantControlPlane } from "@thalovant/sdk";
 const api = new ThalovantControlPlane("https://dash.thalovant.com/api");
 await api.login("you@example.com", "password");
 
+const publicHubs = await api.listPublicHubs({ limit: 12 });
+for (const hub of publicHubs.data as Array<{ slug: string; title: string }>) {
+  console.log(hub.slug, hub.title);
+}
+
 const result = await api.createClientIdentity("hub-id", { name: "kiosk-1" });
 const client = new ThalovantClient(result.identity);
 ```
@@ -128,6 +133,8 @@ npm test
 - `ThalovantClient.fromIdentityFile(path)`
 - `ThalovantClient.fromEnv()`
 - `ThalovantControlPlane`
+- `controlPlane.listPublicHubs(options)`
+- `controlPlane.getPublicHub(hubRef)`
 - `controlPlane.createClientIdentity(hubId, options)`
 - `client.ask(text)`
 - `client.sendUtterance(text)`

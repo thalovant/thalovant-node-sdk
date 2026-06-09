@@ -236,6 +236,43 @@ test("control plane bootstrap keeps generated secrets local", async () => {
   }
 });
 
+test("control plane lists public hubs without auth", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).endsWith("/v1/public/hubs?limit=12")) {
+      return jsonResponse(200, {
+        data: [{ id: "hub-public", name: "joke-garden", slug: "joke-garden", title: "Joke Garden" }],
+        meta: { count: 1, next: null },
+        links: { next: null },
+      });
+    }
+    if (String(url).endsWith("/v1/public/hubs/joke-garden")) {
+      return jsonResponse(200, {
+        id: "hub-public",
+        name: "joke-garden",
+        slug: "joke-garden",
+        title: "Joke Garden",
+      });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    const page = await api.listPublicHubs({ limit: 12 });
+    const hub = await api.getPublicHub("joke-garden");
+
+    assert.equal((page.data as Record<string, unknown>[])[0].slug, "joke-garden");
+    assert.equal(hub.title, "Joke Garden");
+    assert.equal((requests[0].init?.headers as Record<string, string>).authorization, undefined);
+    assert.equal((requests[1].init?.headers as Record<string, string>).authorization, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("control plane bootstrap preserves API returned MQTT credentials", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
