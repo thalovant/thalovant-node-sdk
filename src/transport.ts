@@ -296,7 +296,7 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
         retain: true,
       },
     };
-    const client = mqttConnect(credentials.endpoint, options);
+    const client = mqttConnect(mqttConnectionEndpoint(credentials), options);
     this.client = client;
     client.on("message", (_topic, payload) => {
       this.handleRawMessage(payload).catch((error: Error) => {
@@ -421,6 +421,14 @@ export function mqttTopicsForIdentity(identity: ThalovantIdentity): MqttTopicSet
     s2c: `${base}/s2c/${satelliteId}`,
     status: `${base}/status/${satelliteId}`,
   };
+}
+
+export function mqttConnectionEndpoint(credentials: { endpoint: string; tls?: boolean }): string {
+  const parsed = new URL(credentials.endpoint);
+  if (credentials.tls && parsed.protocol === "mqtt:") {
+    parsed.protocol = "mqtts:";
+  }
+  return parsed.toString().replace(/\/$/, "");
 }
 
 function siblingMqttTopic(topic: string, segment: "c2s" | "s2c" | "status"): string {

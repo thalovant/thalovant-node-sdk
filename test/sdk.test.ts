@@ -9,7 +9,7 @@ import { displayItemsFromEventData } from "../src/rich.js";
 import { ThalovantControlPlane } from "../src/control.js";
 import { ThalovantClient } from "../src/client.js";
 import { ThalovantUnsupportedProtocolError } from "../src/errors.js";
-import { mqttTopicsForIdentity } from "../src/transport.js";
+import { mqttConnectionEndpoint, mqttTopicsForIdentity } from "../src/transport.js";
 import { decodeHiveBinaryFrame, encodeHiveBinaryFrame } from "../src/wire.js";
 
 test("identity normalizes aliases", () => {
@@ -179,6 +179,17 @@ test("MQTT topic prefixes append hub id for scoped ACLs", () => {
     s2c: "hivemind/hub-1/s2c/access",
     status: "hivemind/hub-1/status/access",
   });
+});
+
+test("MQTT TLS flag upgrades mqtt endpoints", () => {
+  assert.equal(
+    mqttConnectionEndpoint({ endpoint: "mqtt://mqtt.example.com", tls: true }),
+    "mqtts://mqtt.example.com",
+  );
+  assert.equal(
+    mqttConnectionEndpoint({ endpoint: "mqtt://mqtt.example.com", tls: false }),
+    "mqtt://mqtt.example.com",
+  );
 });
 
 test("control plane bootstrap keeps generated secrets local", async () => {
