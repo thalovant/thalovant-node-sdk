@@ -19,7 +19,7 @@ import {
   utterancePayload,
 } from "./events.js";
 import { ThalovantIdentity } from "./identity.js";
-import { HubProtocol } from "./protocols.js";
+import { DEFAULT_PROTOCOL_PREFERENCE, HubProtocol } from "./protocols.js";
 import { stripSsml, ThalovantDisplayItem } from "./rich.js";
 import {
   HiveMindHttpTransport,
@@ -49,15 +49,19 @@ export class ThalovantClient {
 
   constructor(identity: ThalovantIdentity, options: { transport?: HiveMindRuntimeTransport; protocol?: HubProtocol } = {}) {
     this.identity = identity;
-    this.transport = options.transport ?? transportForProtocol(identity, options.protocol ?? "https");
+    this.transport = options.transport ?? transportForProtocol(identity, options.protocol ?? defaultRuntimeProtocol(identity));
   }
 
-  static async fromIdentityFile(path: string): Promise<ThalovantClient> {
-    return new ThalovantClient(await ThalovantIdentity.fromFile(path));
+  static async fromIdentityFile(path: string, options: { protocol?: HubProtocol } = {}): Promise<ThalovantClient> {
+    return new ThalovantClient(await ThalovantIdentity.fromFile(path), options);
   }
 
-  static fromEnv(): ThalovantClient {
-    return new ThalovantClient(ThalovantIdentity.fromEnv());
+  static async fromConfig(options: { path?: string; profile?: string; protocol?: HubProtocol } = {}): Promise<ThalovantClient> {
+    return new ThalovantClient(await ThalovantIdentity.fromConfig(options), { protocol: options.protocol });
+  }
+
+  static fromEnv(options: { protocol?: HubProtocol } = {}): ThalovantClient {
+    return new ThalovantClient(ThalovantIdentity.fromEnv(), options);
   }
 
   async connect(): Promise<void> {
@@ -253,6 +257,23 @@ export class ThalovantClient {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function defaultRuntimeProtocol(identity: ThalovantIdentity): HubProtocol {
+  for (const protocol of DEFAULT_PROTOCOL_PREFERENCE) {
+    if (protocol === "wss") {
+      if (identity.supportsProtocol("wss") && identity.endpointFor("wss")) return "wss";
+      continue;
+    }
+    if (protocol === "https") {
+      if (identity.supportsProtocol("https") || identity.endpointFor("https")) return "https";
+      continue;
+    }
+    if (protocol === "mqtt" && identity.supportsProtocol("mqtt") && identity.mqtt) {
+      return "mqtt";
+    }
+  }
+  throw new ThalovantUnsupportedProtocolError("The identity does not include a usable WSS, HTTPS, or MQTT endpoint.");
 }
 
 function transportForProtocol(identity: ThalovantIdentity, protocol: HubProtocol): HiveMindRuntimeTransport {

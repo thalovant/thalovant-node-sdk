@@ -1,5 +1,5 @@
 export type HubProtocol = "wss" | "https" | "mqtt";
-export const DEFAULT_PROTOCOL_PREFERENCE: HubProtocol[] = ["https", "wss", "mqtt"];
+export const DEFAULT_PROTOCOL_PREFERENCE: HubProtocol[] = ["wss", "https", "mqtt"];
 
 type UnknownRecord = Record<string, unknown>;
 

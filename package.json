@@ -1,6 +1,6 @@
 {
   "name": "@thalovant/sdk",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "Node.js and TypeScript SDK for direct Thalovant hub data-plane clients and agents",
   "type": "module",
   "license": "MIT",
@@ -52,6 +52,7 @@
   },
   "dependencies": {
     "mqtt": "^5.15.1",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "yaml": "^2.9.0"
   }
 }

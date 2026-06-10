@@ -75,19 +75,55 @@ for (const hub of page.data as Array<{ id: string; slug: string; title: string }
 
 ## Use An Existing Identity
 
-If you already downloaded an identity from the dashboard or stored one from a
-previous provisioning step:
+For local development, store one or more identities in the protected SDK config:
+
+```bash
+mkdir -p ~/.config/thalovant
+chmod 700 ~/.config/thalovant
+$EDITOR ~/.config/thalovant/config.yaml
+chmod 600 ~/.config/thalovant/config.yaml
+```
+
+```yaml
+profile: prod
+profiles:
+  prod:
+    identity:
+      access_key: ...
+      password: ...
+      site_id: demo-agent
+      default_master: https://jokes.thalovant.io
+      data_plane_endpoints:
+        wss: wss://jokes.thalovant.io/public
+        https: https://jokes.thalovant.io/public
+        mqtt: mqtts://mqtt.thalovant.com:8883
+      mqtt:
+        endpoint: mqtts://mqtt.thalovant.com:8883
+        username: ...
+        password: ...
+        topic_prefix: hubs/hub-id/clients/client-id
+        tls: true
+```
 
 ```ts
 import { ThalovantClient } from "@thalovant/sdk";
 
-const client = await ThalovantClient.fromIdentityFile("_identity.json");
+const client = await ThalovantClient.fromConfig({ profile: "prod" });
 try {
   const reply = await client.ask("What can this hub do?");
   console.log(reply.text);
 } finally {
   await client.close();
 }
+```
+
+SDKs reject config files that are readable or writable by other users on Linux
+and macOS. Keep this file out of git.
+
+Raw identity files are supported too:
+
+```ts
+const client = await ThalovantClient.fromIdentityFile("_identity.json");
 ```
 
 Environment variables are supported too:
@@ -100,7 +136,7 @@ const client = ThalovantClient.fromEnv();
 
 Hubs may expose one or more public data-plane protocols:
 
-- `wss`: secure realtime WebSocket, the default public path.
+- `wss`: secure realtime WebSocket, the default public path and SDK preference.
 - `https`: request/response HTTP protocol exposed as HTTPS.
 - `mqtt`: broker-mediated MQTT over TLS. Requires per-client broker credentials.
 
@@ -240,6 +276,8 @@ for (const item of reply.displayItems({ maxTextChars: 600 })) {
 - `controlPlane.listHubs(options)`
 - `controlPlane.getHub(hubId)`
 - `controlPlane.createClientIdentity(hubId, options)`
+- `ThalovantIdentity.fromConfig(options)`
+- `ThalovantClient.fromConfig(options)`
 - `ThalovantClient.fromIdentityFile(path)`
 - `ThalovantClient.fromEnv()`
 - `new ThalovantClient(identity, { protocol })`

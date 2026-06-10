@@ -12,7 +12,7 @@ import {
 } from "./protocols.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.10";
+const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.11";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -150,7 +150,8 @@ export class ThalovantControlPlane {
     };
   }
 
-  requireRuntimeProtocol(result: BootstrapIdentityResult, protocol: HubProtocol = "https"): SelectedHubEndpoint {
+  requireRuntimeProtocol(result: BootstrapIdentityResult, protocol?: HubProtocol): SelectedHubEndpoint {
+    protocol = protocol ?? result.selectedProtocol ?? DEFAULT_PROTOCOL_PREFERENCE[0];
     if (protocol === "mqtt" && !result.identity.mqtt) {
       throw new ThalovantUnsupportedProtocolError(
         "MQTT is enabled, but the API did not return client-scoped MQTT broker credentials.",

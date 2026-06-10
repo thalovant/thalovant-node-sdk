@@ -1,6 +1,11 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { ThalovantIdentityError } from "./errors.js";
 import { HubDataPlaneEndpoints, HubProtocol, HubProtocolSettings } from "./protocols.js";
+
+const DEFAULT_CONFIG_FILENAME = "config.yaml";
 
 export interface IdentityInput {
   accessKey?: string;
@@ -62,6 +67,16 @@ export interface MqttBrokerCredentialsInput {
   hashTopics?: boolean | string | number;
   qos?: number | string;
   tls?: boolean | string | number;
+}
+
+export function defaultConfigPath(): string {
+  if (process.env.XDG_CONFIG_HOME) {
+    return join(process.env.XDG_CONFIG_HOME, "thalovant", DEFAULT_CONFIG_FILENAME);
+  }
+  if (process.platform === "win32" && process.env.APPDATA) {
+    return join(process.env.APPDATA, "Thalovant", DEFAULT_CONFIG_FILENAME);
+  }
+  return join(homedir(), ".config", "thalovant", DEFAULT_CONFIG_FILENAME);
 }
 
 export class MqttBrokerCredentials {
@@ -182,6 +197,24 @@ export class ThalovantIdentity {
     }
   }
 
+  static async fromConfig(options: { path?: string; profile?: string } = {}): Promise<ThalovantIdentity> {
+    const path = options.path ?? defaultConfigPath();
+    await assertSecureConfigFile(path);
+    let raw: unknown;
+    try {
+      raw = parseYaml(await readFile(path, "utf8"));
+    } catch (error) {
+      if (error instanceof ThalovantIdentityError) {
+        throw error;
+      }
+      throw new ThalovantIdentityError(`Unable to read Thalovant config file: ${path}`);
+    }
+    if (!isRecord(raw)) {
+      throw new ThalovantIdentityError("Thalovant config file must contain a YAML object.");
+    }
+    return new ThalovantIdentity(identityConfigInput(raw, options.profile));
+  }
+
   static fromEnv(prefix = "THALOVANT_"): ThalovantIdentity {
     return new ThalovantIdentity({
       access_key: process.env[`${prefix}ACCESS_KEY`],
@@ -253,6 +286,37 @@ export class ThalovantIdentity {
       data.mqtt = this.mqtt.asObject(includeSecrets);
     }
     return data;
+  }
+}
+
+function identityConfigInput(config: Record<string, unknown>, profile?: string): IdentityInput {
+  if (isRecord(config.profiles)) {
+    const profileName = profile ?? optional(config.profile ?? config.default_profile ?? config.defaultProfile) ?? "default";
+    const selected = config.profiles[profileName];
+    if (!isRecord(selected)) {
+      throw new ThalovantIdentityError(`Missing Thalovant config profile: ${profileName}`);
+    }
+    return profileIdentityInput(selected);
+  }
+  return profileIdentityInput(config);
+}
+
+function profileIdentityInput(profile: Record<string, unknown>): IdentityInput {
+  if (isRecord(profile.identity)) {
+    return profile.identity as IdentityInput;
+  }
+  return profile as IdentityInput;
+}
+
+async function assertSecureConfigFile(path: string): Promise<void> {
+  let mode: number;
+  try {
+    mode = (await stat(path)).mode & 0o777;
+  } catch (error) {
+    throw new ThalovantIdentityError(`Unable to read Thalovant config file: ${path}`);
+  }
+  if (process.platform !== "win32" && (mode & 0o077) !== 0) {
+    throw new ThalovantIdentityError(`Thalovant config file is too permissive: ${path}. Run \`chmod 600 ${path}\`.`);
   }
 }
 

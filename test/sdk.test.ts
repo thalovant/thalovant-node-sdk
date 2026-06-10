@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { buildClientContext } from "../src/context.js";
 import { decryptBinary, decryptFromJson, encryptAsBinary, encryptAsJson, runtimeCryptoKey } from "../src/crypto.js";
@@ -9,7 +12,7 @@ import { displayItemsFromEventData } from "../src/rich.js";
 import { ThalovantControlPlane } from "../src/control.js";
 import { ThalovantClient } from "../src/client.js";
 import { ThalovantUnsupportedProtocolError } from "../src/errors.js";
-import { mqttConnectionEndpoint, mqttTopicsForIdentity } from "../src/transport.js";
+import { HiveMindHttpTransport, HiveMindWSSTransport, mqttConnectionEndpoint, mqttTopicsForIdentity } from "../src/transport.js";
 import { decodeHiveBinaryFrame, encodeHiveBinaryFrame } from "../src/wire.js";
 
 test("identity normalizes aliases", () => {
@@ -89,6 +92,54 @@ test("identity loads MQTT credentials and redacts them by default", () => {
   });
 });
 
+test("identity loads YAML config profiles", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "thalovant-sdk-"));
+  const path = join(dir, "config.yaml");
+  t.after(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  await writeFile(path, `
+version: 1
+profile: prod
+profiles:
+  prod:
+    identity:
+      access_key: access
+      password: secret
+      site_id: site
+      default_master: https://hub.example.com
+      default_port: 443
+      mqtt:
+        endpoint: mqtts://mqtt.example.com:8883
+        username: access
+        password: broker-password
+        topic_prefix: hivemind/hub/access
+`, "utf8");
+  if (process.platform !== "win32") {
+    await chmod(path, 0o600);
+  }
+
+  const identity = await ThalovantIdentity.fromConfig({ path });
+
+  assert.equal(identity.accessKey, "access");
+  assert.equal(identity.mqtt?.password, "broker-password");
+});
+
+test("identity rejects permissive YAML config files", async t => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const dir = await mkdtemp(join(tmpdir(), "thalovant-sdk-"));
+  const path = join(dir, "config.yaml");
+  t.after(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  await writeFile(path, "identity: {}\n", "utf8");
+  await chmod(path, 0o644);
+
+  await assert.rejects(() => ThalovantIdentity.fromConfig({ path }), /too permissive/);
+});
+
 test("data plane endpoints can be derived from a hub resource", () => {
   const endpoints = HubDataPlaneEndpoints.fromHub({
     domain: "jokes.thalovant.io",
@@ -150,6 +201,8 @@ test("client selects WSS and MQTT runtime transports", () => {
     },
   });
 
+  const autoClient = new ThalovantClient(identity) as unknown as { transport: unknown };
+  assert.equal(autoClient.transport instanceof HiveMindWSSTransport, true);
   assert.doesNotThrow(() => new ThalovantClient(identity, { protocol: "wss" }));
   assert.doesNotThrow(() => new ThalovantClient(identity, { protocol: "mqtt" }));
   assert.deepEqual(mqttTopicsForIdentity(identity), {
@@ -157,6 +210,18 @@ test("client selects WSS and MQTT runtime transports", () => {
     s2c: "hivemind/hub/s2c/access",
     status: "hivemind/hub/status/access",
   });
+});
+
+test("client falls back to HTTPS when WSS endpoint is missing", () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+
+  const autoClient = new ThalovantClient(identity) as unknown as { transport: unknown };
+  assert.equal(autoClient.transport instanceof HiveMindHttpTransport, true);
 });
 
 test("MQTT topic prefixes append hub id for scoped ACLs", () => {
@@ -238,7 +303,11 @@ test("control plane bootstrap keeps generated secrets local", async () => {
     assert.ok(result.identity.accessKey);
     assert.ok(result.identity.password);
     assert.equal(result.identity.endpointFor("https"), "https://jokes.thalovant.io");
-    assert.equal(result.selectedProtocol, "https");
+    assert.equal(result.selectedProtocol, "wss");
+    assert.deepEqual(api.requireRuntimeProtocol(result), {
+      protocol: "wss",
+      endpoint: "wss://jokes.thalovant.io",
+    });
     assert.equal("access_key" in (result.asObject().identity as object), false);
     assert.ok((result.asObject({ includeSecrets: true }).identity as Record<string, unknown>).access_key);
     assert.equal((requests[2].init?.headers as Record<string, string>).authorization, "Bearer token");
