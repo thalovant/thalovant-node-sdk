@@ -125,6 +125,49 @@ profiles:
   assert.equal(identity.mqtt?.password, "broker-password");
 });
 
+test("identity loads private JSON identity files", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "thalovant-sdk-"));
+  const path = join(dir, "_identity.json");
+  t.after(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  await writeFile(path, JSON.stringify({
+    access_key: "access",
+    password: "secret",
+    site_id: "site",
+    default_master: "https://hub.example.com",
+    default_port: 443,
+  }), "utf8");
+  if (process.platform !== "win32") {
+    await chmod(path, 0o600);
+  }
+
+  const identity = await ThalovantIdentity.fromFile(path);
+
+  assert.equal(identity.accessKey, "access");
+  assert.equal(identity.defaultMaster, "https://hub.example.com");
+});
+
+test("identity rejects permissive JSON identity files", async t => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const dir = await mkdtemp(join(tmpdir(), "thalovant-sdk-"));
+  const path = join(dir, "_identity.json");
+  t.after(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  await writeFile(path, JSON.stringify({
+    access_key: "access",
+    password: "secret",
+    site_id: "site",
+    default_master: "https://hub.example.com",
+  }), "utf8");
+  await chmod(path, 0o644);
+
+  await assert.rejects(() => ThalovantIdentity.fromFile(path), /too permissive/);
+});
+
 test("identity rejects permissive YAML config files", async t => {
   if (process.platform === "win32") {
     return;

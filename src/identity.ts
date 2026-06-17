@@ -184,6 +184,7 @@ export class ThalovantIdentity {
   }
 
   static async fromFile(path: string): Promise<ThalovantIdentity> {
+    await assertSecureIdentityFile(path);
     try {
       return new ThalovantIdentity(JSON.parse(await readFile(path, "utf8")) as IdentityInput);
     } catch (error) {
@@ -309,15 +310,27 @@ function profileIdentityInput(profile: Record<string, unknown>): IdentityInput {
 }
 
 async function assertSecureConfigFile(path: string): Promise<void> {
+  await assertSecureSecretFile(path, "Thalovant config file");
+}
+
+async function assertSecureIdentityFile(path: string): Promise<void> {
+  await assertSecureSecretFile(path, "identity file");
+}
+
+async function assertSecureSecretFile(path: string, description: string): Promise<void> {
   let mode: number;
   try {
     mode = (await stat(path)).mode & 0o777;
   } catch (error) {
-    throw new ThalovantIdentityError(`Unable to read Thalovant config file: ${path}`);
+    throw new ThalovantIdentityError(`Unable to read ${description}: ${path}`);
   }
   if (process.platform !== "win32" && (mode & 0o077) !== 0) {
-    throw new ThalovantIdentityError(`Thalovant config file is too permissive: ${path}. Run \`chmod 600 ${path}\`.`);
+    throw new ThalovantIdentityError(`${capitalize(description)} is too permissive: ${path}. Run \`chmod 600 ${path}\`.`);
   }
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
