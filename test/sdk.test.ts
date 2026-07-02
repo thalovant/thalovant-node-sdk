@@ -408,6 +408,169 @@ test("control plane lists public hubs without auth", async () => {
   }
 });
 
+test("control plane manages memory items", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const parsed = new URL(String(url));
+    assert.equal((init?.headers as Record<string, string>).authorization, "Bearer token");
+    if (init?.method === "GET" && parsed.pathname === "/api/v1/memory") {
+      assert.equal(parsed.searchParams.get("scope"), "workspace");
+      assert.equal(parsed.searchParams.get("kind"), "preference");
+      assert.equal(parsed.searchParams.get("owner_id"), "owner-1");
+      assert.equal(parsed.searchParams.get("hub_id"), "hub-1");
+      assert.equal(parsed.searchParams.get("q"), "timezone");
+      assert.equal(parsed.searchParams.get("include_deleted"), "true");
+      assert.equal(parsed.searchParams.get("include_expired"), "true");
+      assert.equal(parsed.searchParams.get("limit"), "25");
+      assert.equal(parsed.searchParams.get("offset"), "50");
+      return jsonResponse(200, {
+        data: [{ id: "memory-1", content: "Use UTC." }],
+        meta: { count: 1, next: null },
+        links: { next: null },
+      });
+    }
+    if (init?.method === "GET" && parsed.pathname === "/api/v1/memory/summary") {
+      assert.equal(parsed.searchParams.get("owner_id"), "owner-1");
+      return jsonResponse(200, {
+        total: 1,
+        by_scope: { workspace: 1 },
+        by_kind: { preference: 1 },
+        expired: 0,
+        deleted: 0,
+      });
+    }
+    if (init?.method === "POST" && parsed.pathname === "/api/v1/memory") {
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      assert.equal(payload.scope, "workspace");
+      assert.equal(payload.kind, "preference");
+      assert.equal(payload.content, "Use UTC.");
+      assert.equal(payload.owner_id, "owner-1");
+      assert.equal(payload.hub_id, "hub-1");
+      assert.equal(payload.consent_scope, "daily_desk_memory");
+      assert.equal(payload.retention_policy, "user_controlled");
+      return jsonResponse(201, {
+        id: "memory-1",
+        scope: "workspace",
+        kind: "preference",
+        content: "Use UTC.",
+      });
+    }
+    if (init?.method === "GET" && parsed.pathname === "/api/v1/memory/memory-1") {
+      return jsonResponse(200, {
+        id: "memory-1",
+        scope: "workspace",
+        kind: "preference",
+        content: "Use UTC.",
+      });
+    }
+    if (init?.method === "PATCH" && parsed.pathname === "/api/v1/memory/memory-1") {
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      assert.equal(payload.content, "Use America/Toronto.");
+      assert.equal(payload.clear_expires_at, true);
+      return jsonResponse(200, {
+        id: "memory-1",
+        scope: "workspace",
+        kind: "preference",
+        content: "Use America/Toronto.",
+      });
+    }
+    if (init?.method === "DELETE" && parsed.pathname === "/api/v1/memory/memory-1") {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected request ${init?.method} ${url}`);
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    const page = await api.listMemoryItems({
+      scope: "workspace",
+      kind: "preference",
+      ownerId: "owner-1",
+      hubId: "hub-1",
+      query: "timezone",
+      includeDeleted: true,
+      includeExpired: true,
+      limit: 25,
+      offset: 50,
+    });
+    const summary = await api.getMemorySummary({ ownerId: "owner-1" });
+    const created = await api.createMemoryItem({
+      scope: "workspace",
+      kind: "preference",
+      content: "Use UTC.",
+      ownerId: "owner-1",
+      hubId: "hub-1",
+      consentScope: "daily_desk_memory",
+      retentionPolicy: "user_controlled",
+    });
+    const item = await api.getMemoryItem("memory-1");
+    const updated = await api.updateMemoryItem("memory-1", {
+      content: "Use America/Toronto.",
+      clearExpiresAt: true,
+    });
+    await api.deleteMemoryItem("memory-1");
+
+    assert.equal((page.data as Record<string, unknown>[]).length, 1);
+    assert.equal(summary.total, 1);
+    assert.equal(created.id, "memory-1");
+    assert.equal(item.content, "Use UTC.");
+    assert.equal(updated.content, "Use America/Toronto.");
+    assert.equal(requests.length, 6);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane fetches analytics overview", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const parsed = new URL(String(url));
+    assert.equal(parsed.pathname, "/api/v1/admin/analytics/overview");
+    assert.equal((init?.headers as Record<string, string>).authorization, "Bearer token");
+    assert.equal(parsed.searchParams.get("range"), "30d");
+    assert.equal(parsed.searchParams.get("bucket"), "1d");
+    assert.equal(parsed.searchParams.get("owner_id"), "owner-1");
+    assert.equal(parsed.searchParams.get("hub_id"), "hub-1");
+    assert.equal(parsed.searchParams.get("client_id"), "client-1");
+    assert.equal(parsed.searchParams.get("country"), "CA");
+    assert.equal(parsed.searchParams.get("message"), "speak");
+    assert.equal(parsed.searchParams.get("utterance"), "hello");
+    assert.equal(parsed.searchParams.get("intent"), "DailyDeskIntent");
+    assert.equal(parsed.searchParams.get("time_start"), "2026-05-03T20:00:00Z");
+    assert.equal(parsed.searchParams.get("time_end"), "2026-05-03T21:00:00Z");
+    assert.equal(parsed.searchParams.get("weekday"), "6");
+    assert.equal(parsed.searchParams.get("hour"), "0");
+    return jsonResponse(200, { meta: { scope: "admin" }, totals: { utterances: 7 } });
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    const overview = await api.getAnalyticsOverview({
+      admin: true,
+      range: "30d",
+      bucket: "1d",
+      ownerId: "owner-1",
+      hubId: "hub-1",
+      clientId: "client-1",
+      country: "CA",
+      message: "speak",
+      utterance: "hello",
+      intent: "DailyDeskIntent",
+      timeStart: "2026-05-03T20:00:00Z",
+      timeEnd: "2026-05-03T21:00:00Z",
+      weekday: 6,
+      hour: 0,
+    });
+
+    assert.equal((overview.meta as Record<string, unknown>).scope, "admin");
+    assert.equal((overview.totals as Record<string, unknown>).utterances, 7);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("control plane bootstrap preserves API returned MQTT credentials", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {

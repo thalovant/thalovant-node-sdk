@@ -73,6 +73,38 @@ for (const hub of page.data as Array<{ id: string; slug: string; title: string }
 }
 ```
 
+## Workspace Analytics
+
+Authenticated accounts can read the same overview used by the dashboard:
+
+```ts
+const overview = await api.getAnalyticsOverview({
+  range: "7d",
+  hubId: "hub-id",
+});
+console.log(overview.totals);
+```
+
+## Durable Memory
+
+Private Daily Desk and workspace assistants can manage explicit opt-in memory:
+
+```ts
+const memory = await api.createMemoryItem({
+  scope: "workspace",
+  kind: "preference",
+  content: "Prefer America/Toronto for scheduling.",
+  tags: ["timezone"],
+});
+console.log(memory.id);
+
+const items = await api.listMemoryItems({
+  scope: "workspace",
+  query: "timezone",
+});
+console.log(items.data);
+```
+
 ## Use An Existing Identity
 
 For local development, store one or more identities in the protected SDK config:
@@ -275,6 +307,13 @@ for (const item of reply.displayItems({ maxTextChars: 600 })) {
 - `controlPlane.getPublicHub(hubRef)`
 - `controlPlane.listHubs(options)`
 - `controlPlane.getHub(hubId)`
+- `controlPlane.getAnalyticsOverview(options)`
+- `controlPlane.listMemoryItems(options)`
+- `controlPlane.getMemorySummary(options)`
+- `controlPlane.createMemoryItem(payload)`
+- `controlPlane.getMemoryItem(memoryId)`
+- `controlPlane.updateMemoryItem(memoryId, payload)`
+- `controlPlane.deleteMemoryItem(memoryId)`
 - `controlPlane.createClientIdentity(hubId, options)`
 - `ThalovantIdentity.fromConfig(options)`
 - `ThalovantClient.fromConfig(options)`

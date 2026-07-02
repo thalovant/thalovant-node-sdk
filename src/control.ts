@@ -12,7 +12,7 @@ import {
 } from "./protocols.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.11";
+const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.12";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -33,6 +33,67 @@ export interface CreateClientIdentityOptions {
   active?: boolean;
   preferredProtocols?: readonly HubProtocol[];
   idempotencyKey?: string;
+}
+
+export interface AnalyticsOverviewOptions {
+  admin?: boolean;
+  range?: string;
+  bucket?: string;
+  ownerId?: string;
+  hubId?: string;
+  clientId?: string;
+  country?: string;
+  message?: string;
+  utterance?: string;
+  intent?: string;
+  timeStart?: string;
+  timeEnd?: string;
+  weekday?: number;
+  hour?: number;
+}
+
+export type MemoryScope = "personal" | "workspace" | "hub";
+export type MemoryKind = "note" | "preference" | "fact";
+
+export interface MemoryListOptions {
+  scope?: MemoryScope;
+  kind?: MemoryKind;
+  ownerId?: string;
+  hubId?: string;
+  query?: string;
+  includeDeleted?: boolean;
+  includeExpired?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface MemoryCreatePayload {
+  scope?: MemoryScope;
+  kind?: MemoryKind;
+  title?: string | null;
+  content: string;
+  tags?: string[];
+  ownerId?: string;
+  hubId?: string;
+  source?: string;
+  metadata?: Record<string, unknown>;
+  consentScope?: string;
+  consentVersion?: string | null;
+  retentionPolicy?: string;
+  expiresAt?: string | null;
+}
+
+export interface MemoryUpdatePayload {
+  kind?: MemoryKind;
+  title?: string | null;
+  content?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+  consentScope?: string;
+  consentVersion?: string | null;
+  retentionPolicy?: string;
+  expiresAt?: string | null;
+  clearExpiresAt?: boolean;
 }
 
 export class ThalovantControlPlane {
@@ -69,6 +130,64 @@ export class ThalovantControlPlane {
     const params = new URLSearchParams({ limit: String(options.limit ?? 24) });
     if (options.cursor) params.set("cursor", options.cursor);
     return this.request("GET", `/v1/public/hubs?${params.toString()}`, { auth: false });
+  }
+
+  listMemoryItems(options: MemoryListOptions = {}): Promise<JsonRecord> {
+    const params = new URLSearchParams();
+    setStringParam(params, "scope", options.scope);
+    setStringParam(params, "kind", options.kind);
+    setStringParam(params, "owner_id", options.ownerId);
+    setStringParam(params, "hub_id", options.hubId);
+    setStringParam(params, "q", options.query);
+    if (options.includeDeleted) params.set("include_deleted", "true");
+    if (options.includeExpired) params.set("include_expired", "true");
+    if (typeof options.limit === "number") params.set("limit", String(options.limit));
+    if (typeof options.offset === "number") params.set("offset", String(options.offset));
+    const query = params.toString();
+    return this.request("GET", query ? `/v1/memory?${query}` : "/v1/memory");
+  }
+
+  getMemorySummary(options: { ownerId?: string } = {}): Promise<JsonRecord> {
+    const params = new URLSearchParams();
+    setStringParam(params, "owner_id", options.ownerId);
+    const query = params.toString();
+    return this.request("GET", query ? `/v1/memory/summary?${query}` : "/v1/memory/summary");
+  }
+
+  createMemoryItem(payload: MemoryCreatePayload): Promise<JsonRecord> {
+    return this.request("POST", "/v1/memory", { body: memoryPayload(payload) });
+  }
+
+  getMemoryItem(memoryId: string): Promise<JsonRecord> {
+    return this.request("GET", `/v1/memory/${encodeURIComponent(memoryId)}`);
+  }
+
+  updateMemoryItem(memoryId: string, payload: MemoryUpdatePayload): Promise<JsonRecord> {
+    return this.request("PATCH", `/v1/memory/${encodeURIComponent(memoryId)}`, { body: memoryPayload(payload) });
+  }
+
+  async deleteMemoryItem(memoryId: string): Promise<void> {
+    await this.request("DELETE", `/v1/memory/${encodeURIComponent(memoryId)}`);
+  }
+
+  getAnalyticsOverview(options: AnalyticsOverviewOptions = {}): Promise<JsonRecord> {
+    const endpoint = options.admin ? "/v1/admin/analytics/overview" : "/v1/analytics/overview";
+    const params = new URLSearchParams();
+    setStringParam(params, "range", options.range);
+    setStringParam(params, "bucket", options.bucket);
+    if (options.admin) setStringParam(params, "owner_id", options.ownerId);
+    setStringParam(params, "hub_id", options.hubId);
+    setStringParam(params, "client_id", options.clientId);
+    setStringParam(params, "country", options.country);
+    setStringParam(params, "message", options.message);
+    setStringParam(params, "utterance", options.utterance);
+    setStringParam(params, "intent", options.intent);
+    setStringParam(params, "time_start", options.timeStart);
+    setStringParam(params, "time_end", options.timeEnd);
+    if (typeof options.weekday === "number") params.set("weekday", String(options.weekday));
+    if (typeof options.hour === "number") params.set("hour", String(options.hour));
+    const query = params.toString();
+    return this.request("GET", query ? `${endpoint}?${query}` : endpoint);
   }
 
   getHub(hubId: string): Promise<JsonRecord> {
@@ -187,7 +306,11 @@ export class ThalovantControlPlane {
     if (!response.ok) {
       throw new ThalovantApiError(`Thalovant API request failed with HTTP ${response.status}: ${await response.text()}`);
     }
-    const body = await response.json();
+    const text = await response.text();
+    if (!text.trim()) {
+      return {};
+    }
+    const body = JSON.parse(text) as unknown;
     if (!isRecord(body)) {
       throw new ThalovantApiError("Thalovant API returned an unexpected response shape.");
     }
@@ -205,6 +328,31 @@ function normalizeControlApiUrl(apiUrl: string): string {
     normalized = normalized.slice(0, -3);
   }
   return `${normalized.replace(/\/+$/, "")}/`;
+}
+
+function setStringParam(params: URLSearchParams, key: string, value?: string): void {
+  if (value?.trim()) {
+    params.set(key, value);
+  }
+}
+
+function memoryPayload(payload: MemoryCreatePayload | MemoryUpdatePayload): JsonRecord {
+  const result: JsonRecord = { ...payload };
+  renameKey(result, "ownerId", "owner_id");
+  renameKey(result, "hubId", "hub_id");
+  renameKey(result, "consentScope", "consent_scope");
+  renameKey(result, "consentVersion", "consent_version");
+  renameKey(result, "retentionPolicy", "retention_policy");
+  renameKey(result, "expiresAt", "expires_at");
+  renameKey(result, "clearExpiresAt", "clear_expires_at");
+  return result;
+}
+
+function renameKey(values: JsonRecord, from: string, to: string): void {
+  if (Object.prototype.hasOwnProperty.call(values, from)) {
+    values[to] = values[from];
+    delete values[from];
+  }
 }
 
 function requiredString(values: JsonRecord, key: string): string {
