@@ -253,7 +253,14 @@ export class ThalovantIdentity {
     if (protocol === "https") {
       return this.endpointBase();
     }
-    return this.dataPlaneEndpoints.endpointFor(protocol);
+    const endpoint = this.dataPlaneEndpoints.endpointFor(protocol);
+    if (endpoint) {
+      return endpoint;
+    }
+    if (protocol === "wss" && /^wss?:\/\//i.test(this.defaultMaster)) {
+      return this.defaultMaster;
+    }
+    return undefined;
   }
 
   enabledProtocols(): HubProtocol[] {

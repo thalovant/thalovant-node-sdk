@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 const BINARY_NONCE_SIZE = 16;
 const AUTH_TAG_SIZE = 16;
+const JSON_ENCODING = "hex";
 
 export function runtimeCryptoKey(raw?: string): Buffer | undefined {
   const normalized = raw?.trim();
@@ -16,14 +17,14 @@ export function encryptAsJson(key: string | Buffer, plaintext: string): string {
   if (!runtimeKey) {
     throw new Error("Missing crypto key");
   }
-  const nonce = randomBytes(12);
+  const nonce = randomBytes(BINARY_NONCE_SIZE);
   const cipher = createCipheriv("aes-128-gcm", runtimeKey, nonce);
   const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return JSON.stringify({
-    ciphertext: ciphertext.toString("hex"),
-    tag: tag.toString("hex"),
-    nonce: nonce.toString("hex"),
+    ciphertext: ciphertext.toString(JSON_ENCODING),
+    tag: tag.toString(JSON_ENCODING),
+    nonce: nonce.toString(JSON_ENCODING),
   });
 }
 
@@ -33,9 +34,10 @@ export function decryptFromJson(key: string | Buffer, ciphertextJson: string | R
     throw new Error("Missing crypto key");
   }
   const parsed = typeof ciphertextJson === "string" ? JSON.parse(ciphertextJson) : ciphertextJson;
-  const nonce = Buffer.from(String(parsed.nonce), "hex");
-  const tag = Buffer.from(String(parsed.tag), "hex");
-  const ciphertext = Buffer.from(String(parsed.ciphertext), "hex");
+  const encoding = detectJsonEncoding(parsed.nonce);
+  const nonce = Buffer.from(String(parsed.nonce), encoding);
+  const tag = Buffer.from(String(parsed.tag), encoding);
+  const ciphertext = Buffer.from(String(parsed.ciphertext), encoding);
   const decipher = createDecipheriv("aes-128-gcm", runtimeKey, nonce);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
@@ -68,4 +70,15 @@ export function decryptBinary(key: string | Buffer, payload: Buffer | Uint8Array
   const decipher = createDecipheriv("aes-128-gcm", runtimeKey, nonce);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+function detectJsonEncoding(value: unknown): BufferEncoding {
+  const text = String(value ?? "");
+  if (/^[0-9a-f]+$/i.test(text) && text.length % 2 === 0) {
+    const hexBytes = text.length / 2;
+    if (hexBytes === BINARY_NONCE_SIZE || hexBytes === 12) {
+      return "hex";
+    }
+  }
+  return "base64";
 }

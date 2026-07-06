@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createCipheriv } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +61,20 @@ test("identity uses protocol aware data plane endpoints", () => {
   assert.equal(identity.endpointFor("mqtt"), "mqtts://mqtt.example.com:8883");
   assert.deepEqual(identity.enabledProtocols(), ["wss", "https", "mqtt"]);
   assert.equal(identity.supportsProtocol("https"), true);
+});
+
+test("identity uses WSS default master from setup claims", () => {
+  const identity = new ThalovantIdentity({
+    access_key: "access",
+    password: "secret",
+    crypto_key: "0123456789abcdef",
+    site_id: "site",
+    default_master: "wss://daily-desk.thalovant.io",
+    default_port: 443,
+  });
+
+  assert.equal(identity.endpointFor("wss"), "wss://daily-desk.thalovant.io");
+  assert.equal(identity.endpointBase(), "https://daily-desk.thalovant.io");
 });
 
 test("identity loads MQTT credentials and redacts them by default", () => {
@@ -265,6 +280,69 @@ test("client falls back to HTTPS when WSS endpoint is missing", () => {
 
   const autoClient = new ThalovantClient(identity) as unknown as { transport: unknown };
   assert.equal(autoClient.transport instanceof HiveMindHttpTransport, true);
+});
+
+test("client forwards explicit connect timeouts to transports", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const calls: Array<number | undefined> = [];
+  const transport = Object.assign(new EventTarget(), {
+    async connect(timeoutMs?: number): Promise<void> {
+      calls.push(timeoutMs);
+    },
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(): Promise<void> {},
+  });
+
+  const client = new ThalovantClient(identity, { transport });
+  await client.connect(12345);
+
+  assert.deepEqual(calls, [12345]);
+});
+
+test("client one-shot utterances include a fresh session by default", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const emitted: Array<{ eventType: string; data: Record<string, unknown>; context: Record<string, unknown> }> = [];
+  const transport = Object.assign(new EventTarget(), {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(eventType: string, data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      emitted.push({ eventType, data, context });
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport });
+  await client.sendUtterance("hello", { requestId: "req-1" });
+
+  const session = emitted[0].context.session as Record<string, unknown>;
+  assert.equal(emitted[0].eventType, "recognizer_loop:utterance");
+  assert.match(String(session.session_id), /^thalovant-session-/);
+  assert.equal(session.site_id, "site");
+  assert.equal(session.request_id, "req-1");
+  assert.equal(emitted[0].context.request_id, "req-1");
 });
 
 test("MQTT topic prefixes append hub id for scoped ACLs", () => {
@@ -650,8 +728,42 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-test("encryptAsJson round trips AES-GCM JSON-HEX payloads", () => {
+test("encryptAsJson emits HiveMind-compatible AES-GCM JSON-HEX payloads", () => {
   const encrypted = encryptAsJson("0123456789abcdef-extra", "hello");
+  const parsed = JSON.parse(encrypted) as { ciphertext: string; nonce: string; tag: string };
+
+  assert.match(parsed.ciphertext, /^[0-9a-f]+$/);
+  assert.equal(Buffer.from(parsed.nonce, "hex").length, 16);
+  assert.equal(Buffer.from(parsed.tag, "hex").length, 16);
+  assert.equal(decryptFromJson("0123456789abcdef-extra", encrypted), "hello");
+});
+
+test("decryptFromJson accepts legacy AES-GCM JSON-HEX payloads", () => {
+  const key = Buffer.from("0123456789abcdef");
+  const nonce = Buffer.alloc(12, 7);
+  const cipher = createCipheriv("aes-128-gcm", key, nonce);
+  const ciphertext = Buffer.concat([cipher.update("hello", "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  const encrypted = JSON.stringify({
+    ciphertext: ciphertext.toString("hex"),
+    tag: tag.toString("hex"),
+    nonce: nonce.toString("hex"),
+  });
+
+  assert.equal(decryptFromJson("0123456789abcdef-extra", encrypted), "hello");
+});
+
+test("decryptFromJson accepts AES-GCM JSON-BASE64 payloads", () => {
+  const key = Buffer.from("0123456789abcdef");
+  const nonce = Buffer.alloc(16, 8);
+  const cipher = createCipheriv("aes-128-gcm", key, nonce);
+  const ciphertext = Buffer.concat([cipher.update("hello", "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  const encrypted = JSON.stringify({
+    ciphertext: ciphertext.toString("base64"),
+    tag: tag.toString("base64"),
+    nonce: nonce.toString("base64"),
+  });
 
   assert.equal(decryptFromJson("0123456789abcdef-extra", encrypted), "hello");
 });
@@ -693,6 +805,331 @@ test("events expose text and match compatible context", () => {
   assert.equal(event.requestId, "request-1");
   assert.equal(eventMatchesContext(event, context), true);
   assert.equal(eventMatchesContext(event, contextWithCorrelation({}, { sessionId: "other" })), false);
+});
+
+test("client ask keeps speak listeners open through reply settle", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const eventTarget = new EventTarget();
+  const transport = Object.assign(eventTarget, {
+    emitted: [] as Array<{ eventType: string; data: Record<string, unknown>; context: Record<string, unknown> }>,
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(eventType: string, data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      this.emitted.push({ eventType, data, context });
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: {
+          type: "ovos.utterance.handled",
+          data: {},
+          context,
+        },
+      }));
+      setTimeout(() => {
+        eventTarget.dispatchEvent(new CustomEvent("bus", {
+          detail: {
+            type: "speak",
+            data: { utterance: "Late reply" },
+            context,
+          },
+        }));
+      }, 10);
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 30 });
+  const reply = await client.ask("what is up?");
+
+  assert.equal(reply.text, "Late reply");
+  assert.equal(reply.ok, true);
+  assert.equal(transport.emitted[0].eventType, "recognizer_loop:utterance");
+});
+
+test("client ask waits for a late speak after handled event", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const eventTarget = new EventTarget();
+  const transport = Object.assign(eventTarget, {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(_eventType: string, _data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: {
+          type: "ovos.utterance.handled",
+          data: {},
+          context,
+        },
+      }));
+      setTimeout(() => {
+        eventTarget.dispatchEvent(new CustomEvent("bus", {
+          detail: {
+            type: "speak",
+            data: { utterance: "Delayed answer" },
+            context,
+          },
+        }));
+      }, 50);
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 0, emptyReplyWaitMs: 150 });
+  const reply = await client.ask("what is up?");
+
+  assert.equal(reply.text, "Delayed answer");
+});
+
+test("client ask treats ovos utterance speak as a reply", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const eventTarget = new EventTarget();
+  const transport = Object.assign(eventTarget, {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(_eventType: string, _data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: {
+          type: "ovos.utterance.speak",
+          data: { utterance: "It is four twenty four p.m. in Toronto." },
+          context,
+        },
+      }));
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: {
+          type: "ovos.utterance.handled",
+          data: {},
+          context,
+        },
+      }));
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 0 });
+  const reply = await client.ask("what time is it?");
+
+  assert.equal(reply.text, "It is four twenty four p.m. in Toronto.");
+  assert.deepEqual(reply.events.map((event) => event.name), ["ovos.utterance.speak", "ovos.utterance.handled"]);
+});
+
+test("client ask waits for fallback replies after intent failure", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const eventTarget = new EventTarget();
+  const transport = Object.assign(eventTarget, {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(_eventType: string, _data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: {
+          type: "complete_intent_failure",
+          data: { utterance: "Explain photosynthesis like I am twelve" },
+          context,
+        },
+      }));
+      setTimeout(() => {
+        eventTarget.dispatchEvent(new CustomEvent("bus", {
+          detail: {
+            type: "speak",
+            data: { utterance: "Photosynthesis is how plants turn light into food." },
+            context,
+          },
+        }));
+        eventTarget.dispatchEvent(new CustomEvent("bus", {
+          detail: {
+            type: "ovos.utterance.handled",
+            data: {},
+            context,
+          },
+        }));
+      }, 10);
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 0 });
+  const reply = await client.ask("Explain photosynthesis like I am twelve");
+
+  assert.equal(reply.ok, true);
+  assert.equal(reply.text, "Photosynthesis is how plants turn light into food.");
+  assert.deepEqual(reply.events.map((event) => event.name), [
+    "complete_intent_failure",
+    "speak",
+    "ovos.utterance.handled",
+  ]);
+});
+
+test("client ask ignores replies without matching correlation", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const eventTarget = new EventTarget();
+  const transport = Object.assign(eventTarget, {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(_eventType: string, _data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: {
+          type: "speak",
+          data: { utterance: "Wrong session" },
+          context: { session: { session_id: "other" }, request_id: "other" },
+        },
+      }));
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: {
+          type: "speak",
+          data: { utterance: "Missing context" },
+          context: {},
+        },
+      }));
+      setTimeout(() => {
+        eventTarget.dispatchEvent(new CustomEvent("bus", {
+          detail: {
+            type: "speak",
+            data: { utterance: "Right reply" },
+            context,
+          },
+        }));
+        eventTarget.dispatchEvent(new CustomEvent("bus", {
+          detail: {
+            type: "ovos.utterance.handled",
+            data: {},
+            context,
+          },
+        }));
+      }, 10);
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 0 });
+  const reply = await client.ask("what is up?");
+
+  assert.equal(reply.text, "Right reply");
+  assert.equal(reply.events.length, 2);
+});
+
+test("client ask treats HiveMind query timeout as a handled failure", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const eventTarget = new EventTarget();
+  const transport = Object.assign(eventTarget, {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(_eventType: string, _data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: {
+          type: "hive.query.timeout",
+          data: { utterance: "No answer before HiveMind timed out" },
+          context,
+        },
+      }));
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 0 });
+
+  await assert.rejects(
+    () => client.ask("what is up?"),
+    /No answer before HiveMind timed out/,
+  );
+});
+
+test("client ask fails when handled produces no speak reply", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const eventTarget = new EventTarget();
+  const transport = Object.assign(eventTarget, {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(_eventType: string, _data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: {
+          type: "ovos.utterance.handled",
+          data: {},
+          context,
+        },
+      }));
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 0, emptyReplyWaitMs: 10 });
+
+  await assert.rejects(
+    () => client.ask("what is up?"),
+    /did not emit a speak reply/,
+  );
 });
 
 test("buildClientContext carries generic user auth device metadata", () => {
