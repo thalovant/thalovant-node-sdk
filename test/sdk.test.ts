@@ -1095,6 +1095,36 @@ test("client ask treats HiveMind query timeout as a handled failure", async () =
   );
 });
 
+test("client ask times out when the outbound emit stalls", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const transport = Object.assign(new EventTarget(), {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(): Promise<void> {
+      return new Promise(() => undefined);
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 0, emptyReplyWaitMs: 0 });
+
+  await assert.rejects(
+    () => client.ask("what is up?", { timeoutMs: 10 }),
+    /did not finish handling/,
+  );
+});
+
 test("client ask fails when handled produces no speak reply", async () => {
   const identity = new ThalovantIdentity({
     key: "access",

@@ -268,7 +268,10 @@ export class ThalovantClient {
       }, optionsWithCorrelation),
     ];
     try {
-      await this.transport.emitBus(EVENT_RECOGNIZER_LOOP_UTTERANCE, utterancePayload(prompt, lang), context);
+      await Promise.race([
+        this.transport.emitBus(EVENT_RECOGNIZER_LOOP_UTTERANCE, utterancePayload(prompt, lang), context),
+        handled,
+      ]);
       await Promise.race([handled, firstReply]);
       clearTimeout(timer);
       if (!failureEvent && fragments.length === 0) {

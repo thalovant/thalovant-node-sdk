@@ -197,7 +197,13 @@ export class HiveMindHttpTransport extends EventTarget {
 }
 
 export class HiveMindWSSTransport extends HiveMindHttpTransport {
+  private readonly sendTimeoutMs: number;
   private socket?: WebSocket;
+
+  constructor(identity: ThalovantIdentity, options: { userAgent?: string; pollIntervalMs?: number; sendTimeoutMs?: number } = {}) {
+    super(identity, options);
+    this.sendTimeoutMs = options.sendTimeoutMs ?? 10000;
+  }
 
   get endpoint(): string {
     const endpoint = this.identity.endpointFor("wss");
@@ -228,6 +234,9 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
     this.connected = true;
     const deadline = Date.now() + timeoutMs;
     while (!this.handshakeComplete && Date.now() < deadline) {
+      if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
+        throw new ThalovantConnectionError("HiveMind WSS closed before handshake completed.");
+      }
       await sleep(100);
     }
     if (!this.handshakeComplete) {
@@ -263,7 +272,7 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
     const payload = encrypt && this.handshakeComplete && this.identity.cryptoKey
       ? encryptAsJson(this.identity.cryptoKey, serialized)
       : serialized;
-    socket.send(payload);
+    await sendSocketPayload(socket, payload, this.sendTimeoutMs);
   }
 }
 
@@ -451,14 +460,53 @@ function authorizedUrl(endpoint: string, authorization: string, expected: "wss")
 
 function waitForSocketOpen(socket: WebSocket, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new ThalovantConnectionError("HiveMind WSS connect timed out.")), timeoutMs);
-    socket.once("open", () => {
+    let settled = false;
+    const cleanup = () => {
       clearTimeout(timer);
-      resolve();
-    });
-    socket.once("error", error => {
+      socket.off("open", onOpen);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const onOpen = () => settle(resolve);
+    const onError = (error: Error) => settle(() => reject(new ThalovantConnectionError(`HiveMind WSS connect failed: ${error.message}`)));
+    const onClose = (code: number, reason: Buffer) => {
+      const suffix = reason.length ? `: ${reason.toString("utf8")}` : "";
+      settle(() => reject(new ThalovantConnectionError(`HiveMind WSS closed before opening (${code})${suffix}.`)));
+    };
+    const timer = setTimeout(() => {
+      socket.terminate();
+      settle(() => reject(new ThalovantConnectionError("HiveMind WSS connect timed out.")));
+    }, timeoutMs);
+    socket.once("open", onOpen);
+    socket.once("error", onError);
+    socket.once("close", onClose);
+  });
+}
+
+function sendSocketPayload(socket: WebSocket, payload: string | Buffer, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.terminate();
+      reject(new ThalovantConnectionError("HiveMind WSS send timed out."));
+    }, timeoutMs);
+    socket.send(payload, error => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      reject(new ThalovantConnectionError(`HiveMind WSS connect failed: ${error.message}`));
+      if (error) {
+        reject(new ThalovantConnectionError(`HiveMind WSS send failed: ${error.message}`));
+      } else {
+        resolve();
+      }
     });
   });
 }
