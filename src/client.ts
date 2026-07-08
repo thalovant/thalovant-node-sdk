@@ -10,6 +10,7 @@ import {
 import { ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
 import {
   contextWithCorrelation,
+  BusPayload,
   eventFromBusPayload,
   eventMatchesContext,
   EventContext,
@@ -28,6 +29,8 @@ import {
   HiveMindMqttTransport,
   HiveMindRuntimeTransport,
   HiveMindWSSTransport,
+  HiveMessage,
+  TransportConnectionInfo,
   TransportHealth,
 } from "./transport.js";
 
@@ -79,6 +82,11 @@ export class ThalovantClient {
     this.connected = true;
   }
 
+  async connectWithInfo(timeoutMs?: number): Promise<TransportConnectionInfo> {
+    await this.connect(timeoutMs);
+    return this.connectionInfo();
+  }
+
   async close(): Promise<void> {
     await this.transport.disconnect();
     this.connected = false;
@@ -86,6 +94,17 @@ export class ThalovantClient {
 
   healthcheck(): TransportHealth {
     return this.transport.healthcheck();
+  }
+
+  connectionInfo(): TransportConnectionInfo {
+    if (this.transport.connectionInfo) {
+      return this.transport.connectionInfo();
+    }
+    const health = this.transport.healthcheck();
+    return health.connection ?? {
+      phase: health.handshakeComplete ? "ready" : health.connected ? "open" : "idle",
+      lastError: health.lastError,
+    };
   }
 
   conversation(options: { sessionId?: string; lang?: string; context?: EventContext } = {}): ThalovantConversation {
@@ -312,6 +331,133 @@ export class ThalovantClient {
     }
   }
 
+  async query(
+    text: string,
+    options: {
+      timeoutMs?: number;
+      lang?: string;
+      context?: EventContext;
+      sessionId?: string;
+      requestId?: string;
+      queryId?: string;
+      replySettleMs?: number;
+    } = {},
+  ): Promise<ThalovantReply> {
+    const prompt = text.trim();
+    if (!prompt) throw new Error("query() requires a non-empty text prompt.");
+    const lang = options.lang ?? "en-us";
+    const requestId = options.requestId ?? newRequestId();
+    const queryId = options.queryId ?? requestId;
+    const sessionId = options.sessionId ?? newSessionId();
+    const context = contextWithCorrelation(this.contextWithIdentityMetadata(options.context ?? {}), {
+      sessionId,
+      siteId: this.identity.siteId,
+      lang,
+      requestId,
+    });
+    const fragments: string[] = [];
+    const events: ThalovantEvent[] = [];
+    let failureEvent: ThalovantEvent | undefined;
+    await this.connect();
+    if (!this.transport.sendHiveMessage) {
+      throw new ThalovantRuntimeError("This transport does not support HiveMind query frames.");
+    }
+    const sendHiveMessage = this.transport.sendHiveMessage.bind(this.transport);
+
+    let finishQuery!: () => void;
+    let failQuery!: (error: Error) => void;
+    const done = new Promise<void>((resolve, reject) => {
+      finishQuery = resolve;
+      failQuery = reject;
+    });
+    const timer = setTimeout(() => {
+      failQuery(new ThalovantTimeoutError(`Hub did not finish the query within ${options.timeoutMs ?? 12000}ms.`));
+    }, options.timeoutMs ?? 12000);
+    const listener = (raw: Event): void => {
+      const message = (raw as CustomEvent<HiveMessage>).detail;
+      if (String(message.metadata?.query_id ?? message.metadata?.queryId ?? "") !== queryId) return;
+      const payload = busPayloadFromHivePayload(message.payload);
+      if (!payload) return;
+      const event = eventFromBusPayload(payload, payload);
+      if (event.name === "hive.query.complete") {
+        events.push(event);
+        finishQuery();
+        return;
+      }
+      events.push(event);
+      if (event.name === EVENT_SPEAK || event.name === EVENT_OVOS_UTTERANCE_SPEAK) {
+        const normalized = event.text.trim().replace(/\s+/g, " ");
+        if (normalized && fragments.at(-1) !== normalized) {
+          fragments.push(normalized);
+        }
+        return;
+      }
+      if (event.isFailure) {
+        failureEvent = event;
+        finishQuery();
+      }
+    };
+    this.transport.addEventListener("query", listener);
+    try {
+      const inner: HiveMessage = {
+        msg_type: "bus",
+        payload: {
+          type: EVENT_RECOGNIZER_LOOP_UTTERANCE,
+          data: utterancePayload(prompt, lang),
+          context,
+        },
+        metadata: {},
+        route: [],
+        node: null,
+        target_site_id: null,
+        target_pubkey: null,
+        source_peer: null,
+      };
+      await sendHiveMessage({
+        msg_type: "query",
+        payload: inner as unknown as Record<string, unknown>,
+        metadata: {
+          query_id: queryId,
+        },
+        route: [],
+        node: null,
+        target_site_id: null,
+        target_pubkey: null,
+        source_peer: null,
+      });
+      await done;
+      const replySettleMs = options.replySettleMs ?? this.replySettleMs;
+      if (replySettleMs > 0) {
+        await sleep(replySettleMs);
+      }
+      if (failureEvent && fragments.length === 0) {
+        throw new ThalovantRuntimeError(failureEvent.text || `Hub reported ${failureEvent.name}.`);
+      }
+      if (fragments.length === 0) {
+        throw new ThalovantTimeoutError(`Hub finished the query but did not emit a speak reply.`);
+      }
+      const replyText = fragments.join(" ");
+      return {
+        text: replyText,
+        displayText: stripSsml(replyText),
+        utterances: fragments,
+        handled: !failureEvent,
+        ok: !failureEvent,
+        sessionId: context.session?.session_id,
+        requestId,
+        events,
+        failureEvent,
+        displayItems(queryOptions: { maxTextChars?: number } = {}): ThalovantDisplayItem[] {
+          const items = events.flatMap(event => event.displayItems(queryOptions));
+          return items.length ? items : [{ kind: "text", text: stripSsml(replyText) }];
+        },
+      };
+    } finally {
+      clearTimeout(timer);
+      this.transport.removeEventListener("query", listener);
+    }
+  }
+
   private contextWithIdentityMetadata(context: EventContext): EventContext {
     if (Object.keys(this.identity.metadata).length === 0) {
       return context;
@@ -353,6 +499,21 @@ function eventMatchesRequiredCorrelation(event: ThalovantEvent, expected: EventC
     return true;
   }
   return Boolean((expectedSession && event.sessionId) || (expectedRequest && event.requestId));
+}
+
+function busPayloadFromHivePayload(payload: unknown): BusPayload | undefined {
+  if (!isRecord(payload)) return undefined;
+  if (typeof payload.type === "string") {
+    return {
+      type: payload.type,
+      data: isRecord(payload.data) ? payload.data : {},
+      context: isRecord(payload.context) ? payload.context as EventContext : {},
+    };
+  }
+  if ("payload" in payload) {
+    return busPayloadFromHivePayload(payload.payload);
+  }
+  return undefined;
 }
 
 function correlationSessionId(context?: EventContext): string | undefined {
@@ -418,6 +579,15 @@ export class ThalovantConversation {
 
   ask(text: string, options: { timeoutMs?: number; lang?: string; context?: EventContext; requestId?: string } = {}): Promise<ThalovantReply> {
     return this.client.ask(text, {
+      ...options,
+      lang: options.lang ?? this.lang,
+      context: mergeContext(this.context, options.context),
+      sessionId: this.sessionId,
+    });
+  }
+
+  query(text: string, options: { timeoutMs?: number; lang?: string; context?: EventContext; requestId?: string; queryId?: string } = {}): Promise<ThalovantReply> {
+    return this.client.query(text, {
       ...options,
       lang: options.lang ?? this.lang,
       context: mergeContext(this.context, options.context),

@@ -12,4 +12,4 @@ export const FAILURE_EVENTS = new Set([
   EVENT_QUERY_TIMEOUT,
 ]);
 
-export const DEFAULT_USER_AGENT = "ThalovantNodeSDK/0.2.15";
+export const DEFAULT_USER_AGENT = "ThalovantNodeSDK/0.2.16";

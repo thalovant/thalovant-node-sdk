@@ -25,13 +25,29 @@ export interface TransportHealth {
   handshakeComplete: boolean;
   transportAlive: boolean;
   lastError?: string;
+  connection?: TransportConnectionInfo;
+}
+
+export type TransportConnectionPhase = "idle" | "connecting" | "open" | "handshake" | "ready" | "closed" | "error";
+
+export interface TransportConnectionInfo {
+  phase: TransportConnectionPhase;
+  startedAt?: string;
+  connectedAt?: string;
+  transportOpenMs?: number;
+  socketOpenMs?: number;
+  handshakeMs?: number;
+  connectMs?: number;
+  lastError?: string;
 }
 
 export interface HiveMindRuntimeTransport extends EventTarget {
   connect(timeoutMs?: number): Promise<void>;
   disconnect(): Promise<void>;
   healthcheck(): TransportHealth;
+  connectionInfo?(): TransportConnectionInfo;
   emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void>;
+  sendHiveMessage?(message: HiveMessage, encrypt?: boolean): Promise<void>;
 }
 
 export interface MqttTopicSet {
@@ -48,6 +64,14 @@ export class HiveMindHttpTransport extends EventTarget {
   protected handshakeComplete = false;
   private pollTimer?: NodeJS.Timeout;
   protected lastError?: Error;
+  private connectStartedMs = 0;
+  private transportOpenedMs = 0;
+  private handshakeWaiters = new Set<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
+  }>();
+  private currentConnection: TransportConnectionInfo = { phase: "idle" };
 
   constructor(identity: ThalovantIdentity, options: { userAgent?: string; pollIntervalMs?: number } = {}) {
     super();
@@ -65,12 +89,16 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   async connect(timeoutMs = 6000): Promise<void> {
+    this.beginConnection();
     const response = await fetch(`${this.baseUrl}/connect?authorization=${encodeURIComponent(this.authorization)}`, {
       method: "POST",
     });
     if (!response.ok) {
-      throw new ThalovantConnectionError(`HiveMind HTTP connect failed: ${await response.text()}`);
+      const error = new ThalovantConnectionError(`HiveMind HTTP connect failed: ${await response.text()}`);
+      this.failConnection(error);
+      throw error;
     }
+    this.markTransportOpen();
     this.connected = true;
     const deadline = Date.now() + timeoutMs;
     while (!this.handshakeComplete && Date.now() < deadline) {
@@ -80,7 +108,9 @@ export class HiveMindHttpTransport extends EventTarget {
       }
     }
     if (!this.handshakeComplete) {
-      throw new ThalovantConnectionError("HiveMind HTTP handshake timed out.");
+      const error = new ThalovantConnectionError("HiveMind HTTP handshake timed out.");
+      this.failConnection(error);
+      throw error;
     }
     this.startPolling();
   }
@@ -93,6 +123,7 @@ export class HiveMindHttpTransport extends EventTarget {
     }).catch(() => undefined);
     this.connected = false;
     this.handshakeComplete = false;
+    this.markClosed();
   }
 
   healthcheck(): TransportHealth {
@@ -101,7 +132,12 @@ export class HiveMindHttpTransport extends EventTarget {
       handshakeComplete: this.handshakeComplete,
       transportAlive: this.connected && Boolean(this.pollTimer),
       lastError: this.lastError?.message,
+      connection: this.connectionInfo(),
     };
+  }
+
+  connectionInfo(): TransportConnectionInfo {
+    return { ...this.currentConnection };
   }
 
   async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
@@ -121,10 +157,11 @@ export class HiveMindHttpTransport extends EventTarget {
     if (this.pollTimer) return;
     this.pollTimer = setInterval(() => {
       this.pollOnce().catch((error: Error) => {
-        this.lastError = error;
-        this.connected = false;
-      });
-    }, this.pollIntervalMs);
+      this.lastError = error;
+      this.connected = false;
+      this.rejectHandshake(error);
+    });
+  }, this.pollIntervalMs);
   }
 
   private stopPolling(): void {
@@ -152,6 +189,8 @@ export class HiveMindHttpTransport extends EventTarget {
       await this.handleHandshake(message.payload);
     } else if (message.msg_type === "bus") {
       this.dispatchEvent(new CustomEvent<BusPayload>("bus", { detail: message.payload as unknown as BusPayload }));
+    } else if (message.msg_type === "query" || message.msg_type === "cascade") {
+      this.dispatchEvent(new CustomEvent<HiveMessage>(message.msg_type, { detail: message }));
     }
   }
 
@@ -174,13 +213,98 @@ export class HiveMindHttpTransport extends EventTarget {
         target_pubkey: null,
         source_peer: null,
       }, false);
-      this.handshakeComplete = true;
+      this.completeHandshake();
       return;
     }
     throw new ThalovantConnectionError("Only HiveMind preshared-key HTTP handshakes are supported in this alpha.");
   }
 
-  protected async sendHiveMessage(message: HiveMessage, encrypt = true): Promise<void> {
+  protected beginConnection(): void {
+    this.handshakeComplete = false;
+    this.lastError = undefined;
+    this.connectStartedMs = Date.now();
+    this.transportOpenedMs = 0;
+    this.currentConnection = {
+      phase: "connecting",
+      startedAt: new Date(this.connectStartedMs).toISOString(),
+    };
+  }
+
+  protected markTransportOpen(options: { socket?: boolean } = {}): void {
+    const now = Date.now();
+    this.transportOpenedMs = now;
+    const openMs = Math.max(0, now - this.connectStartedMs);
+    this.currentConnection = {
+      ...this.currentConnection,
+      phase: "handshake",
+      transportOpenMs: openMs,
+      ...(options.socket ? { socketOpenMs: openMs } : {}),
+    };
+  }
+
+  protected completeHandshake(): void {
+    if (this.handshakeComplete) return;
+    this.handshakeComplete = true;
+    const now = Date.now();
+    this.currentConnection = {
+      ...this.currentConnection,
+      phase: "ready",
+      connectedAt: new Date(now).toISOString(),
+      handshakeMs: Math.max(0, now - (this.transportOpenedMs || this.connectStartedMs)),
+      connectMs: Math.max(0, now - this.connectStartedMs),
+    };
+    for (const waiter of this.handshakeWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+    this.handshakeWaiters.clear();
+  }
+
+  protected waitForHandshake(timeoutMs: number, timeoutMessage: string): Promise<void> {
+    if (this.handshakeComplete) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this.handshakeWaiters.delete(waiter);
+          const error = new ThalovantConnectionError(timeoutMessage);
+          this.failConnection(error);
+          reject(error);
+        }, timeoutMs),
+      };
+      this.handshakeWaiters.add(waiter);
+    });
+  }
+
+  protected rejectHandshake(error: Error): void {
+    if (this.handshakeComplete) return;
+    this.failConnection(error);
+    for (const waiter of this.handshakeWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    this.handshakeWaiters.clear();
+  }
+
+  protected failConnection(error: Error): void {
+    this.lastError = error;
+    this.currentConnection = {
+      ...this.currentConnection,
+      phase: "error",
+      lastError: error.message,
+      connectMs: this.connectStartedMs ? Math.max(0, Date.now() - this.connectStartedMs) : undefined,
+    };
+  }
+
+  protected markClosed(): void {
+    this.currentConnection = {
+      ...this.currentConnection,
+      phase: "closed",
+    };
+  }
+
+  async sendHiveMessage(message: HiveMessage, encrypt = true): Promise<void> {
     const serialized = JSON.stringify(message);
     const payload = encrypt && this.handshakeComplete && this.identity.cryptoKey
       ? encryptAsJson(this.identity.cryptoKey, serialized)
@@ -215,32 +339,42 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
 
   override async connect(timeoutMs = 6000): Promise<void> {
     if (this.connected && this.handshakeComplete) return;
+    this.beginConnection();
     const socket = new WebSocket(this.endpoint);
     this.socket = socket;
     socket.on("message", data => {
       this.handleRawMessage(data).catch((error: Error) => {
         this.lastError = error;
         this.connected = false;
+        this.rejectHandshake(error);
       });
     });
-    socket.on("close", () => {
+    socket.on("close", (code, reason) => {
       this.connected = false;
+      if (!this.handshakeComplete) {
+        const suffix = reason.length ? `: ${reason.toString("utf8")}` : "";
+        this.rejectHandshake(new ThalovantConnectionError(`HiveMind WSS closed before handshake completed (${code})${suffix}.`));
+      } else {
+        this.markClosed();
+      }
     });
     socket.on("error", error => {
       this.lastError = error;
       this.connected = false;
+      this.rejectHandshake(error);
     });
-    await waitForSocketOpen(socket, timeoutMs);
-    this.connected = true;
-    const deadline = Date.now() + timeoutMs;
-    while (!this.handshakeComplete && Date.now() < deadline) {
-      if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
-        throw new ThalovantConnectionError("HiveMind WSS closed before handshake completed.");
+    try {
+      await waitForSocketOpen(socket, timeoutMs);
+      this.markTransportOpen({ socket: true });
+      this.connected = true;
+      await this.waitForHandshake(timeoutMs, "HiveMind WSS handshake timed out.");
+    } catch (error) {
+      socket.terminate();
+      this.connected = false;
+      if (error instanceof Error) {
+        this.failConnection(error);
       }
-      await sleep(100);
-    }
-    if (!this.handshakeComplete) {
-      throw new ThalovantConnectionError("HiveMind WSS handshake timed out.");
+      throw error;
     }
   }
 
@@ -252,6 +386,7 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
     }
     this.connected = false;
     this.handshakeComplete = false;
+    this.markClosed();
   }
 
   override healthcheck(): TransportHealth {
@@ -260,10 +395,11 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
       handshakeComplete: this.handshakeComplete,
       transportAlive: this.connected && this.socket?.readyState === WebSocket.OPEN,
       lastError: this.lastError?.message,
+      connection: this.connectionInfo(),
     };
   }
 
-  protected override async sendHiveMessage(message: HiveMessage, encrypt = true): Promise<void> {
+  override async sendHiveMessage(message: HiveMessage, encrypt = true): Promise<void> {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       throw new ThalovantConnectionError("HiveMind WSS transport is not connected.");
@@ -287,6 +423,7 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
 
   override async connect(timeoutMs = 6000): Promise<void> {
     if (this.connected && this.handshakeComplete) return;
+    this.beginConnection();
     const credentials = this.identity.mqtt;
     if (!credentials) {
       throw new ThalovantConnectionError("The identity does not include MQTT broker credentials.");
@@ -320,17 +457,21 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
       this.lastError = error;
     });
 
-    await waitForMqttConnect(client, timeoutMs);
-    await mqttSubscribe(client, this.topics.s2c, this.identity.mqtt.qos);
-    await mqttPublish(client, this.topics.status, "online", { qos: 1, retain: true });
-    this.connected = true;
-    await this.sendHiveMessage(this.helloMessage());
-    const deadline = Date.now() + timeoutMs;
-    while (!this.handshakeComplete && Date.now() < deadline) {
-      await sleep(100);
-    }
-    if (!this.handshakeComplete) {
-      throw new ThalovantConnectionError("HiveMind MQTT handshake timed out.");
+    try {
+      await waitForMqttConnect(client, timeoutMs);
+      await mqttSubscribe(client, this.topics.s2c, this.identity.mqtt.qos);
+      await mqttPublish(client, this.topics.status, "online", { qos: 1, retain: true });
+      this.connected = true;
+      await this.sendHiveMessage(this.helloMessage());
+      this.markTransportOpen();
+      await this.waitForHandshake(timeoutMs, "HiveMind MQTT handshake timed out.");
+    } catch (error) {
+      client.end(true);
+      this.connected = false;
+      if (error instanceof Error) {
+        this.failConnection(error);
+      }
+      throw error;
     }
   }
 
@@ -343,6 +484,7 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
     }
     this.connected = false;
     this.handshakeComplete = false;
+    this.markClosed();
   }
 
   override healthcheck(): TransportHealth {
@@ -351,10 +493,11 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
       handshakeComplete: this.handshakeComplete,
       transportAlive: this.connected && Boolean(this.client?.connected),
       lastError: this.lastError?.message,
+      connection: this.connectionInfo(),
     };
   }
 
-  protected override async sendHiveMessage(message: HiveMessage, encrypt = true): Promise<void> {
+  override async sendHiveMessage(message: HiveMessage, encrypt = true): Promise<void> {
     const client = this.client;
     if (!client?.connected) {
       throw new ThalovantConnectionError("HiveMind MQTT transport is not connected.");

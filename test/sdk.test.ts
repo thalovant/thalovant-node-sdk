@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { createCipheriv } from "node:crypto";
+import { once } from "node:events";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { WebSocketServer } from "ws";
 import { buildClientContext } from "../src/context.js";
 import { decryptBinary, decryptFromJson, encryptAsBinary, encryptAsJson, runtimeCryptoKey } from "../src/crypto.js";
 import { contextWithCorrelation, eventMatchesContext, ThalovantEvent } from "../src/events.js";
@@ -309,6 +312,44 @@ test("client forwards explicit connect timeouts to transports", async () => {
   await client.connect(12345);
 
   assert.deepEqual(calls, [12345]);
+});
+
+test("WSS connect reports socket and handshake timings", async t => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  t.after(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  });
+  await once(server, "listening");
+  server.on("connection", socket => {
+    socket.send(JSON.stringify({
+      msg_type: "handshake",
+      payload: { preshared_key: true },
+      metadata: {},
+    }));
+  });
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  assert.ok(address);
+  const port = (address as AddressInfo).port;
+  const identity = new ThalovantIdentity({
+    access_key: "access",
+    password: "secret",
+    crypto_key: "0123456789abcdef",
+    site_id: "site",
+    default_master: `ws://127.0.0.1:${port}`,
+  });
+  const client = new ThalovantClient(identity, { protocol: "wss" });
+
+  const info = await client.connectWithInfo(2000);
+  const health = client.healthcheck();
+  await client.close();
+
+  assert.equal(info.phase, "ready");
+  assert.equal(health.connection?.phase, "ready");
+  assert.equal(typeof info.socketOpenMs, "number");
+  assert.equal(typeof info.handshakeMs, "number");
+  assert.equal(typeof info.connectMs, "number");
+  assert.ok((info.connectMs ?? 0) >= (info.socketOpenMs ?? 0));
 });
 
 test("client one-shot utterances include a fresh session by default", async () => {

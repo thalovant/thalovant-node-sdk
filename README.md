@@ -46,7 +46,10 @@ const result = await api.createClientIdentity("hub-id", {
 
 const client = new ThalovantClient(result.identity, { protocol: "wss" });
 try {
-  const reply = await client.ask("Tell me a short clean joke.");
+  const connection = await client.connectWithInfo();
+  console.log(connection);
+
+  const reply = await client.query("Tell me a short clean joke.");
   console.log(reply.text);
 } finally {
   await client.close();
@@ -222,6 +225,36 @@ try {
 }
 ```
 
+## Realtime Query And Connection Timing
+
+Use `query(...)` for the direct HiveMind query path when the hub supports it.
+It keeps replies scoped to the originating query id and avoids broad bus fanout.
+Use `ask(...)` when you need the older utterance/event flow.
+
+```ts
+const client = await ThalovantClient.fromIdentityFile("_identity.json", {
+  protocol: "wss",
+});
+
+try {
+  const connection = await client.connectWithInfo(10_000);
+  console.log(connection.socketOpenMs, connection.handshakeMs, connection.connectMs);
+
+  const reply = await client.query("What time is it in Toronto?", {
+    timeoutMs: 30_000,
+  });
+  console.log(reply.text);
+
+  console.log(client.healthcheck().connection);
+} finally {
+  await client.close();
+}
+```
+
+For high concurrency, keep WSS clients connected and reuse the session for
+multiple queries. Creating a new WSS connection for every prompt measures
+ingress and HiveMind admission as much as skill latency.
+
 ## Events
 
 You can wait for hub events by name.
@@ -321,6 +354,9 @@ for (const item of reply.displayItems({ maxTextChars: 600 })) {
 - `ThalovantClient.fromEnv()`
 - `new ThalovantClient(identity, { protocol })`
 - `client.ask(text, options)`
+- `client.query(text, options)`
+- `client.connectWithInfo(timeoutMs)`
+- `client.connectionInfo()`
 - `client.sendUtterance(text, options)`
 - `client.sendAction(payload, options)`
 - `client.sendCode(value, options)`
