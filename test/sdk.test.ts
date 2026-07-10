@@ -15,7 +15,7 @@ import { HubDataPlaneEndpoints, HubProtocolSettings, selectDataPlaneEndpoint } f
 import { displayItemsFromEventData } from "../src/rich.js";
 import { ThalovantControlPlane } from "../src/control.js";
 import { ThalovantClient } from "../src/client.js";
-import { ThalovantUnsupportedProtocolError } from "../src/errors.js";
+import { ThalovantConnectionError, ThalovantUnsupportedProtocolError } from "../src/errors.js";
 import { HiveMindHttpTransport, HiveMindWSSTransport, mqttConnectionEndpoint, mqttTopicsForIdentity } from "../src/transport.js";
 import { decodeHiveBinaryFrame, encodeHiveBinaryFrame } from "../src/wire.js";
 
@@ -312,6 +312,42 @@ test("client forwards explicit connect timeouts to transports", async () => {
   await client.connect(12345);
 
   assert.deepEqual(calls, [12345]);
+});
+
+test("client enforces a hard connect timeout around transports", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  let disconnects = 0;
+  const transport = Object.assign(new EventTarget(), {
+    async connect(): Promise<void> {
+      await new Promise(() => undefined);
+    },
+    async disconnect(): Promise<void> {
+      disconnects += 1;
+    },
+    healthcheck() {
+      return {
+        connected: false,
+        handshakeComplete: false,
+        transportAlive: false,
+      };
+    },
+    async emitBus(): Promise<void> {},
+  });
+
+  const client = new ThalovantClient(identity, { transport });
+
+  await assert.rejects(
+    () => client.connect(20),
+    (error: unknown) =>
+      error instanceof ThalovantConnectionError &&
+      /did not complete within 20ms/.test(error.message),
+  );
+  assert.equal(disconnects, 1);
 });
 
 test("WSS connect reports socket and handshake timings", async t => {

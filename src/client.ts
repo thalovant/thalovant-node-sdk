@@ -7,7 +7,7 @@ import {
   EVENT_SPEAK,
   EVENT_UTTERANCE_HANDLED,
 } from "./constants.js";
-import { ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
+import { ThalovantConnectionError, ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
 import {
   contextWithCorrelation,
   BusPayload,
@@ -78,7 +78,8 @@ export class ThalovantClient {
 
   async connect(timeoutMs?: number): Promise<void> {
     if (this.connected) return;
-    await this.transport.connect(timeoutMs);
+    const effectiveTimeoutMs = normalizeConnectTimeout(timeoutMs);
+    await withConnectTimeout(this.transport, effectiveTimeoutMs);
     this.connected = true;
   }
 
@@ -475,6 +476,31 @@ export class ThalovantClient {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeConnectTimeout(timeoutMs?: number): number {
+  return typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 6000;
+}
+
+async function withConnectTimeout(transport: HiveMindRuntimeTransport, timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  let timedOut = false;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(new ThalovantConnectionError(`Hub connection did not complete within ${timeoutMs}ms.`));
+    }, timeoutMs);
+  });
+  try {
+    await Promise.race([transport.connect(timeoutMs), timeout]);
+  } catch (error) {
+    if (timedOut) {
+      await transport.disconnect().catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function sleep(ms: number): Promise<void> {
