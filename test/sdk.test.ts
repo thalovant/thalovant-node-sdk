@@ -563,6 +563,48 @@ test("control plane lists public hubs without auth", async () => {
   }
 });
 
+test("control plane gets a typed durable operation", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    assert.ok(String(url).endsWith("/v1/operations/operation-1"));
+    assert.equal(
+      (init?.headers as Record<string, string>).authorization,
+      "Bearer token",
+    );
+    return jsonResponse(200, {
+      id: "operation-1",
+      kind: "gitops.commit",
+      aggregate_type: "gitops",
+      aggregate_id: null,
+      status: "committed",
+      details: { git_commit_created: true },
+      git_commit_sha: "abc123",
+      error_code: null,
+      error_message: null,
+      created_at: "2026-07-11T00:00:00Z",
+      updated_at: "2026-07-11T00:00:01Z",
+      committed_at: "2026-07-11T00:00:01Z",
+      applied_at: null,
+      ready_at: null,
+      terminal_at: null,
+      links: { self: "/api/v1/operations/operation-1" },
+    });
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", {
+      accessToken: "token",
+    });
+    const operation = await api.getOperation("operation-1");
+
+    assert.equal(operation.status, "committed");
+    assert.equal(operation.git_commit_sha, "abc123");
+    assert.equal(operation.details.git_commit_created, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("control plane manages memory items", async () => {
   const originalFetch = globalThis.fetch;
   const requests: Array<{ url: string; init?: RequestInit }> = [];

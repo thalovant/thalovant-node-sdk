@@ -340,6 +340,7 @@ for (const item of reply.displayItems({ maxTextChars: 600 })) {
 - `controlPlane.getPublicHub(hubRef)`
 - `controlPlane.listHubs(options)`
 - `controlPlane.getHub(hubId)`
+- `controlPlane.getOperation(operationId)`
 - `controlPlane.getAnalyticsOverview(options)`
 - `controlPlane.listMemoryItems(options)`
 - `controlPlane.getMemorySummary(options)`

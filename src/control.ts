@@ -12,9 +12,36 @@ import {
 } from "./protocols.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.12";
+const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.18";
 
 type JsonRecord = Record<string, unknown>;
+
+export type OperationStatus =
+  | "requested"
+  | "committed"
+  | "applied"
+  | "ready"
+  | "failed"
+  | "timed_out";
+
+export interface OperationResource {
+  id: string;
+  kind: string;
+  aggregate_type: string;
+  aggregate_id: string | null;
+  status: OperationStatus;
+  details: JsonRecord;
+  git_commit_sha: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  committed_at: string | null;
+  applied_at: string | null;
+  ready_at: string | null;
+  terminal_at: string | null;
+  links: Record<string, string | null>;
+}
 
 export interface BootstrapIdentityResult {
   identity: ThalovantIdentity;
@@ -130,6 +157,13 @@ export class ThalovantControlPlane {
     const params = new URLSearchParams({ limit: String(options.limit ?? 24) });
     if (options.cursor) params.set("cursor", options.cursor);
     return this.request("GET", `/v1/public/hubs?${params.toString()}`, { auth: false });
+  }
+
+  async getOperation(operationId: string): Promise<OperationResource> {
+    return (await this.request(
+      "GET",
+      `/v1/operations/${encodeURIComponent(operationId)}`,
+    )) as unknown as OperationResource;
   }
 
   listMemoryItems(options: MemoryListOptions = {}): Promise<JsonRecord> {
