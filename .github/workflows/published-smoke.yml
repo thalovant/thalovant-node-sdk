@@ -1,0 +1,29 @@
+name: Published package smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published npm version to verify
+        required: true
+        default: 0.2.17
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Install from npm in a clean project
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/thalovant-smoke"
+          npm install --prefix "$RUNNER_TEMP/thalovant-smoke" "@thalovant/sdk@$PACKAGE_VERSION"
+          cd "$RUNNER_TEMP/thalovant-smoke"
+          node --input-type=module -e 'const sdk = await import("@thalovant/sdk"); if (!sdk.ThalovantClient) throw new Error("ThalovantClient export is missing")'
