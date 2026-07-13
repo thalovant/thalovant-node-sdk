@@ -88,13 +88,13 @@ jobs:
 
       - name: Publish with npm token
         if: steps.registry.outputs.exists == 'false' && env.NPM_AUTH_METHOD == 'token'
-        run: npm publish --access public --tag "$NPM_DIST_TAG"
+        run: npm publish --access public --tag "$NPM_DIST_TAG" --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish with trusted publishing
         if: steps.registry.outputs.exists == 'false' && env.NPM_AUTH_METHOD == 'trusted'
-        run: npm publish --access public --tag "$NPM_DIST_TAG"
+        run: npm publish --access public --tag "$NPM_DIST_TAG" --provenance
 
       - name: Verify npm version
         env:
