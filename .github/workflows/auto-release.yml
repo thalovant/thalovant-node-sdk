@@ -8,6 +8,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -127,3 +128,10 @@ jobs:
           TAG: ${{ steps.plan.outputs.tag }}
           RELEASE_SHA: ${{ steps.plan.outputs.release_sha }}
         run: gh release create "$TAG" --target "$RELEASE_SHA" --title "$TAG" --notes "Release $TAG"
+
+      - name: Dispatch package publication
+        if: steps.plan.outputs.release_needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: gh workflow run publish.yml --ref main -f tag=latest -f auth=token -f release_tag="$TAG"
