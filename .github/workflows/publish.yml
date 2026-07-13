@@ -104,7 +104,7 @@ jobs:
         run: |
           mkdir -p release-artifacts
           npm sbom --omit=dev --sbom-format cyclonedx > "release-artifacts/thalovant-sdk-$PACKAGE_VERSION.cdx.json"
-          PACKAGE_FILE="$(npm pack --pack-destination release-artifacts --json | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => console.log(JSON.parse(input)[0].filename));')"
+          PACKAGE_FILE="$(npm pack --pack-destination release-artifacts --json | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => { const parsed = JSON.parse(input); const entry = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0]; if (!entry?.filename) throw new Error("npm pack did not return a package filename"); console.log(entry.filename); });')"
           echo "tarball=$GITHUB_WORKSPACE/release-artifacts/$PACKAGE_FILE" >> "$GITHUB_OUTPUT"
           echo "sbom=$GITHUB_WORKSPACE/release-artifacts/thalovant-sdk-$PACKAGE_VERSION.cdx.json" >> "$GITHUB_OUTPUT"
 
