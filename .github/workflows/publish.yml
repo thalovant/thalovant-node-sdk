@@ -36,8 +36,10 @@ jobs:
       name: npm
       url: https://www.npmjs.com/package/@thalovant/sdk
     permissions:
-      contents: read
+      contents: write
       id-token: write
+      attestations: write
+      artifact-metadata: write
     env:
       NPM_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}
       NPM_AUTH_METHOD: ${{ github.event_name == 'workflow_dispatch' && inputs.auth || 'token' }}
@@ -54,7 +56,7 @@ jobs:
           cache: npm
 
       - name: Ensure npm supports trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@12.0.1
 
       - name: Install dependencies
         run: npm ci
@@ -64,6 +66,13 @@ jobs:
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release tag matches the package version
+        if: github.event_name == 'release'
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: test "$RELEASE_TAG" = "v$PACKAGE_VERSION"
 
       - name: Check whether version is already on npm
         id: registry
@@ -82,19 +91,41 @@ jobs:
       - name: Check package contents
         run: npm pack --dry-run
 
+      - name: Build package artifact and CycloneDX SBOM
+        id: artifacts
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p release-artifacts
+          npm sbom --omit=dev --sbom-format cyclonedx > "release-artifacts/thalovant-sdk-$PACKAGE_VERSION.cdx.json"
+          PACKAGE_FILE="$(npm pack --pack-destination release-artifacts --json | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => console.log(JSON.parse(input)[0].filename));')"
+          echo "tarball=$GITHUB_WORKSPACE/release-artifacts/$PACKAGE_FILE" >> "$GITHUB_OUTPUT"
+          echo "sbom=$GITHUB_WORKSPACE/release-artifacts/thalovant-sdk-$PACKAGE_VERSION.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Attest package provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.artifacts.outputs.tarball }}
+
+      - name: Attest package SBOM
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.artifacts.outputs.tarball }}
+          sbom-path: ${{ steps.artifacts.outputs.sbom }}
+
       - name: Publish skipped
         if: steps.registry.outputs.exists == 'true'
         run: echo "@thalovant/sdk ${{ steps.version.outputs.version }} is already published on npm."
 
       - name: Publish with npm token
         if: steps.registry.outputs.exists == 'false' && env.NPM_AUTH_METHOD == 'token'
-        run: npm publish --access public --tag "$NPM_DIST_TAG" --provenance
+        run: npm publish "${{ steps.artifacts.outputs.tarball }}" --access public --tag "$NPM_DIST_TAG" --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish with trusted publishing
         if: steps.registry.outputs.exists == 'false' && env.NPM_AUTH_METHOD == 'trusted'
-        run: npm publish --access public --tag "$NPM_DIST_TAG" --provenance
+        run: npm publish "${{ steps.artifacts.outputs.tarball }}" --access public --tag "$NPM_DIST_TAG" --provenance
 
       - name: Verify npm version
         env:
@@ -110,3 +141,21 @@ jobs:
           done
           echo "@thalovant/sdk $PACKAGE_VERSION was not visible on npm after waiting."
           exit 1
+
+      - name: Attach package and SBOM to the GitHub release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          TARBALL: ${{ steps.artifacts.outputs.tarball }}
+          SBOM: ${{ steps.artifacts.outputs.sbom }}
+        run: |
+          EXISTING_ASSETS="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          for artifact in "$TARBALL" "$SBOM"; do
+            name="$(basename "$artifact")"
+            if grep -Fxq "$name" <<< "$EXISTING_ASSETS"; then
+              echo "$name is already attached to $RELEASE_TAG; preserving the existing asset."
+            else
+              gh release upload "$RELEASE_TAG" "$artifact"
+            fi
+          done
