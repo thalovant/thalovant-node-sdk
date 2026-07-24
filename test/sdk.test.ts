@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createCipheriv } from "node:crypto";
-import { once } from "node:events";
+import { once, setMaxListeners } from "node:events";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -1175,6 +1175,67 @@ test("client ask ignores replies without matching correlation", async () => {
 
   assert.equal(reply.text, "Right reply");
   assert.equal(reply.events.length, 2);
+});
+
+test("client ask correlates concurrent requests on one transport", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const eventTarget = new EventTarget();
+  setMaxListeners(20, eventTarget);
+  const transport = Object.assign(eventTarget, {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return {
+        connected: true,
+        handshakeComplete: true,
+        transportAlive: true,
+      };
+    },
+    async emitBus(_eventType: string, data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      const prompt = String((data.utterances as string[] | undefined)?.[0] ?? "");
+      const delay = prompt === "first" ? 20 : 5;
+      setTimeout(() => {
+        eventTarget.dispatchEvent(new CustomEvent("bus", {
+          detail: {
+            type: "speak",
+            data: { utterance: `${prompt} reply` },
+            context,
+          },
+        }));
+        eventTarget.dispatchEvent(new CustomEvent("bus", {
+          detail: {
+            type: "ovos.utterance.handled",
+            data: {},
+            context,
+          },
+        }));
+      }, delay);
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 0 });
+  const [first, second] = await Promise.all([
+    client.ask("first", { requestId: "request-first" }),
+    client.ask("second", { requestId: "request-second" }),
+  ]);
+
+  assert.equal(first.text, "first reply");
+  assert.equal(first.requestId, "request-first");
+  assert.equal(second.text, "second reply");
+  assert.equal(second.requestId, "request-second");
+  assert.deepEqual(first.events.map(event => event.requestId), [
+    "request-first",
+    "request-first",
+  ]);
+  assert.deepEqual(second.events.map(event => event.requestId), [
+    "request-second",
+    "request-second",
+  ]);
 });
 
 test("client ask treats HiveMind query timeout as a handled failure", async () => {
