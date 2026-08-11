@@ -12,7 +12,7 @@ import {
 } from "./protocols.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.21";
+const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.22";
 
 type JsonRecord = Record<string, unknown>;
 
