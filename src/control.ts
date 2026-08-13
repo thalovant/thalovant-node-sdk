@@ -12,7 +12,7 @@ import {
 } from "./protocols.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.22";
+const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.23";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -134,9 +134,15 @@ export class ThalovantControlPlane {
     this.userAgent = options.userAgent ?? DEFAULT_CONTROL_USER_AGENT;
   }
 
-  async login(email: string, password: string, options: { scope?: string } = {}): Promise<JsonRecord> {
+  async login(
+    email: string,
+    password: string,
+    options: { scope?: string; otpCode?: string; recoveryCode?: string } = {},
+  ): Promise<JsonRecord> {
     const body: JsonRecord = { email, password };
     if (options.scope) body.scope = options.scope;
+    if (options.otpCode !== undefined) body.otp_code = options.otpCode;
+    if (options.recoveryCode !== undefined) body.recovery_code = options.recoveryCode;
     const token = await this.request("POST", "/v1/auth/token", { body, auth: false });
     const accessToken = token.access_token;
     if (typeof accessToken !== "string" || !accessToken) {

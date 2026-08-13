@@ -526,6 +526,41 @@ test("control plane uses public API default and normalizes v1 roots", () => {
   );
 });
 
+test("control plane login sends MFA codes only when provided", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (url, init) => {
+    assert.ok(String(url).endsWith("/v1/auth/token"));
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return jsonResponse(200, { access_token: "token", expires_in: 3600 });
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api");
+    await api.login("ada@example.com", "secret");
+    await api.login("ada@example.com", "secret", { otpCode: "123456" });
+    await api.login("ada@example.com", "secret", { recoveryCode: "abcd-efgh", scope: "admin" });
+
+    assert.deepEqual(bodies[0], { email: "ada@example.com", password: "secret" });
+    assert.equal("otp_code" in bodies[0], false);
+    assert.equal("recovery_code" in bodies[0], false);
+    assert.deepEqual(bodies[1], {
+      email: "ada@example.com",
+      password: "secret",
+      otp_code: "123456",
+    });
+    assert.deepEqual(bodies[2], {
+      email: "ada@example.com",
+      password: "secret",
+      scope: "admin",
+      recovery_code: "abcd-efgh",
+    });
+    assert.equal(api.accessToken, "token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("control plane lists public hubs without auth", async () => {
   const originalFetch = globalThis.fetch;
   const requests: Array<{ url: string; init?: RequestInit }> = [];
@@ -587,7 +622,7 @@ test("control plane gets a typed durable operation", async () => {
       applied_at: null,
       ready_at: null,
       terminal_at: null,
-      links: { self: "/api/v1/operations/operation-1" },
+      links: { self: "/v1/operations/operation-1" },
     });
   };
 

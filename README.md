@@ -62,6 +62,19 @@ a different URL only for local development or a self-hosted control plane.
 Keep `result.identity` secret. It contains the client credentials used by the
 hub. Do not log `result.asObject({ includeSecrets: true })`.
 
+## Log In With MFA
+
+Accounts with multi-factor authentication enabled must include a TOTP code or a
+recovery code with the login. Without one the API responds with HTTP 401 and
+code `mfa_required`.
+
+```ts
+await api.login("you@example.com", "password", { otpCode: "123456" });
+
+// Or use a one-time recovery code instead:
+await api.login("you@example.com", "password", { recoveryCode: "abcd-efgh-ijkl" });
+```
+
 ## List Your Hubs
 
 Authenticated accounts can list owned or visible hubs:
@@ -335,7 +348,7 @@ for (const item of reply.displayItems({ maxTextChars: 600 })) {
 
 - `new ThalovantControlPlane()`
 - `new ThalovantControlPlane(apiUrl, options)` for local or self-hosted control planes
-- `controlPlane.login(email, password, options)`
+- `controlPlane.login(email, password, options)` with optional `scope`, `otpCode`, and `recoveryCode`
 - `controlPlane.listPublicHubs(options)`
 - `controlPlane.getPublicHub(hubRef)`
 - `controlPlane.listHubs(options)`
