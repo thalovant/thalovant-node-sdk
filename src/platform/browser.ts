@@ -169,3 +169,20 @@ export function defaultConfigPath(_filename: string): string {
 export function envVar(name: string): string | undefined {
   return (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[name];
 }
+
+/**
+ * Best-effort attempt to open a URL in a new browser tab. Resolves `false`
+ * (never throws) when blocked, for example by a popup blocker, so callers can
+ * always fall back to showing the URL.
+ */
+export async function openExternalUrl(url: string): Promise<boolean> {
+  try {
+    const opener = (globalThis as { open?: (url: string, target?: string) => unknown }).open;
+    if (typeof opener !== "function") {
+      return false;
+    }
+    return opener(url, "_blank") != null;
+  } catch {
+    return false;
+  }
+}

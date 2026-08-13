@@ -62,6 +62,65 @@ a different URL only for local development or a self-hosted control plane.
 Keep `result.identity` secret. It contains the client credentials used by the
 hub. Do not log `result.asObject({ includeSecrets: true })`.
 
+## Sign In Without A Password
+
+Accounts without a password (for example Google sign-in) authenticate through
+the browser device flow. `loginWithBrowser()` prints a short code and a
+verification URL, makes a best-effort attempt to open your default browser,
+and waits until you approve the request there:
+
+```ts
+const api = new ThalovantControlPlane();
+
+// Prints: To sign in, visit https://dash.thalovant.com/activate and enter the code XXXX-XXXX
+const token = await api.loginWithBrowser({ clientName: "my-laptop" });
+
+// api.accessToken is now set, exactly like after api.login(...).
+const page = await api.listHubs({ limit: 50 });
+```
+
+Options:
+
+- `scopes`: token scopes to request (server default when omitted). The server
+  normalizes scopes, so the echoed `scopes` array may be larger than requested
+  (for example `hubs:read` expands to include `hubs:preview` and
+  `hubs:inspect`).
+- `clientName`: label shown in the dashboard token list.
+- `openBrowser`: set `false` to only print the URL and code (default `true`;
+  opening is best-effort and never fails the sign-in).
+- `prompt`: callback receiving the authorization payload to present the code
+  and URL yourself instead of the default console message.
+- `timeoutMs`: how long to wait for approval (default `900000`, 15 minutes).
+
+The request rejects with a clear error when the sign-in is denied in the
+browser, the code expires, or the timeout elapses. The returned
+`access_token` is a durable scoped API token; store it securely to reuse it
+later as `accessToken` (see the next section).
+
+## Token Auth For CI And Automation
+
+Headless environments (CI jobs, AI agents, cron tasks) should skip login
+entirely: mint a scoped API token in the dashboard once, then pass it to the
+constructor:
+
+```ts
+const api = new ThalovantControlPlane("https://api.thalovant.com", {
+  accessToken: process.env.THALOVANT_API_TOKEN,
+});
+
+// Ready immediately; no login call needed.
+const page = await api.listHubs({ limit: 50 });
+```
+
+```bash
+# CI configuration
+export THALOVANT_API_TOKEN="thal_..."  # store in your CI secret manager
+```
+
+Tokens minted through the dashboard or returned by `loginWithBrowser()` are
+durable and scoped; grant only the scopes the job needs and rotate them from
+the dashboard.
+
 ## Log In With MFA
 
 Accounts with multi-factor authentication enabled must include a TOTP code or a
@@ -379,8 +438,9 @@ for (const item of reply.displayItems({ maxTextChars: 600 })) {
 
 ## Common Issues
 
-- `Missing Thalovant API access token`: call `api.login(...)` before private
-  control-plane actions, or pass `accessToken` to `ThalovantControlPlane`.
+- `Missing Thalovant API access token`: call `api.login(...)` or
+  `api.loginWithBrowser(...)` before private control-plane actions, or pass
+  `accessToken` to `ThalovantControlPlane`.
 - `API access requires a paid plan`: upgrade the workspace before using the SDK
   control-plane API to provision private resources.
 - `Unsupported protocol`: the hub does not expose that protocol, or the
@@ -395,6 +455,7 @@ for (const item of reply.displayItems({ maxTextChars: 600 })) {
 - `new ThalovantControlPlane()`
 - `new ThalovantControlPlane(apiUrl, options)` for local or self-hosted control planes
 - `controlPlane.login(email, password, options)` with optional `scope`, `otpCode`, and `recoveryCode`
+- `controlPlane.loginWithBrowser(options)` with optional `scopes`, `clientName`, `openBrowser`, `prompt`, and `timeoutMs`
 - `controlPlane.listPublicHubs(options)`
 - `controlPlane.getPublicHub(hubRef)`
 - `controlPlane.listHubs(options)`

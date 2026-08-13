@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.25
+
+- Add `controlPlane.loginWithBrowser(options)`: sign in through the browser device flow (`POST /v1/auth/device/authorize` plus `POST /v1/auth/device/token`), the sign-in path for accounts without a password such as Google sign-in. It prints `To sign in, visit <verification_uri> and enter the code <user_code>` (override with `prompt`), makes a best-effort attempt to open the default browser at `verification_uri_complete` (disable with `openBrowser: false`), and polls with `authorization_pending` and `slow_down` handling until the request is approved, denied, expired, or `timeoutMs` (default 15 minutes) elapses. On approval the returned durable scoped API token is stored on `accessToken` exactly like `login()`; `access_denied`, `expired_token`, and timeout reject with clear errors.
+- Add `controlPlane.pollDeviceToken(deviceCode, options)` with injectable `sleep`/`now` for advanced integrations and tests.
+- Browser opening is dependency-free and never fails the sign-in: Node spawns the platform opener (`open`, `start`, or `xdg-open`), web bundles use `window.open`, and any failure falls back to the printed URL.
+- Document token authentication for CI and automation: pass a dashboard-minted API token to `new ThalovantControlPlane(url, { accessToken })` (for example from a `THALOVANT_API_TOKEN` environment variable); no login call is needed.
+
 ## 0.2.24
 
 - Browser support: the SDK now runs in browsers behind a bundler. The control plane (`login`, `listPublicHubs`, `createClientIdentity`, memory, analytics) and `ThalovantClient` over the `wss` and `https` protocols work in web bundles using the global `fetch`, the global `WebSocket`, and Web Crypto (AES-128-GCM via `crypto.subtle`).

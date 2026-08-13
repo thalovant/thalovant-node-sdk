@@ -5,6 +5,7 @@
  * `browser` map in package.json, so nothing here may be imported from shared
  * code except through the `./platform/node.js` specifier.
  */
+import { spawn } from "node:child_process";
 import {
   createCipheriv,
   createDecipheriv,
@@ -154,6 +155,32 @@ export function defaultConfigPath(filename: string): string {
 
 export function envVar(name: string): string | undefined {
   return process.env[name];
+}
+
+/**
+ * Best-effort attempt to open a URL in the user's default browser. Resolves
+ * `false` (never throws) when no opener is available, so callers can always
+ * fall back to printing the URL.
+ */
+export async function openExternalUrl(url: string): Promise<boolean> {
+  const [command, args]: [string, string[]] =
+    process.platform === "darwin"
+      ? ["open", [url]]
+      : process.platform === "win32"
+        ? ["cmd", ["/c", "start", "", url]]
+        : ["xdg-open", [url]];
+  try {
+    return await new Promise(resolve => {
+      const child = spawn(command, args, { stdio: "ignore", detached: true });
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => {
+        child.unref();
+        resolve(true);
+      });
+    });
+  } catch {
+    return false;
+  }
 }
 
 function capitalize(value: string): string {

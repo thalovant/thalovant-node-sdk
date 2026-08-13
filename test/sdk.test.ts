@@ -15,7 +15,7 @@ import { HubDataPlaneEndpoints, HubProtocolSettings, selectDataPlaneEndpoint } f
 import { displayItemsFromEventData } from "../src/rich.js";
 import { ThalovantControlPlane } from "../src/control.js";
 import { ThalovantClient } from "../src/client.js";
-import { ThalovantConnectionError, ThalovantUnsupportedProtocolError } from "../src/errors.js";
+import { ThalovantApiError, ThalovantConnectionError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "../src/errors.js";
 import { HiveMindHttpTransport, HiveMindWSSTransport, mqttConnectionEndpoint, mqttTopicsForIdentity } from "../src/transport.js";
 import { decodeHiveBinaryFrame, encodeHiveBinaryFrame } from "../src/wire.js";
 
@@ -1412,4 +1412,200 @@ test("displayItemsFromEventData extracts text table image and choices", () => {
   assert.equal(items[0].text, "Hello");
   assert.equal(items[2].url, "https://example.com/image.png");
   assert.deepEqual((items[3].data as Record<string, unknown>[])[0].payload, "/continue");
+});
+
+const DEVICE_GRANT = {
+  device_code: "device-code-1",
+  user_code: "WDJB-MJHT",
+  verification_uri: "https://dash.thalovant.com/activate",
+  verification_uri_complete: "https://dash.thalovant.com/activate?user_code=WDJB-MJHT",
+  expires_in: 900,
+  interval: 0,
+};
+
+const DEVICE_TOKEN = {
+  access_token: "device-token",
+  token_type: "bearer",
+  scopes: ["hubs:read", "clients:write"],
+  expires_at: "2027-08-13T00:00:00Z",
+  token_id: "token-1",
+};
+
+/** Scripted fetch stub for the device-flow endpoints. */
+function deviceFlowFetch(tokenResponses: Array<[number, unknown]>) {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const responses = [...tokenResponses];
+  const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+    requests.push({ url: String(url), init });
+    assert.equal(init?.method, "POST");
+    assert.equal("authorization" in ((init?.headers ?? {}) as Record<string, string>), false);
+    if (String(url).endsWith("/v1/auth/device/authorize")) {
+      return jsonResponse(200, DEVICE_GRANT);
+    }
+    if (String(url).endsWith("/v1/auth/device/token")) {
+      assert.deepEqual(JSON.parse(String(init?.body)), { device_code: "device-code-1" });
+      const next = responses.shift();
+      assert.ok(next, "unexpected extra token poll");
+      return jsonResponse(next[0], next[1]);
+    }
+    throw new Error(`unexpected URL ${url}`);
+  }) as typeof fetch;
+  return { requests, fetchImpl };
+}
+
+test("control plane loginWithBrowser polls until token and stores it", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const { requests, fetchImpl } = deviceFlowFetch([
+    [400, { error: "authorization_pending" }],
+    [400, { error: "authorization_pending" }],
+    [200, DEVICE_TOKEN],
+  ]);
+  globalThis.fetch = fetchImpl;
+  const logs: string[] = [];
+  console.log = (...args: unknown[]) => {
+    logs.push(args.map(String).join(" "));
+  };
+  const opened: string[] = [];
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api");
+    const token = await api.loginWithBrowser({
+      scopes: ["hubs:read"],
+      clientName: "node-test",
+      openUrl: url => opened.push(url),
+    });
+
+    assert.deepEqual(token, DEVICE_TOKEN);
+    assert.equal(api.accessToken, "device-token");
+    assert.deepEqual(opened, ["https://dash.thalovant.com/activate?user_code=WDJB-MJHT"]);
+    assert.deepEqual(JSON.parse(String(requests[0].init?.body)), {
+      scopes: ["hubs:read"],
+      client_name: "node-test",
+    });
+    assert.equal(requests.length, 4);
+    assert.ok(
+      logs.some(line =>
+        line.includes("To sign in, visit https://dash.thalovant.com/activate and enter the code WDJB-MJHT"),
+      ),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  }
+});
+
+test("control plane loginWithBrowser custom prompt without opening a browser", async () => {
+  const originalFetch = globalThis.fetch;
+  const { requests, fetchImpl } = deviceFlowFetch([[200, DEVICE_TOKEN]]);
+  globalThis.fetch = fetchImpl;
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api");
+    const grants: unknown[] = [];
+    await api.loginWithBrowser({
+      openBrowser: false,
+      prompt: grant => grants.push(grant),
+      openUrl: () => assert.fail("browser must not open"),
+    });
+
+    assert.deepEqual(grants, [DEVICE_GRANT]);
+    assert.deepEqual(JSON.parse(String(requests[0].init?.body)), {});
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane device poll slow_down grows the interval", async () => {
+  const originalFetch = globalThis.fetch;
+  const { fetchImpl } = deviceFlowFetch([
+    [400, { error: "authorization_pending" }],
+    [400, { error: "slow_down" }],
+    [400, { error: "authorization_pending" }],
+    [200, DEVICE_TOKEN],
+  ]);
+  globalThis.fetch = fetchImpl;
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api");
+    const sleeps: number[] = [];
+    const token = await api.pollDeviceToken("device-code-1", {
+      intervalMs: 5000,
+      timeoutMs: 900000,
+      sleep: ms => {
+        sleeps.push(ms);
+      },
+      now: () => 0,
+    });
+
+    assert.deepEqual(token, DEVICE_TOKEN);
+    assert.deepEqual(sleeps, [5000, 10000, 10000]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane loginWithBrowser rejects on access_denied", async () => {
+  const originalFetch = globalThis.fetch;
+  const { fetchImpl } = deviceFlowFetch([[400, { error: "access_denied" }]]);
+  globalThis.fetch = fetchImpl;
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api");
+    await assert.rejects(
+      api.loginWithBrowser({ openBrowser: false, prompt: () => {} }),
+      (error: unknown) => error instanceof ThalovantApiError && /denied/.test((error as Error).message),
+    );
+    assert.equal(api.accessToken, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane loginWithBrowser rejects on expired_token", async () => {
+  const originalFetch = globalThis.fetch;
+  const { fetchImpl } = deviceFlowFetch([[400, { error: "expired_token" }]]);
+  globalThis.fetch = fetchImpl;
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api");
+    await assert.rejects(
+      api.loginWithBrowser({ openBrowser: false, prompt: () => {} }),
+      (error: unknown) =>
+        error instanceof ThalovantApiError && /expired/.test((error as Error).message) && /again/.test((error as Error).message),
+    );
+    assert.equal(api.accessToken, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane device poll times out", async () => {
+  const originalFetch = globalThis.fetch;
+  const { requests, fetchImpl } = deviceFlowFetch([
+    [400, { error: "authorization_pending" }],
+    [400, { error: "authorization_pending" }],
+    [400, { error: "authorization_pending" }],
+  ]);
+  globalThis.fetch = fetchImpl;
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api");
+    let nowMs = 0;
+    await assert.rejects(
+      api.pollDeviceToken("device-code-1", {
+        intervalMs: 5000,
+        timeoutMs: 10000,
+        sleep: ms => {
+          nowMs += ms;
+        },
+        now: () => nowMs,
+      }),
+      (error: unknown) => error instanceof ThalovantTimeoutError && /Timed out/.test((error as Error).message),
+    );
+    assert.equal(requests.length, 3);
+    assert.equal(nowMs, 10000);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
