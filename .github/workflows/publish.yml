@@ -48,8 +48,6 @@ jobs:
       NPM_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}
       NPM_AUTH_METHOD: ${{ github.event_name == 'workflow_dispatch' && inputs.auth || 'token' }}
       RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || '' }}
-      # npm rejects --provenance from private source repositories.
-      NPM_PROVENANCE_FLAG: ${{ github.event.repository.private && ' ' || '--provenance' }}
 
     steps:
       - name: Check out repository
@@ -127,13 +125,13 @@ jobs:
 
       - name: Publish with npm token
         if: steps.registry.outputs.exists == 'false' && env.NPM_AUTH_METHOD == 'token'
-        run: npm publish "${{ steps.artifacts.outputs.tarball }}" --access public --tag "$NPM_DIST_TAG" $NPM_PROVENANCE_FLAG
+        run: npm publish "${{ steps.artifacts.outputs.tarball }}" --access public --tag "$NPM_DIST_TAG" --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish with trusted publishing
         if: steps.registry.outputs.exists == 'false' && env.NPM_AUTH_METHOD == 'trusted'
-        run: npm publish "${{ steps.artifacts.outputs.tarball }}" --access public --tag "$NPM_DIST_TAG" $NPM_PROVENANCE_FLAG
+        run: npm publish "${{ steps.artifacts.outputs.tarball }}" --access public --tag "$NPM_DIST_TAG" --provenance
 
       - name: Verify npm version
         env:
