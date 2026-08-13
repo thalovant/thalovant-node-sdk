@@ -1,7 +1,7 @@
 {
   "name": "@thalovant/sdk",
-  "version": "0.2.23",
-  "description": "Node.js and TypeScript SDK for direct Thalovant hub data-plane clients and agents",
+  "version": "0.2.24",
+  "description": "Node.js, browser, and TypeScript SDK for direct Thalovant hub data-plane clients and agents",
   "type": "module",
   "license": "MIT",
   "author": "Thalovant",
@@ -35,8 +35,13 @@
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
+      "browser": "./dist/src/index.js",
       "import": "./dist/src/index.js"
     }
+  },
+  "browser": {
+    "./dist/src/platform/node.js": "./dist/src/platform/browser.js",
+    "./dist/src/transport-mqtt.js": "./dist/src/transport-mqtt.browser.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -45,6 +50,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2",
     "typescript": "^5.8.0"
   },
   "engines": {

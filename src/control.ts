@@ -1,6 +1,7 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { bytesToBase64Url, bytesToHex } from "./bytes.js";
 import { ThalovantApiError, ThalovantUnsupportedProtocolError } from "./errors.js";
 import { ThalovantIdentity } from "./identity.js";
+import { randomBytes, randomUUID } from "./platform/node.js";
 import {
   DEFAULT_PROTOCOL_PREFERENCE,
   endpointFromDomain,
@@ -12,7 +13,7 @@ import {
 } from "./protocols.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.23";
+const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.24";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -359,7 +360,7 @@ export class ThalovantControlPlane {
 }
 
 function newSecret(): string {
-  return randomBytes(32).toString("base64url");
+  return bytesToBase64Url(randomBytes(32));
 }
 
 function normalizeControlApiUrl(apiUrl: string): string {
@@ -404,7 +405,7 @@ function requiredString(values: JsonRecord, key: string): string {
 }
 
 function cleanSiteId(value: string): string {
-  return value.trim().replace(/_+/g, "-").replace(/\s+/g, "-") || `thalovant-client-${randomBytes(4).toString("hex")}`;
+  return value.trim().replace(/_+/g, "-").replace(/\s+/g, "-") || `thalovant-client-${bytesToHex(randomBytes(4))}`;
 }
 
 function defaultMaster(hub: JsonRecord, endpoints: HubDataPlaneEndpoints, selected?: SelectedHubEndpoint): string {

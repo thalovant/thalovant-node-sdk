@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.24
+
+- Browser support: the SDK now runs in browsers behind a bundler. The control plane (`login`, `listPublicHubs`, `createClientIdentity`, memory, analytics) and `ThalovantClient` over the `wss` and `https` protocols work in web bundles using the global `fetch`, the global `WebSocket`, and Web Crypto (AES-128-GCM via `crypto.subtle`).
+- Add a `browser` map plus a `browser` export condition to package.json so bundlers (esbuild, webpack, Vite, Rollup) substitute browser-safe platform modules and never pull `ws`, `mqtt`, `yaml`, or `node:` builtins into web bundles. The Node entry point and runtime behavior are unchanged.
+- The `mqtt` transport stays Node-only: constructing `HiveMindMqttTransport` (or calling `mqttTopicsForIdentity`/`mqttConnectionEndpoint`) in a browser throws `ThalovantUnsupportedProtocolError` with a clear message instead of breaking bundling.
+- Identity file helpers stay Node-only: `ThalovantIdentity.fromFile()`, `fromConfig()`, and `defaultConfigPath()` throw a descriptive `ThalovantIdentityError` in browsers; construct identities from in-memory objects there.
+- Add async crypto helpers `encryptAsJsonAsync`, `decryptFromJsonAsync`, `encryptAsBinaryAsync`, and `decryptBinaryAsync` that work on Node and browsers; transports now use them. The existing synchronous helpers keep working on Node and throw a descriptive error in browsers. Byte-oriented APIs (`runtimeCryptoKey`, `encryptAsBinary`, `decryptBinary`, `encodeHiveBinaryFrame`) are typed as `Uint8Array` but still return `Buffer` instances on Node.
+- Add a browser bundling smoke test (`test/browser-smoke.test.ts`, part of `npm test` and CI) that bundles the SDK with esbuild in `platform: "browser"` mode, asserts no Node builtins/`ws`/`mqtt` leak into the bundle, and executes the control-plane and WSS connect paths in a DOM-less sandbox with stubbed `fetch`/`WebSocket` and no real network. Adds `esbuild` as a devDependency.
+
 ## 0.2.23
 
 - Add optional `otpCode` and `recoveryCode` options to `controlPlane.login(email, password, options)` for MFA-enabled accounts. They are sent to `POST /v1/auth/token` as `otp_code` and `recovery_code` only when provided; accounts with MFA enabled receive HTTP 401 `mfa_required` without one.

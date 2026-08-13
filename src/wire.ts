@@ -1,4 +1,5 @@
-import { inflateSync } from "node:zlib";
+import { concatBytes, nativeBytes, utf8Decode, utf8Encode } from "./bytes.js";
+import { inflateBytes } from "./platform/node.js";
 
 export interface HiveWireMessage {
   msg_type: string;
@@ -44,22 +45,22 @@ const INT_TO_TYPE: Record<number, string> = {
   12: "bin",
 };
 
-export function encodeHiveBinaryFrame(message: HiveWireMessage): Buffer {
+export function encodeHiveBinaryFrame(message: HiveWireMessage): Uint8Array {
   const typeId = TYPE_TO_INT[message.msg_type] ?? 11;
-  const metadata = Buffer.from(JSON.stringify(message.metadata ?? {}), "utf8");
+  const metadata = utf8Encode(JSON.stringify(message.metadata ?? {}));
   if (metadata.length > 255) {
     throw new Error("HiveMind binary metadata cannot exceed 255 bytes.");
   }
-  const payload = Buffer.from(JSON.stringify(message.payload ?? {}), "utf8");
-  return Buffer.concat([
-    Buffer.from([0x80 | ((typeId & 0x1f) << 1), metadata.length]),
+  const payload = utf8Encode(JSON.stringify(message.payload ?? {}));
+  return nativeBytes(concatBytes(
+    Uint8Array.of(0x80 | ((typeId & 0x1f) << 1), metadata.length),
     metadata,
     payload,
-  ]);
+  ));
 }
 
-export function decodeHiveBinaryFrame(payload: Buffer | Uint8Array): HiveWireMessage {
-  const reader = new BitReader(Buffer.from(payload));
+export function decodeHiveBinaryFrame(payload: Uint8Array): HiveWireMessage {
+  const reader = new BitReader(payload);
   reader.skipLeftPadding();
   const versioned = reader.readBit() === 1;
   if (versioned) {
@@ -86,8 +87,8 @@ export function decodeHiveBinaryFrame(payload: Buffer | Uint8Array): HiveWireMes
   };
 }
 
-function bytesToText(bytes: Buffer, compressed: boolean): string {
-  return (compressed ? inflateSync(bytes) : bytes).toString("utf8");
+function bytesToText(bytes: Uint8Array, compressed: boolean): string {
+  return utf8Decode(compressed ? inflateBytes(bytes) : bytes);
 }
 
 function parseRecord(raw: string): Record<string, unknown> {
@@ -100,7 +101,7 @@ function parseRecord(raw: string): Record<string, unknown> {
 class BitReader {
   private bitOffset = 0;
 
-  constructor(private readonly payload: Buffer) {}
+  constructor(private readonly payload: Uint8Array) {}
 
   skipLeftPadding(): void {
     while (this.bitOffset < this.payload.length * 8 && this.readBit() === 0) {
@@ -126,13 +127,16 @@ class BitReader {
     return value;
   }
 
-  readBytes(length: number): Buffer {
-    return Buffer.from(Array.from({ length }, () => this.readUInt(8)));
+  readBytes(length: number): Uint8Array {
+    const out = new Uint8Array(length);
+    for (let index = 0; index < length; index += 1) {
+      out[index] = this.readUInt(8);
+    }
+    return out;
   }
 
-  readRemainingBytes(): Buffer {
+  readRemainingBytes(): Uint8Array {
     const remainingBits = this.payload.length * 8 - this.bitOffset;
-    const byteCount = Math.floor(remainingBits / 8);
-    return this.readBytes(byteCount);
+    return this.readBytes(Math.floor(remainingBits / 8));
   }
 }

@@ -222,6 +222,52 @@ topic prefix. The broker credentials are scoped to that client and should be
 treated like a password. Public identities should use `mqtts://`; the SDK also
 honors an explicit `tls: true` flag from the identity.
 
+## Using In The Browser
+
+The SDK also runs in browsers. The control plane (`login`, `listPublicHubs`,
+`createClientIdentity`, memory, analytics) uses the global `fetch`, and
+`ThalovantClient` works over the `wss` and `https` protocols using the global
+`WebSocket` and Web Crypto (`crypto.subtle`) for HiveMind payload encryption.
+
+package.json ships a `browser` map alongside the `exports` entry, so bundlers
+(esbuild, webpack, Vite, Rollup with `@rollup/plugin-node-resolve`) pick
+browser-safe modules automatically and never pull `ws`, `mqtt`, or `node:`
+builtins into web bundles. Bundle it like any other dependency:
+
+```bash
+esbuild app.js --bundle --platform=browser --outfile=dist/app.js
+```
+
+```ts
+// app.js — runs in the browser after bundling
+import { ThalovantClient, ThalovantControlPlane } from "@thalovant/sdk";
+
+const api = new ThalovantControlPlane();
+await api.login(email, password);
+const result = await api.createClientIdentity(hubId, { name: "web-kiosk" });
+
+const client = new ThalovantClient(result.identity, { protocol: "wss" });
+const reply = await client.ask("Hello from the browser.");
+console.log(reply.text);
+await client.close();
+```
+
+Browser caveats:
+
+- The `mqtt` protocol stays Node-only. Constructing the MQTT transport in a
+  browser throws `ThalovantUnsupportedProtocolError` with a clear message; use
+  `wss` or `https` instead.
+- Identity files and YAML configs stay Node-only: `ThalovantIdentity.fromFile()`,
+  `fromConfig()`, and `defaultConfigPath()` throw in browsers. Construct
+  `ThalovantIdentity` from an in-memory object (for example, the result of
+  `createClientIdentity`).
+- The synchronous crypto helpers (`encryptAsJson`, `decryptFromJson`,
+  `encryptAsBinary`, `decryptBinary`) throw in browsers; use the `*Async`
+  variants, which the transports already use on both platforms.
+- Browsers ignore the SDK `user-agent` header on control-plane requests, and a
+  client identity is a secret: only embed identities scoped to public or
+  kiosk-style hubs in web apps.
+
 ## Conversations
 
 Use a conversation when related turns should share one session.

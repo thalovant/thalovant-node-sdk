@@ -1,8 +1,10 @@
-import { readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
 import { ThalovantIdentityError } from "./errors.js";
+import {
+  defaultConfigPath as platformDefaultConfigPath,
+  envVar,
+  parseYamlText,
+  readSecretFile,
+} from "./platform/node.js";
 import { HubDataPlaneEndpoints, HubProtocol, HubProtocolSettings } from "./protocols.js";
 
 const DEFAULT_CONFIG_FILENAME = "config.yaml";
@@ -69,14 +71,9 @@ export interface MqttBrokerCredentialsInput {
   tls?: boolean | string | number;
 }
 
+/** Node-only: throws a ThalovantIdentityError in browsers. */
 export function defaultConfigPath(): string {
-  if (process.env.XDG_CONFIG_HOME) {
-    return join(process.env.XDG_CONFIG_HOME, "thalovant", DEFAULT_CONFIG_FILENAME);
-  }
-  if (process.platform === "win32" && process.env.APPDATA) {
-    return join(process.env.APPDATA, "Thalovant", DEFAULT_CONFIG_FILENAME);
-  }
-  return join(homedir(), ".config", "thalovant", DEFAULT_CONFIG_FILENAME);
+  return platformDefaultConfigPath(DEFAULT_CONFIG_FILENAME);
 }
 
 export class MqttBrokerCredentials {
@@ -183,10 +180,11 @@ export class ThalovantIdentity {
     this.mqtt = MqttBrokerCredentials.from(input.mqtt);
   }
 
+  /** Node-only: reading identity files throws a ThalovantIdentityError in browsers. */
   static async fromFile(path: string): Promise<ThalovantIdentity> {
-    await assertSecureIdentityFile(path);
+    const text = await readSecretFile(path, "identity file");
     try {
-      return new ThalovantIdentity(JSON.parse(await readFile(path, "utf8")) as IdentityInput);
+      return new ThalovantIdentity(JSON.parse(text) as IdentityInput);
     } catch (error) {
       if (error instanceof SyntaxError) {
         throw new ThalovantIdentityError(`Identity file is not valid JSON: ${path}`);
@@ -198,12 +196,13 @@ export class ThalovantIdentity {
     }
   }
 
+  /** Node-only: reading YAML config files throws a ThalovantIdentityError in browsers. */
   static async fromConfig(options: { path?: string; profile?: string } = {}): Promise<ThalovantIdentity> {
     const path = options.path ?? defaultConfigPath();
-    await assertSecureConfigFile(path);
+    const text = await readSecretFile(path, "Thalovant config file");
     let raw: unknown;
     try {
-      raw = parseYaml(await readFile(path, "utf8"));
+      raw = parseYamlText(text);
     } catch (error) {
       if (error instanceof ThalovantIdentityError) {
         throw error;
@@ -218,29 +217,29 @@ export class ThalovantIdentity {
 
   static fromEnv(prefix = "THALOVANT_"): ThalovantIdentity {
     return new ThalovantIdentity({
-      access_key: process.env[`${prefix}ACCESS_KEY`],
-      password: process.env[`${prefix}PASSWORD`],
-      crypto_key: process.env[`${prefix}CRYPTO_KEY`],
-      site_id: process.env[`${prefix}SITE_ID`],
-      default_master: process.env[`${prefix}HUB_HTTP_HOST`] ?? process.env[`${prefix}DEFAULT_MASTER`],
-      default_port: process.env[`${prefix}HUB_HTTP_PORT`] ?? process.env[`${prefix}DEFAULT_PORT`],
-      default_path: process.env[`${prefix}HUB_HTTP_PATH`] ?? process.env[`${prefix}DEFAULT_PATH`],
+      access_key: envVar(`${prefix}ACCESS_KEY`),
+      password: envVar(`${prefix}PASSWORD`),
+      crypto_key: envVar(`${prefix}CRYPTO_KEY`),
+      site_id: envVar(`${prefix}SITE_ID`),
+      default_master: envVar(`${prefix}HUB_HTTP_HOST`) ?? envVar(`${prefix}DEFAULT_MASTER`),
+      default_port: envVar(`${prefix}HUB_HTTP_PORT`) ?? envVar(`${prefix}DEFAULT_PORT`),
+      default_path: envVar(`${prefix}HUB_HTTP_PATH`) ?? envVar(`${prefix}DEFAULT_PATH`),
       data_plane_endpoints: {
-        https: process.env[`${prefix}HUB_HTTPS_HOST`] ?? process.env[`${prefix}HUB_HTTP_HOST`],
-        wss: process.env[`${prefix}HUB_WSS_HOST`] ?? process.env[`${prefix}HUB_WEBSOCKET_HOST`],
-        mqtt: process.env[`${prefix}HUB_MQTT_HOST`],
+        https: envVar(`${prefix}HUB_HTTPS_HOST`) ?? envVar(`${prefix}HUB_HTTP_HOST`),
+        wss: envVar(`${prefix}HUB_WSS_HOST`) ?? envVar(`${prefix}HUB_WEBSOCKET_HOST`),
+        mqtt: envVar(`${prefix}HUB_MQTT_HOST`),
       },
       mqtt: {
-        endpoint: process.env[`${prefix}MQTT_ENDPOINT`] ?? process.env[`${prefix}HUB_MQTT_HOST`],
-        username: process.env[`${prefix}MQTT_USERNAME`],
-        password: process.env[`${prefix}MQTT_PASSWORD`],
-        topic_prefix: process.env[`${prefix}MQTT_TOPIC_PREFIX`],
-        hub_id: process.env[`${prefix}MQTT_HUB_ID`],
-        c2s_topic: process.env[`${prefix}MQTT_C2S_TOPIC`],
-        s2c_topic: process.env[`${prefix}MQTT_S2C_TOPIC`],
-        status_topic: process.env[`${prefix}MQTT_STATUS_TOPIC`],
-        hash_topics: process.env[`${prefix}MQTT_HASH_TOPICS`],
-        qos: process.env[`${prefix}MQTT_QOS`],
+        endpoint: envVar(`${prefix}MQTT_ENDPOINT`) ?? envVar(`${prefix}HUB_MQTT_HOST`),
+        username: envVar(`${prefix}MQTT_USERNAME`),
+        password: envVar(`${prefix}MQTT_PASSWORD`),
+        topic_prefix: envVar(`${prefix}MQTT_TOPIC_PREFIX`),
+        hub_id: envVar(`${prefix}MQTT_HUB_ID`),
+        c2s_topic: envVar(`${prefix}MQTT_C2S_TOPIC`),
+        s2c_topic: envVar(`${prefix}MQTT_S2C_TOPIC`),
+        status_topic: envVar(`${prefix}MQTT_STATUS_TOPIC`),
+        hash_topics: envVar(`${prefix}MQTT_HASH_TOPICS`),
+        qos: envVar(`${prefix}MQTT_QOS`),
       },
     });
   }
@@ -314,30 +313,6 @@ function profileIdentityInput(profile: Record<string, unknown>): IdentityInput {
     return profile.identity as IdentityInput;
   }
   return profile as IdentityInput;
-}
-
-async function assertSecureConfigFile(path: string): Promise<void> {
-  await assertSecureSecretFile(path, "Thalovant config file");
-}
-
-async function assertSecureIdentityFile(path: string): Promise<void> {
-  await assertSecureSecretFile(path, "identity file");
-}
-
-async function assertSecureSecretFile(path: string, description: string): Promise<void> {
-  let mode: number;
-  try {
-    mode = (await stat(path)).mode & 0o777;
-  } catch (error) {
-    throw new ThalovantIdentityError(`Unable to read ${description}: ${path}`);
-  }
-  if (process.platform !== "win32" && (mode & 0o077) !== 0) {
-    throw new ThalovantIdentityError(`${capitalize(description)} is too permissive: ${path}. Run \`chmod 600 ${path}\`.`);
-  }
-}
-
-function capitalize(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
