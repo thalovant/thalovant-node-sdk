@@ -114,7 +114,7 @@ const page = await api.listHubs({ limit: 50 });
 
 ```bash
 # CI configuration
-export THALOVANT_API_TOKEN="thal_..."  # store in your CI secret manager
+export THALOVANT_API_TOKEN="tvpat_..."  # store in your CI secret manager
 ```
 
 Tokens minted through the dashboard or returned by `loginWithBrowser()` are
@@ -449,6 +449,20 @@ for (const item of reply.displayItems({ maxTextChars: 600 })) {
   is enabled. MQTT needs the per-client `identity.mqtt` credentials.
 - A request times out: pass a larger `timeoutMs` to `ask(...)` or
   `waitForEvent(...)`.
+- `HTTP 429` with `"code": "token_rate_limited"`: the API token exceeded its
+  plan's per-minute request rate (60 requests per minute on the free plan).
+  The response carries a `Retry-After` header and a matching
+  `retry_after_seconds`; wait that long and resend.
+- `HTTP 429` with `"code": "token_quota_exceeded"`: the API token exhausted its
+  plan's daily or monthly call quota. The body names which in `quota` (`daily`
+  or `monthly`) alongside `limit` and `used`, and `Retry-After` points at the
+  next UTC day or month boundary.
+
+Both 429s apply to token-authenticated control-plane calls and surface as
+`ThalovantApiError`, whose message embeds the status and the response body.
+The SDK does not retry automatically: `Retry-After` is authoritative, so honor
+it before resending. Per-plan limits are listed in the dashboard and at
+<https://docs.thalovant.com/developers/sdks/node/>.
 
 ## API Shape
 
