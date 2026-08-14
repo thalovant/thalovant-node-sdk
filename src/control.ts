@@ -13,7 +13,7 @@ import {
 } from "./protocols.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.25";
+const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.26";
 
 const DEFAULT_DEVICE_POLL_INTERVAL_MS = 5_000;
 const DEVICE_SLOW_DOWN_STEP_MS = 5_000;

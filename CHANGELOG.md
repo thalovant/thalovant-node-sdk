@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.26
+
+- Document the two HTTP 429 responses the control plane returns for token-authenticated calls: `token_rate_limited` (the plan's per-minute request rate, 60 requests per minute on the free plan) and `token_quota_exceeded` (the plan's daily or monthly call quota, reported in `quota`, `limit`, and `used`). Both carry a `Retry-After` header and a matching `retry_after_seconds`, `Retry-After` is authoritative, and the SDK does not retry automatically.
+- Correct the CI token example: minted API tokens use the `tvpat_` prefix, not `thal_`.
+
 ## 0.2.25
 
 - Add `controlPlane.loginWithBrowser(options)`: sign in through the browser device flow (`POST /v1/auth/device/authorize` plus `POST /v1/auth/device/token`), the sign-in path for accounts without a password such as Google sign-in. It prints `To sign in, visit <verification_uri> and enter the code <user_code>` (override with `prompt`), makes a best-effort attempt to open the default browser at `verification_uri_complete` (disable with `openBrowser: false`), and polls with `authorization_pending` and `slow_down` handling until the request is approved, denied, expired, or `timeoutMs` (default 15 minutes) elapses. On approval the returned durable scoped API token is stored on `accessToken` exactly like `login()`; `access_denied`, `expired_token`, and timeout reject with clear errors.
