@@ -11,9 +11,11 @@ import {
   SelectedHubEndpoint,
   selectDataPlaneEndpoint,
 } from "./protocols.js";
+import { USER_AGENT } from "./version.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
-const DEFAULT_CONTROL_USER_AGENT = "ThalovantNodeSDK/0.2.26";
+/** Control-plane user agent. Derived from the one version constant, never pinned. */
+const DEFAULT_CONTROL_USER_AGENT = USER_AGENT;
 
 const DEFAULT_DEVICE_POLL_INTERVAL_MS = 5_000;
 const DEVICE_SLOW_DOWN_STEP_MS = 5_000;
