@@ -1,3 +1,5 @@
+import { USER_AGENT } from "./version.js";
+
 export const EVENT_RECOGNIZER_LOOP_UTTERANCE = "recognizer_loop:utterance";
 export const EVENT_SPEAK = "speak";
 export const EVENT_OVOS_UTTERANCE_SPEAK = "ovos.utterance.speak";
@@ -12,4 +14,5 @@ export const FAILURE_EVENTS = new Set([
   EVENT_QUERY_TIMEOUT,
 ]);
 
-export const DEFAULT_USER_AGENT = "ThalovantNodeSDK/0.2.26";
+/** Data-plane user agent. Derived from the one version constant, never pinned. */
+export const DEFAULT_USER_AGENT = USER_AGENT;

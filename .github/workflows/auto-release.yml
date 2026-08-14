@@ -72,6 +72,8 @@ jobs:
           }
 
           function replaceRequired(path, oldText, newText) {
+            // Fail loudly: a literal that no longer matches would no-op in
+            // silence, which is how user agents drift for releases at a time.
             const source = fs.readFileSync(path, "utf8");
             if (!source.includes(oldText)) {
               throw new Error(`${path} does not contain the expected release version ${oldText}`);
@@ -94,13 +96,15 @@ jobs:
           let version = currentVersion();
           if (tagExists(`v${version}`)) {
             const nextVersion = bumpPatch(version);
+            // npm version rewrites package.json and package-lock.json. Every
+            // user agent is derived from src/version.ts SDK_VERSION, so that
+            // one literal is the whole remaining release bump; src/constants.ts
+            // and src/control.ts no longer carry a version of their own.
             execFileSync("npm", ["version", nextVersion, "--no-git-tag-version"], { stdio: "inherit" });
-            for (const path of ["src/constants.ts", "src/control.ts"]) {
-              replaceRequired(path, `ThalovantNodeSDK/${version}`, `ThalovantNodeSDK/${nextVersion}`);
-            }
+            replaceRequired("src/version.ts", `export const SDK_VERSION = "${version}"`, `export const SDK_VERSION = "${nextVersion}"`);
             git(["config", "user.name", "github-actions[bot]"]);
             git(["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"]);
-            git(["add", "package.json", "package-lock.json", "src/constants.ts", "src/control.ts"]);
+            git(["add", "package.json", "package-lock.json", "src/version.ts"]);
             git(["commit", "-m", `release: bump Node SDK to ${nextVersion}`]);
             git(["push", "origin", "HEAD:main"]);
             version = nextVersion;

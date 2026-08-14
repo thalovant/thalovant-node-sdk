@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.27
+
+- Derive every user agent from a single version constant. `src/version.ts` now owns `SDK_VERSION` and builds `USER_AGENT` from it; `DEFAULT_USER_AGENT` (data plane) and the control plane's default user agent are that one value. Both keep their names and their exact string values, and no runtime behavior changes. The new module imports nothing and reads no files, so browser bundles are unaffected.
+- Add `test/version.test.ts`: every user agent must equal `ThalovantNodeSDK/<SDK_VERSION>` as derived (never a hard-coded literal), `SDK_VERSION` must equal the `version` in package.json, and no file under `src/` may hard-code a version inside a user-agent string. This closes the drift class that shipped a stale data-plane user agent in the Python SDK for four releases.
+- Repository automation: `auto-release.yml` no longer rewrites the user agents in `src/constants.ts` and `src/control.ts`; it bumps `package.json`, `package-lock.json`, and `src/version.ts` only, and every literal replacement still fails loudly instead of silently matching nothing.
+
 ## 0.2.26
 
 - Document the two HTTP 429 responses the control plane returns for token-authenticated calls: `token_rate_limited` (the plan's per-minute request rate, 60 requests per minute on the free plan) and `token_quota_exceeded` (the plan's daily or monthly call quota, reported in `quota`, `limit`, and `used`). Both carry a `Retry-After` header and a matching `retry_after_seconds`, `Retry-After` is authoritative, and the SDK does not retry automatically.
