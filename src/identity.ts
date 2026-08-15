@@ -65,16 +65,6 @@ export interface MqttBrokerCredentialsInput {
   brokerPassword?: string;
   topic_prefix?: string;
   topicPrefix?: string;
-  hub_id?: string;
-  hubId?: string;
-  c2s_topic?: string;
-  c2sTopic?: string;
-  s2c_topic?: string;
-  s2cTopic?: string;
-  status_topic?: string;
-  statusTopic?: string;
-  hash_topics?: boolean | string | number;
-  hashTopics?: boolean | string | number;
   qos?: number | string;
   tls?: boolean | string | number;
 }
@@ -89,11 +79,6 @@ export class MqttBrokerCredentials {
   readonly username: string;
   readonly password: string;
   readonly topicPrefix?: string;
-  readonly hubId?: string;
-  readonly c2sTopic?: string;
-  readonly s2cTopic?: string;
-  readonly statusTopic?: string;
-  readonly hashTopics: boolean;
   readonly qos: number;
   readonly tls: boolean;
 
@@ -102,11 +87,6 @@ export class MqttBrokerCredentials {
     this.username = required(input.username ?? input.broker_username ?? input.brokerUsername, "mqtt.username");
     this.password = required(input.password ?? input.broker_password ?? input.brokerPassword, "mqtt.password");
     this.topicPrefix = optional(input.topic_prefix ?? input.topicPrefix);
-    this.hubId = optional(input.hub_id ?? input.hubId);
-    this.c2sTopic = optional(input.c2s_topic ?? input.c2sTopic);
-    this.s2cTopic = optional(input.s2c_topic ?? input.s2cTopic);
-    this.statusTopic = optional(input.status_topic ?? input.statusTopic);
-    this.hashTopics = boolValue(input.hash_topics ?? input.hashTopics, false);
     this.qos = numberValue(input.qos, 1);
     this.tls = boolValue(input.tls, this.endpoint.startsWith("mqtts://"));
   }
@@ -134,21 +114,6 @@ export class MqttBrokerCredentials {
       data.password = this.password;
       if (this.topicPrefix) {
         data.topic_prefix = this.topicPrefix;
-      }
-      if (this.hubId) {
-        data.hub_id = this.hubId;
-      }
-      if (this.c2sTopic) {
-        data.c2s_topic = this.c2sTopic;
-      }
-      if (this.s2cTopic) {
-        data.s2c_topic = this.s2cTopic;
-      }
-      if (this.statusTopic) {
-        data.status_topic = this.statusTopic;
-      }
-      if (this.hashTopics) {
-        data.hash_topics = true;
       }
       if (this.qos !== 1) {
         data.qos = this.qos;
@@ -262,11 +227,6 @@ export class ThalovantIdentity {
         username: envVar(`${prefix}MQTT_USERNAME`),
         password: envVar(`${prefix}MQTT_PASSWORD`),
         topic_prefix: envVar(`${prefix}MQTT_TOPIC_PREFIX`),
-        hub_id: envVar(`${prefix}MQTT_HUB_ID`),
-        c2s_topic: envVar(`${prefix}MQTT_C2S_TOPIC`),
-        s2c_topic: envVar(`${prefix}MQTT_S2C_TOPIC`),
-        status_topic: envVar(`${prefix}MQTT_STATUS_TOPIC`),
-        hash_topics: envVar(`${prefix}MQTT_HASH_TOPICS`),
         qos: envVar(`${prefix}MQTT_QOS`),
       },
     });
