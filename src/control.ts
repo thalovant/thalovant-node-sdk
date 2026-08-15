@@ -11,6 +11,7 @@ import {
   SelectedHubEndpoint,
   selectDataPlaneEndpoint,
 } from "./protocols.js";
+import { REDACTED, redactSecretsInText, withoutSecretKeys } from "./redact.js";
 import { USER_AGENT } from "./version.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
@@ -20,9 +21,6 @@ const DEFAULT_CONTROL_USER_AGENT = USER_AGENT;
 const DEFAULT_DEVICE_POLL_INTERVAL_MS = 5_000;
 const DEVICE_SLOW_DOWN_STEP_MS = 5_000;
 const DEFAULT_DEVICE_LOGIN_TIMEOUT_MS = 900_000;
-
-/** Placeholder shown instead of secret values in debug/log output. */
-const REDACTED = "[redacted]";
 
 /**
  * Node's `util.inspect` extension point (used by `console.log`). Registered
@@ -901,7 +899,14 @@ export class ThalovantControlPlane {
     };
     if (options.ownerId) payload.owner_id = options.ownerId;
 
-    const client = await this.createClient(payload, { idempotencyKey: options.idempotencyKey });
+    // Send POST /v1/clients directly (rather than via createClient) so the
+    // generated apiKey/password/cryptoKey can be scrubbed from any thrown
+    // error: this route echoes the sent spec on validation failures.
+    const client = await this.request("POST", "/v1/clients", {
+      body: payload,
+      headers: { "Idempotency-Key": options.idempotencyKey ?? randomUUID() },
+      redactSecrets: [apiKey, password, cryptoKey],
+    });
     const protocols = HubProtocolSettings.from(hubResource);
     const endpoints = HubDataPlaneEndpoints.fromHub(hubResource);
     const endpoint = selectDataPlaneEndpoint(
@@ -964,11 +969,17 @@ export class ThalovantControlPlane {
   private async request(
     method: string,
     path: string,
-    options: { body?: JsonRecord; headers?: Record<string, string>; auth?: boolean } = {},
+    options: {
+      body?: JsonRecord;
+      headers?: Record<string, string>;
+      auth?: boolean;
+      /** SDK-generated secrets sent in this request, scrubbed from any error. */
+      redactSecrets?: ReadonlyArray<string | undefined>;
+    } = {},
   ): Promise<JsonRecord> {
     const response = await this.send(method, path, options);
     if (!response.ok) {
-      throw new ThalovantApiError(apiErrorMessage(response.status, await response.text()));
+      throw new ThalovantApiError(apiErrorMessage(response.status, await response.text(), options.redactSecrets));
     }
     const text = await response.text();
     if (!text.trim()) {
@@ -1104,61 +1115,17 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 /**
- * Key names holding secrets in control-plane hub/client records, compared
- * after lowercasing and removing `_`/`-` so both spellings of each key match
- * (`apiKey`/`api_key`, `cryptoKey`/`crypto_key`, ...). `initial_identify` is
- * the whole credential bundle `POST /v1/clients` returns.
- */
-const SECRET_RECORD_KEYS = new Set([
-  "initialidentify",
-  "initialidentifytoken",
-  "accesskey",
-  "apikey",
-  "clientsecret",
-  "cryptokey",
-  "password",
-  "privatekey",
-  "secret",
-]);
-
-function isSecretRecordKey(key: string): boolean {
-  return SECRET_RECORD_KEYS.has(key.toLowerCase().replace(/[_-]/g, ""));
-}
-
-/**
- * Deep copy of a control-plane record with secret-named keys omitted, the
- * same way `ThalovantIdentity.asObject()` omits its secrets by default. Used
- * only for the human-facing `asObject()` view; wire payloads and the
- * `includeSecrets: true` path never go through it.
- */
-function withoutSecretKeys(value: JsonRecord): JsonRecord {
-  const result: JsonRecord = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (isSecretRecordKey(key)) continue;
-    result[key] = withoutNestedSecretKeys(entry);
-  }
-  return result;
-}
-
-function withoutNestedSecretKeys(value: unknown): unknown {
-  if (isRecord(value)) {
-    return withoutSecretKeys(value);
-  }
-  if (Array.isArray(value)) {
-    return value.map(entry => withoutNestedSecretKeys(entry));
-  }
-  return value;
-}
-
-/**
  * Build a thrown-error message from an HTTP status and response body without
  * ever embedding the raw body: bodies can echo request secrets (for example
- * `POST /v1/clients` validation errors repeating the sent spec). Structured
- * JSON keeps only a short string detail field; non-JSON bodies keep a
- * newline-stripped snippet bounded to {@link MAX_ERROR_DETAIL_LENGTH}.
+ * `POST /v1/clients` validation errors repeating the sent spec). Any secrets
+ * the SDK itself generated and sent (`redactSecrets`) are scrubbed from the
+ * body first — before bounding, so a truncated secret cannot survive. Then
+ * structured JSON keeps only a short string detail field, and non-JSON bodies
+ * keep a newline-stripped snippet bounded to {@link MAX_ERROR_DETAIL_LENGTH}.
  */
-function apiErrorMessage(status: number, bodyText: string): string {
-  const detail = apiErrorDetail(bodyText);
+function apiErrorMessage(status: number, bodyText: string, redactSecrets?: ReadonlyArray<string | undefined>): string {
+  const safeBody = redactSecrets?.length ? redactSecretsInText(bodyText, redactSecrets) : bodyText;
+  const detail = apiErrorDetail(safeBody);
   return detail
     ? `Thalovant API request failed with HTTP ${status}: ${detail}`
     : `Thalovant API request failed with HTTP ${status}.`;

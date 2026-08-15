@@ -6,11 +6,9 @@ import {
   readSecretFile,
 } from "./platform/node.js";
 import { HubDataPlaneEndpoints, HubProtocol, HubProtocolSettings } from "./protocols.js";
+import { REDACTED, redactUrlUserinfo, withoutSecretKeys } from "./redact.js";
 
 const DEFAULT_CONFIG_FILENAME = "config.yaml";
-
-/** Placeholder shown instead of secret values in debug/log output. */
-const REDACTED = "[redacted]";
 
 /**
  * Node's `util.inspect` extension point (used by `console.log`). Registered
@@ -126,7 +124,9 @@ export class MqttBrokerCredentials {
 
   asObject(includeSecrets = false): Record<string, unknown> {
     const data: Record<string, unknown> = {
-      endpoint: this.endpoint,
+      // The broker URL can carry `user:pass@` userinfo; strip it in the
+      // default view but keep the raw endpoint under includeSecrets.
+      endpoint: includeSecrets ? this.endpoint : redactUrlUserinfo(this.endpoint),
       tls: this.tls,
     };
     if (includeSecrets) {
@@ -301,7 +301,9 @@ export class ThalovantIdentity {
   asObject(includeSecrets = false): Record<string, unknown> {
     const data: Record<string, unknown> = {
       site_id: this.siteId,
-      default_master: this.defaultMaster,
+      // default_master may carry `user:pass@` userinfo; strip it in the
+      // default view, keep it raw under includeSecrets.
+      default_master: includeSecrets ? this.defaultMaster : redactUrlUserinfo(this.defaultMaster),
       default_port: this.defaultPort,
       default_path: this.defaultPath,
     };
@@ -310,7 +312,9 @@ export class ThalovantIdentity {
       data.data_plane_endpoints = endpoints;
     }
     if (Object.keys(this.metadata).length > 0) {
-      data.metadata = { ...this.metadata };
+      // metadata is free-form; secret-named entries (nested included) are
+      // dropped from the default view, but kept verbatim under includeSecrets.
+      data.metadata = includeSecrets ? { ...this.metadata } : withoutSecretKeys(this.metadata);
     }
     if (includeSecrets) {
       data.access_key = this.accessKey;

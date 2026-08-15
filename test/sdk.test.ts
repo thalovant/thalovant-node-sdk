@@ -1344,6 +1344,129 @@ test("identity, MQTT credentials, and control plane redact secrets in debug outp
   assert.equal(reloaded.mqtt?.password, "mqtt-password-XYZ");
 });
 
+test("default identity view redacts metadata secrets and endpoint userinfo", () => {
+  const identity = new ThalovantIdentity({
+    access_key: "ak",
+    password: "pw",
+    crypto_key: "ck",
+    site_id: "site",
+    default_master: "wss://alice:master-userinfo-SECRET@hub.example.com",
+    data_plane_endpoints: { wss: "wss://alice:endpoint-userinfo-SECRET@hub.example.com" },
+    metadata: {
+      owner: "owner-1",
+      api_key: "META-APIKEY-SECRET",
+      nested: { password: "META-NESTED-SECRET", label: "keep-me" },
+      tags: [{ token: "META-ARRAY-SECRET", name: "keep-too" }],
+    },
+    mqtt: {
+      endpoint: "mqtts://mquser:mqtt-userinfo-SECRET@broker.example.com:8883",
+      username: "mquser",
+      password: "mqtt-broker-SECRET",
+    },
+  });
+
+  // Default view: free-form metadata is filtered so secret-named keys (nested
+  // and inside arrays) are dropped, while non-secret entries survive.
+  const def = identity.asObject();
+  assert.deepEqual(def.metadata, {
+    owner: "owner-1",
+    nested: { label: "keep-me" },
+    tags: [{ name: "keep-too" }],
+  });
+
+  // URL userinfo is stripped from default_master, the data-plane endpoints,
+  // and the MQTT endpoint in the default view.
+  const serialized = JSON.stringify(def);
+  for (const secret of [
+    "META-APIKEY-SECRET",
+    "META-NESTED-SECRET",
+    "META-ARRAY-SECRET",
+    "master-userinfo-SECRET",
+    "endpoint-userinfo-SECRET",
+    "mqtt-userinfo-SECRET",
+    "mqtt-broker-SECRET",
+  ]) {
+    assert.ok(!serialized.includes(secret), `default identity view leaked ${secret}`);
+  }
+  // The redacted URLs drop only the userinfo and still resolve to the host
+  // (asserted by exact equality, never a hostname substring match).
+  assert.equal(def.default_master, "wss://hub.example.com/");
+  assert.equal((def.mqtt as Record<string, unknown>).endpoint, "mqtts://broker.example.com:8883");
+
+  // includeSecrets: true keeps metadata and every URL verbatim (persistence).
+  const full = identity.asObject(true);
+  assert.deepEqual(full.metadata, {
+    owner: "owner-1",
+    api_key: "META-APIKEY-SECRET",
+    nested: { password: "META-NESTED-SECRET", label: "keep-me" },
+    tags: [{ token: "META-ARRAY-SECRET", name: "keep-too" }],
+  });
+  assert.equal(full.default_master, "wss://alice:master-userinfo-SECRET@hub.example.com");
+  assert.equal(
+    (full.mqtt as Record<string, unknown>).endpoint,
+    "mqtts://mquser:mqtt-userinfo-SECRET@broker.example.com:8883",
+  );
+
+  // The wire path reads identity.metadata directly; it must stay untouched.
+  assert.equal((identity.metadata.nested as Record<string, unknown>).password, "META-NESTED-SECRET");
+
+  // toString / util.inspect inherit the default-view redaction.
+  for (const rendered of [String(identity), inspect(identity)]) {
+    for (const secret of ["META-APIKEY-SECRET", "META-NESTED-SECRET", "master-userinfo-SECRET", "mqtt-broker-SECRET"]) {
+      assert.ok(!rendered.includes(secret), `identity debug output leaked ${secret}`);
+    }
+  }
+});
+
+test("createClientIdentity scrubs generated secrets from API error messages", async () => {
+  const originalFetch = globalThis.fetch;
+  let sentApiKey = "";
+  let sentPassword = "";
+  let sentCryptoKey = "";
+  globalThis.fetch = async (url, init) => {
+    const target = String(url);
+    if (target.endsWith("/v1/hubs/hub-1")) {
+      return jsonResponse(200, {
+        id: "hub-1",
+        name: "joke-garden",
+        domain: "jokes.thalovant.io",
+        spec: { protocols: { wss: { enabled: true }, http: { enabled: true }, mqtt: { enabled: false } } },
+      });
+    }
+    if (target.endsWith("/v1/clients")) {
+      const payload = JSON.parse(String(init?.body)) as Record<string, any>;
+      sentApiKey = payload.spec.apiKey;
+      sentPassword = payload.spec.password;
+      sentCryptoKey = payload.spec.cryptoKey;
+      // Worst case: the server echoes the sent secrets inside the detail
+      // string itself, where the known-fields filter alone cannot help.
+      return jsonResponse(400, {
+        detail: `spec rejected: apiKey=${payload.spec.apiKey} password=${payload.spec.password} cryptoKey=${payload.spec.cryptoKey}`,
+      });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    await assert.rejects(
+      () => api.createClientIdentity("hub-1", { name: "kiosk" }),
+      (error: unknown) => {
+        assert.ok(error instanceof ThalovantApiError);
+        const message = (error as Error).message;
+        assert.match(message, /HTTP 400/);
+        assert.ok(sentApiKey.length >= 8 && sentPassword.length >= 8 && sentCryptoKey.length >= 8);
+        for (const secret of [sentApiKey, sentPassword, sentCryptoKey]) {
+          assert.ok(!message.includes(secret), "createClientIdentity error leaked a generated secret");
+        }
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("control plane API errors keep a bounded detail and never the raw body", async () => {
   const originalFetch = globalThis.fetch;
   const secret = "sk-response-echo-SECRET";

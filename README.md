@@ -60,12 +60,21 @@ try {
 a different URL only for local development or a self-hosted control plane.
 
 Keep `result.identity` secret. It contains the client credentials used by the
-hub. The default `result.asObject()` is safe to log: it omits every secret
-(the identity credentials, the client record's `initial_identify` bundle, and
-the echoed spec keys). `result.asObject({ includeSecrets: true })` contains
-the real credentials — use it only to persist the identity, and never log it.
-Logging the objects themselves is also safe: `console.log` of a
-`ThalovantIdentity` or `ThalovantControlPlane` prints a redacted form.
+hub. The default `result.asObject()` is safe to log: it omits the credential
+fields (the identity credentials, the client record's `initial_identify`
+bundle, and the echoed spec keys), drops secret-named entries from free-form
+`metadata` (nested values included), and strips any `user:pass@` userinfo from
+endpoint URLs. `result.asObject({ includeSecrets: true })` contains the real
+credentials — use it only to persist the identity, and never log it.
+
+For quick debugging, `console.log` of a `ThalovantIdentity`,
+`MqttBrokerCredentials`, or `ThalovantControlPlane` prints a redacted form in
+Node (via the `util.inspect` hook), and `String(value)` / template literals
+print the same redacted form in Node and browsers. Browser devtools, however,
+enumerate an object's own properties directly, so `console.log(identity)` in a
+browser can still show the raw credential fields — in browser code, log
+`identity.asObject()` (or the `String(...)` form) rather than the object
+itself.
 
 ## Sign In Without A Password
 
