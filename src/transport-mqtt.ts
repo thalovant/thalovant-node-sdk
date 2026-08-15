@@ -142,10 +142,13 @@ export function mqttTopicsForIdentity(identity: ThalovantIdentity): MqttTopicSet
   if (!credentials) {
     throw new ThalovantConnectionError("The identity does not include MQTT broker credentials.");
   }
-  const prefix = stripSlashes(credentials.topicPrefix);
+  // Trim surrounding whitespace before stripping "/", so a whitespace-only (or
+  // slash-only) prefix collapses to "" and is rejected as missing below.
+  const prefix = stripSlashes(credentials.topicPrefix?.trim());
   if (!prefix) {
     throw new ThalovantConnectionError("MQTT credentials must include topic_prefix.");
   }
+  assertTopicPrefixCharacters(prefix);
   return {
     inbound: `${prefix}/in`,
     outbound: `${prefix}/out`,
@@ -169,6 +172,26 @@ function stripSlashes(value: string | undefined): string {
   while (start < end && value[start] === "/") start++;
   while (end > start && value[end - 1] === "/") end--;
   return value.slice(start, end);
+}
+
+/**
+ * Reject a `topic_prefix` that would corrupt the derived topics. `#` and `+`
+ * are MQTT wildcards — a `+` prefix turns `<prefix>/out` into a wildcard
+ * subscription and makes `<prefix>/in` an invalid publish topic name, and `#`
+ * is invalid in both — while spaces and control characters (code point below
+ * U+0020, which includes the MQTT-forbidden U+0000) have no place in the
+ * `hivemind/<hub-id>/<access-key>` prefix. Implemented as a character scan,
+ * never a regex, so CodeQL's `js/polynomial-redos` cannot flag it.
+ */
+function assertTopicPrefixCharacters(prefix: string): void {
+  for (const char of prefix) {
+    const code = char.codePointAt(0) ?? 0;
+    if (char === "#" || char === "+" || char === " " || code < 0x20) {
+      throw new ThalovantConnectionError(
+        "MQTT topic_prefix contains characters that are not valid in an MQTT topic.",
+      );
+    }
+  }
 }
 
 function safeMqttClientId(value: string): string {
