@@ -9,6 +9,16 @@ import { HubDataPlaneEndpoints, HubProtocol, HubProtocolSettings } from "./proto
 
 const DEFAULT_CONFIG_FILENAME = "config.yaml";
 
+/** Placeholder shown instead of secret values in debug/log output. */
+const REDACTED = "[redacted]";
+
+/**
+ * Node's `util.inspect` extension point (used by `console.log`). Registered
+ * through `Symbol.for`, which exists on every platform, so this file stays
+ * browser-safe; browsers simply never call the method.
+ */
+const customInspect: unique symbol = Symbol.for("nodejs.util.inspect.custom");
+
 export interface IdentityInput {
   accessKey?: string;
   access_key?: string;
@@ -145,6 +155,24 @@ export class MqttBrokerCredentials {
       }
     }
     return data;
+  }
+
+  /**
+   * Human-readable form with the broker credentials redacted. Debug/display
+   * only — the transports read `username`/`password` directly, and
+   * `asObject(true)` still returns the real values.
+   */
+  toString(): string {
+    return `MqttBrokerCredentials ${JSON.stringify({
+      ...this.asObject(false),
+      username: REDACTED,
+      password: REDACTED,
+    })}`;
+  }
+
+  /** Node `console.log`/`util.inspect` print the redacted form, never secrets. */
+  [customInspect](): string {
+    return this.toString();
   }
 }
 
@@ -293,6 +321,26 @@ export class ThalovantIdentity {
       data.mqtt = this.mqtt.asObject(includeSecrets);
     }
     return data;
+  }
+
+  /**
+   * Human-readable form with `access_key`, `password`, and `crypto_key`
+   * redacted. Debug/display only — it never feeds the wire protocol or
+   * identity-file persistence, and `asObject(true)` still returns the real
+   * values. `JSON.stringify(identity)` is intentionally left untouched.
+   */
+  toString(): string {
+    return `ThalovantIdentity ${JSON.stringify({
+      ...this.asObject(false),
+      access_key: REDACTED,
+      password: REDACTED,
+      ...(this.cryptoKey ? { crypto_key: REDACTED } : {}),
+    })}`;
+  }
+
+  /** Node `console.log`/`util.inspect` print the redacted form, never secrets. */
+  [customInspect](): string {
+    return this.toString();
   }
 }
 

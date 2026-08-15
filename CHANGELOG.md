@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.29
+
+Security hardening release. No new endpoints or features.
+
+- **BREAKING**: remove the admin analytics branch. `getAnalyticsOverview()` no longer accepts `admin` or `ownerId` and always calls `GET /v1/analytics/overview`; the `GET /v1/admin/analytics/overview` path is gone from the SDK. This SDK is for non-admin Thalovant customers, whose tokens can never use the admin route.
+- `createClientIdentity()` result: the default `asObject()` now scrubs the raw `hub`/`client` records too, not just `identity`. The client record's `initial_identify` credential bundle, `initial_identify_token`, and secret-named keys (`apiKey`/`api_key`, `password`, `cryptoKey`/`crypto_key`, `accessKey`/`access_key`, and similar) are omitted unless you pass `{ includeSecrets: true }`, which still returns the raw records unchanged. The `result.hub`/`result.client` properties themselves are untouched.
+- `ThalovantIdentity`, `MqttBrokerCredentials`, and `ThalovantControlPlane` now redact secrets from debug output: `console.log`/`util.inspect` (via `Symbol.for("nodejs.util.inspect.custom")`) and `toString()` print `[redacted]` instead of `access_key`, `password`, `crypto_key`, the MQTT broker credentials, and the control plane's bearer `accessToken`. No `toJSON` was added, so `JSON.stringify` persistence of an identity and the wire protocol are byte-for-byte unchanged, and `asObject(true)` still returns real values.
+- Thrown `ThalovantApiError` messages no longer embed the raw HTTP response body (which can echo request secrets, for example `POST /v1/clients` validation errors repeating the sent spec). They keep the status plus a short, newline-stripped server detail bounded to 160 characters: structured JSON bodies contribute only a recognized string detail field, and unrecognized JSON is dropped entirely.
+- `pollDeviceToken()` and `DevicePollOptions` are now marked `@internal` and stripped from the published type declarations; every other Thalovant SDK keeps the device-token poll internal. The method still exists at runtime and `loginWithBrowser()` is unaffected, but TypeScript consumers should use `loginWithBrowser()` instead.
+- README: the "do not log" guidance now says the default `asObject()` is safe to log and that `asObject({ includeSecrets: true })` must never be logged.
+
 ## 0.2.28
 
 - Add the hub provisioning surface, which was read-only until now: `createHub(payload, options)`, `updateHub(hubId, payload, { etag })`, `deleteHub(hubId, { etag })`, `releaseHub(hubId, options)`, `setHubRating(hubId, rating)`, `clearHubRating(hubId)`, and `getHubRuntimeCapabilities(hubId)`.

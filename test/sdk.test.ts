@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { inspect } from "node:util";
 import { WebSocketServer } from "ws";
 import { buildClientContext } from "../src/context.js";
 import { decryptBinary, decryptFromJson, encryptAsBinary, encryptAsJson, runtimeCryptoKey } from "../src/crypto.js";
@@ -1100,11 +1101,12 @@ test("control plane fetches analytics overview", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     const parsed = new URL(String(url));
-    assert.equal(parsed.pathname, "/api/v1/admin/analytics/overview");
+    // Only the tenant-scoped route exists; the SDK has no /v1/admin surface.
+    assert.equal(parsed.pathname, "/api/v1/analytics/overview");
     assert.equal((init?.headers as Record<string, string>).authorization, "Bearer token");
     assert.equal(parsed.searchParams.get("range"), "30d");
     assert.equal(parsed.searchParams.get("bucket"), "1d");
-    assert.equal(parsed.searchParams.get("owner_id"), "owner-1");
+    assert.equal(parsed.searchParams.has("owner_id"), false);
     assert.equal(parsed.searchParams.get("hub_id"), "hub-1");
     assert.equal(parsed.searchParams.get("client_id"), "client-1");
     assert.equal(parsed.searchParams.get("country"), "CA");
@@ -1115,16 +1117,14 @@ test("control plane fetches analytics overview", async () => {
     assert.equal(parsed.searchParams.get("time_end"), "2026-05-03T21:00:00Z");
     assert.equal(parsed.searchParams.get("weekday"), "6");
     assert.equal(parsed.searchParams.get("hour"), "0");
-    return jsonResponse(200, { meta: { scope: "admin" }, totals: { utterances: 7 } });
+    return jsonResponse(200, { meta: { scope: "tenant" }, totals: { utterances: 7 } });
   };
 
   try {
     const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
     const overview = await api.getAnalyticsOverview({
-      admin: true,
       range: "30d",
       bucket: "1d",
-      ownerId: "owner-1",
       hubId: "hub-1",
       clientId: "client-1",
       country: "CA",
@@ -1137,7 +1137,7 @@ test("control plane fetches analytics overview", async () => {
       hour: 0,
     });
 
-    assert.equal((overview.meta as Record<string, unknown>).scope, "admin");
+    assert.equal((overview.meta as Record<string, unknown>).scope, "tenant");
     assert.equal((overview.totals as Record<string, unknown>).utterances, 7);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1172,7 +1172,9 @@ test("control plane bootstrap preserves API returned MQTT credentials", async ()
         id: "client-mqtt",
         name: payload.name,
         hub_id: payload.hub_id,
-        spec: { version: "1", apiKeyRef: { name: "secret", key: "apiKey" } },
+        // The real route echoes the sent spec (apiKey/password/cryptoKey).
+        spec: { ...payload.spec, apiKeyRef: { name: "secret", key: "apiKey" } },
+        initial_identify_token: "identify-token-1",
         initial_identify: {
           access_key: payload.spec.apiKey,
           password: payload.spec.password,
@@ -1207,6 +1209,179 @@ test("control plane bootstrap preserves API returned MQTT credentials", async ()
       endpoint: "mqtts://broker.thalovant.io:8883",
       tls: true,
     });
+
+    // Default asObject() also scrubs the raw hub/client records: the
+    // initial_identify bundle, its token, and the echoed spec secrets must
+    // not appear anywhere in the serialized default view.
+    const redacted = result.asObject();
+    const redactedClient = redacted.client as Record<string, any>;
+    assert.equal("initial_identify" in redactedClient, false);
+    assert.equal("initial_identify_token" in redactedClient, false);
+    assert.equal("apiKey" in (redactedClient.spec as object), false);
+    assert.equal("password" in (redactedClient.spec as object), false);
+    assert.equal("cryptoKey" in (redactedClient.spec as object), false);
+    assert.equal((redactedClient.spec as Record<string, any>).version, "1");
+    assert.deepEqual((redactedClient.spec as Record<string, any>).apiKeyRef, { name: "secret", key: "apiKey" });
+    assert.equal(redactedClient.id, "client-mqtt");
+    assert.equal((redacted.hub as Record<string, unknown>).id, "hub-mqtt");
+    const serialized = JSON.stringify(redacted);
+    for (const secret of [
+      result.identity.accessKey,
+      result.identity.password,
+      result.identity.cryptoKey ?? "",
+      "broker-password",
+      "identify-token-1",
+    ]) {
+      assert.ok(secret, "expected a non-empty secret to scan for");
+      assert.ok(!serialized.includes(secret), "default asObject() leaked a secret value");
+    }
+
+    // includeSecrets: true still returns the raw records and real values.
+    const full = result.asObject({ includeSecrets: true });
+    assert.deepEqual(full.client, result.client);
+    assert.deepEqual(full.hub, result.hub);
+    const fullIdentity = full.identity as Record<string, any>;
+    assert.equal(fullIdentity.access_key, result.identity.accessKey);
+    assert.equal(fullIdentity.password, result.identity.password);
+    assert.equal(fullIdentity.crypto_key, result.identity.cryptoKey);
+    assert.equal(fullIdentity.mqtt.password, "broker-password");
+
+    // The persisted includeSecrets form still round-trips into an identity.
+    const restored = new ThalovantIdentity(fullIdentity);
+    assert.equal(restored.accessKey, result.identity.accessKey);
+    assert.equal(restored.password, result.identity.password);
+    assert.equal(restored.cryptoKey, result.identity.cryptoKey);
+    assert.equal(restored.siteId, result.identity.siteId);
+    assert.equal(restored.mqtt?.password, "broker-password");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("identity, MQTT credentials, and control plane redact secrets in debug output", () => {
+  const identity = new ThalovantIdentity({
+    access_key: "id-access-key-XYZ",
+    password: "id-password-XYZ",
+    crypto_key: "id-crypto-key-XYZ",
+    site_id: "debug-site",
+    default_master: "wss://hub.example.com",
+    mqtt: {
+      endpoint: "mqtts://mqtt.example.com:8883",
+      username: "mqtt-user-XYZ",
+      password: "mqtt-password-XYZ",
+      topic_prefix: "hivemind/hub/access",
+    },
+  });
+
+  // console.log (util.inspect) and string interpolation never print secrets.
+  for (const rendered of [inspect(identity), String(identity)]) {
+    for (const secret of [
+      "id-access-key-XYZ",
+      "id-password-XYZ",
+      "id-crypto-key-XYZ",
+      "mqtt-user-XYZ",
+      "mqtt-password-XYZ",
+    ]) {
+      assert.ok(!rendered.includes(secret), `identity debug output leaked ${secret}`);
+    }
+    assert.ok(rendered.includes("ThalovantIdentity"));
+    assert.ok(rendered.includes("[redacted]"));
+    assert.ok(rendered.includes('"site_id":"debug-site"'));
+  }
+
+  assert.ok(identity.mqtt);
+  for (const rendered of [inspect(identity.mqtt), String(identity.mqtt)]) {
+    assert.ok(!rendered.includes("mqtt-user-XYZ"));
+    assert.ok(!rendered.includes("mqtt-password-XYZ"));
+    assert.ok(rendered.includes("mqtts://mqtt.example.com:8883"));
+  }
+
+  const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "bearer-token-XYZ" });
+  for (const rendered of [inspect(api), String(api)]) {
+    assert.ok(!rendered.includes("bearer-token-XYZ"), "control plane debug output leaked the bearer token");
+    assert.ok(rendered.includes("https://dash.example.com/api"));
+    assert.ok(rendered.includes("[redacted]"));
+  }
+
+  // No toJSON anywhere: JSON persistence of an identity keeps the real
+  // values, so identity files written with JSON.stringify still round-trip.
+  const persisted = JSON.parse(JSON.stringify(identity)) as Record<string, any>;
+  assert.equal(persisted.accessKey, "id-access-key-XYZ");
+  assert.equal(persisted.password, "id-password-XYZ");
+  const reloaded = new ThalovantIdentity(persisted);
+  assert.equal(reloaded.accessKey, "id-access-key-XYZ");
+  assert.equal(reloaded.password, "id-password-XYZ");
+  assert.equal(reloaded.cryptoKey, "id-crypto-key-XYZ");
+  assert.equal(reloaded.mqtt?.password, "mqtt-password-XYZ");
+});
+
+test("control plane API errors keep a bounded detail and never the raw body", async () => {
+  const originalFetch = globalThis.fetch;
+  const secret = "sk-response-echo-SECRET";
+  const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+  try {
+    // Structured JSON: only the short string detail is kept, not the body.
+    globalThis.fetch = async () =>
+      jsonResponse(400, { detail: "spec is invalid", spec: { apiKey: secret, password: secret } });
+    await assert.rejects(
+      () => api.listHubs(),
+      (error: unknown) => {
+        assert.ok(error instanceof ThalovantApiError);
+        assert.match((error as Error).message, /HTTP 400: spec is invalid/);
+        assert.ok(!(error as Error).message.includes(secret), "error message leaked the response body");
+        return true;
+      },
+    );
+
+    // JSON without a recognized string detail is dropped entirely.
+    globalThis.fetch = async () => jsonResponse(500, { spec: { apiKey: secret } });
+    await assert.rejects(
+      () => api.listHubs(),
+      (error: unknown) => {
+        assert.equal((error as Error).message, "Thalovant API request failed with HTTP 500.");
+        return true;
+      },
+    );
+
+    // Validation arrays keep only the msg string, never the echoed input.
+    globalThis.fetch = async () =>
+      jsonResponse(422, {
+        detail: [{ loc: ["body", "spec", "apiKey"], msg: "value is not a valid string", input: secret }],
+      });
+    await assert.rejects(
+      () => api.listHubs(),
+      (error: unknown) => {
+        assert.match((error as Error).message, /HTTP 422: value is not a valid string/);
+        assert.ok(!(error as Error).message.includes(secret));
+        return true;
+      },
+    );
+
+    // Non-JSON bodies: newline-stripped and length-bounded.
+    globalThis.fetch = async () => new Response(`upstream\nexploded ${"x".repeat(500)}`, { status: 502 });
+    await assert.rejects(
+      () => api.listHubs(),
+      (error: unknown) => {
+        const message = (error as Error).message;
+        assert.match(message, /HTTP 502: upstream exploded/);
+        assert.ok(!message.includes("\n"), "error message kept a newline");
+        assert.ok(message.length < 220, `error message is not bounded (${message.length} chars)`);
+        return true;
+      },
+    );
+
+    // The device-token poll terminal branch uses the same bounding.
+    globalThis.fetch = async () =>
+      jsonResponse(400, { error: "server_error", error_description: "device flow broke", debug_echo: secret });
+    await assert.rejects(
+      () => api.pollDeviceToken("device-code-1", { sleep: () => {}, now: () => 0 }),
+      (error: unknown) => {
+        assert.ok(error instanceof ThalovantApiError);
+        assert.match((error as Error).message, /HTTP 400: device flow broke/);
+        assert.ok(!(error as Error).message.includes(secret));
+        return true;
+      },
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
