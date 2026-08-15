@@ -268,9 +268,9 @@ test("client selects WSS and MQTT runtime transports", () => {
   assert.doesNotThrow(() => new ThalovantClient(identity, { protocol: "wss" }));
   assert.doesNotThrow(() => new ThalovantClient(identity, { protocol: "mqtt" }));
   assert.deepEqual(mqttTopicsForIdentity(identity), {
-    c2s: "hivemind/hub/c2s/access",
-    s2c: "hivemind/hub/s2c/access",
-    status: "hivemind/hub/status/access",
+    inbound: "hivemind/hub/access/in",
+    outbound: "hivemind/hub/access/out",
+    status: "hivemind/hub/access/status",
   });
 });
 
@@ -423,7 +423,7 @@ test("client one-shot utterances include a fresh session by default", async () =
   assert.equal(emitted[0].context.request_id, "req-1");
 });
 
-test("MQTT topic prefixes append hub id for scoped ACLs", () => {
+test("MQTT topic derivation requires a topic_prefix", () => {
   const identity = new ThalovantIdentity({
     key: "access",
     password: "secret",
@@ -433,16 +433,10 @@ test("MQTT topic prefixes append hub id for scoped ACLs", () => {
       endpoint: "mqtts://mqtt.example.com:8883",
       username: "access",
       password: "broker-password",
-      topic_prefix: "hivemind",
-      hub_id: "hub-1",
     },
   });
 
-  assert.deepEqual(mqttTopicsForIdentity(identity), {
-    c2s: "hivemind/hub-1/c2s/access",
-    s2c: "hivemind/hub-1/s2c/access",
-    status: "hivemind/hub-1/status/access",
-  });
+  assert.throws(() => mqttTopicsForIdentity(identity), /topic_prefix/);
 });
 
 test("MQTT TLS flag upgrades mqtt endpoints", () => {

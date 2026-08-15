@@ -4,7 +4,6 @@
  * exports throw a descriptive "not available in browsers" error instead of
  * dragging the `mqtt` package into web bundles.
  */
-import { createHash } from "node:crypto";
 import { connect as mqttConnect, type IClientOptions, type MqttClient } from "mqtt";
 
 import { ThalovantConnectionError } from "./errors.js";
@@ -15,8 +14,8 @@ import { HiveMessage, HiveMindHttpTransport, TransportHealth } from "./transport
 import { encodeHiveBinaryFrame } from "./wire.js";
 
 export interface MqttTopicSet {
-  c2s: string;
-  s2c: string;
+  inbound: string;
+  outbound: string;
   status: string;
 }
 
@@ -67,7 +66,7 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
 
     try {
       await waitForMqttConnect(client, timeoutMs);
-      await mqttSubscribe(client, this.topics.s2c, credentials.qos);
+      await mqttSubscribe(client, this.topics.outbound, credentials.qos);
       await mqttPublish(client, this.topics.status, "online", { qos: 1, retain: true });
       this.connected = true;
       await this.sendHiveMessage(this.helloMessage());
@@ -114,7 +113,7 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
     if (this.identity.cryptoKey) {
       payload = encryptAsBinary(this.identity.cryptoKey, payload);
     }
-    await mqttPublish(client, this.topics.c2s, toNodeBuffer(payload), {
+    await mqttPublish(client, this.topics.inbound, toNodeBuffer(payload), {
       qos: this.identity.mqtt?.qos ?? 1,
       retain: false,
     });
@@ -143,46 +142,14 @@ export function mqttTopicsForIdentity(identity: ThalovantIdentity): MqttTopicSet
   if (!credentials) {
     throw new ThalovantConnectionError("The identity does not include MQTT broker credentials.");
   }
-  const satelliteId = credentials.hashTopics
-    ? createHash("sha256").update(identity.accessKey).digest("hex").slice(0, 16)
-    : identity.accessKey;
-  if (credentials.c2sTopic && credentials.s2cTopic) {
-    return {
-      c2s: credentials.c2sTopic,
-      s2c: credentials.s2cTopic,
-      status: credentials.statusTopic ?? siblingMqttTopic(credentials.c2sTopic, "status"),
-    };
-  }
-  const raw = credentials.topicPrefix?.replace(/^\/+|\/+$/g, "");
-  let base = "";
-  if (raw) {
-    if (raw.includes("/c2s/")) {
-      return { c2s: raw, s2c: siblingMqttTopic(raw, "s2c"), status: siblingMqttTopic(raw, "status") };
-    }
-    if (raw.includes("/s2c/")) {
-      return { c2s: siblingMqttTopic(raw, "c2s"), s2c: raw, status: siblingMqttTopic(raw, "status") };
-    }
-    if (raw.includes("/status/")) {
-      return { c2s: siblingMqttTopic(raw, "c2s"), s2c: siblingMqttTopic(raw, "s2c"), status: raw };
-    }
-    const parts = raw.split("/").filter(Boolean);
-    base = [identity.accessKey, credentials.username, satelliteId].includes(parts.at(-1) ?? "")
-      ? parts.slice(0, -1).join("/")
-      : parts.join("/");
-    const hubId = credentials.hubId?.replace(/^\/+|\/+$/g, "");
-    if (hubId && !base.split("/").includes(hubId)) {
-      base = `${base}/${hubId}`;
-    }
-  } else if (credentials.hubId) {
-    base = `hivemind/${credentials.hubId.replace(/^\/+|\/+$/g, "")}`;
-  }
-  if (!base) {
-    throw new ThalovantConnectionError("MQTT credentials must include topic_prefix, hub_id, or explicit c2s/s2c topics.");
+  const prefix = stripSlashes(credentials.topicPrefix);
+  if (!prefix) {
+    throw new ThalovantConnectionError("MQTT credentials must include topic_prefix.");
   }
   return {
-    c2s: `${base}/c2s/${satelliteId}`,
-    s2c: `${base}/s2c/${satelliteId}`,
-    status: `${base}/status/${satelliteId}`,
+    inbound: `${prefix}/in`,
+    outbound: `${prefix}/out`,
+    status: `${prefix}/status`,
   };
 }
 
@@ -194,8 +161,14 @@ export function mqttConnectionEndpoint(credentials: { endpoint: string; tls?: bo
   return parsed.toString().replace(/\/$/, "");
 }
 
-function siblingMqttTopic(topic: string, segment: "c2s" | "s2c" | "status"): string {
-  return topic.replace(/\/(?:c2s|s2c|status)\//, `/${segment}/`);
+/** Trim only leading/trailing "/" without a regex; interior slashes are kept. */
+function stripSlashes(value: string | undefined): string {
+  if (!value) return "";
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "/") start++;
+  while (end > start && value[end - 1] === "/") end--;
+  return value.slice(start, end);
 }
 
 function safeMqttClientId(value: string): string {
