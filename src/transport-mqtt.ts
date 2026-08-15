@@ -142,7 +142,7 @@ export function mqttTopicsForIdentity(identity: ThalovantIdentity): MqttTopicSet
   if (!credentials) {
     throw new ThalovantConnectionError("The identity does not include MQTT broker credentials.");
   }
-  const prefix = credentials.topicPrefix?.replace(/^\/+|\/+$/g, "");
+  const prefix = stripSlashes(credentials.topicPrefix);
   if (!prefix) {
     throw new ThalovantConnectionError("MQTT credentials must include topic_prefix.");
   }
@@ -159,6 +159,16 @@ export function mqttConnectionEndpoint(credentials: { endpoint: string; tls?: bo
     parsed.protocol = "mqtts:";
   }
   return parsed.toString().replace(/\/$/, "");
+}
+
+/** Trim only leading/trailing "/" without a regex; interior slashes are kept. */
+function stripSlashes(value: string | undefined): string {
+  if (!value) return "";
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "/") start++;
+  while (end > start && value[end - 1] === "/") end--;
+  return value.slice(start, end);
 }
 
 function safeMqttClientId(value: string): string {
