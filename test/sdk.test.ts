@@ -439,6 +439,55 @@ test("MQTT topic derivation requires a topic_prefix", () => {
   assert.throws(() => mqttTopicsForIdentity(identity), /topic_prefix/);
 });
 
+test("MQTT topic derivation validates the topic_prefix characters", () => {
+  const identityWithPrefix = (topic_prefix: string) =>
+    new ThalovantIdentity({
+      key: "access",
+      password: "secret",
+      site: "site",
+      host: "https://hub.example.com",
+      mqtt: {
+        endpoint: "mqtts://mqtt.example.com:8883",
+        username: "access",
+        password: "broker-password",
+        topic_prefix,
+      },
+    });
+
+  // Whitespace-only (a bare space, a tab) and slash-only prefixes collapse to
+  // "" and are rejected as missing, not as invalid characters.
+  for (const blank of [" ", "\t", "   ", "///", "/"]) {
+    assert.throws(
+      () => mqttTopicsForIdentity(identityWithPrefix(blank)),
+      /MQTT credentials must include topic_prefix\./,
+      `expected a missing-prefix error for ${JSON.stringify(blank)}`,
+    );
+  }
+
+  // MQTT wildcards, an interior space, and control chars (incl. U+0000) are
+  // rejected as invalid characters.
+  for (const bad of [
+    "hivemind/#/access",
+    "hivemind/+/access",
+    "hivemind/hub /access",
+    `hivemind/hub${String.fromCharCode(0)}/access`,
+    "hivemind/hub\t/access",
+  ]) {
+    assert.throws(
+      () => mqttTopicsForIdentity(identityWithPrefix(bad)),
+      /MQTT topic_prefix contains characters that are not valid in an MQTT topic\./,
+      `expected an invalid-character error for ${JSON.stringify(bad)}`,
+    );
+  }
+
+  // Surrounding whitespace and slashes are trimmed; interior slashes are kept.
+  assert.deepEqual(mqttTopicsForIdentity(identityWithPrefix("  /hivemind/hub/access/  ")), {
+    inbound: "hivemind/hub/access/in",
+    outbound: "hivemind/hub/access/out",
+    status: "hivemind/hub/access/status",
+  });
+});
+
 test("MQTT TLS flag upgrades mqtt endpoints", () => {
   assert.equal(
     mqttConnectionEndpoint({ endpoint: "mqtt://mqtt.example.com", tls: true }),
@@ -1336,6 +1385,42 @@ test("identity, MQTT credentials, and control plane redact secrets in debug outp
   assert.equal(reloaded.password, "id-password-XYZ");
   assert.equal(reloaded.cryptoKey, "id-crypto-key-XYZ");
   assert.equal(reloaded.mqtt?.password, "mqtt-password-XYZ");
+});
+
+test("MQTT credentials redact the access-key-bearing topic_prefix in debug output", () => {
+  // Since the topic migration the prefix is hivemind/<hub-id>/<access-key>, so
+  // it embeds the access key that username redaction hides. The username here
+  // is unrelated, so the access-key needle can only leak through the prefix.
+  const identity = new ThalovantIdentity({
+    access_key: "id-access-key-QRS",
+    password: "id-password-QRS",
+    site: "debug-site",
+    host: "https://hub.example.com",
+    mqtt: {
+      endpoint: "mqtts://mqtt.example.com:8883",
+      username: "mqtt-user-QRS",
+      password: "mqtt-password-QRS",
+      topic_prefix: "hivemind/hub-QRS/id-access-key-QRS",
+    },
+  });
+
+  assert.ok(identity.mqtt);
+  for (const rendered of [inspect(identity.mqtt), String(identity.mqtt)]) {
+    assert.ok(!rendered.includes("id-access-key-QRS"), "debug output leaked the access key via topic_prefix");
+    assert.ok(!rendered.includes("hivemind/hub-QRS/id-access-key-QRS"), "debug output leaked the raw topic_prefix");
+    assert.ok(!rendered.includes("mqtt-password-QRS"), "debug output leaked the broker password");
+    const payload = parseDebugPayload(rendered);
+    assert.equal(payload.topic_prefix, "[redacted]");
+    assert.equal(payload.username, "[redacted]");
+    assert.equal(payload.password, "[redacted]");
+    // The non-secret broker endpoint stays visible for debugging.
+    assert.equal(payload.endpoint, identity.mqtt.endpoint);
+  }
+
+  // The includeSecrets view and the transport-facing topicPrefix field still
+  // return the real value, so the transport is unaffected.
+  assert.equal(identity.mqtt.asObject(true).topic_prefix, "hivemind/hub-QRS/id-access-key-QRS");
+  assert.equal(identity.mqtt.topicPrefix, "hivemind/hub-QRS/id-access-key-QRS");
 });
 
 test("default identity view redacts metadata secrets and endpoint userinfo", () => {

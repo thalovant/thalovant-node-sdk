@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.31
+
+- `MqttBrokerCredentials` debug output now redacts `topic_prefix`. Since the 0.2.30 topic migration the prefix is `hivemind/<hub-id>/<access-key>` and embeds the access key that username redaction already hides, so in Node `console.log`/`util.inspect` and `toString()` (and template-literal/`String()` coercion) print `topic_prefix: [redacted]` instead of the raw value. The `includeSecrets` view (`asObject(true)`) and the `topicPrefix` field the transport reads are unchanged, so no wire behavior changes.
+- `mqttTopicsForIdentity()` now validates `topic_prefix` before deriving topics. Surrounding whitespace is trimmed first, so a whitespace- or slash-only prefix still throws `MQTT credentials must include topic_prefix.`; a prefix containing an MQTT wildcard (`#` or `+`), a space, or a control character (code point below U+0020, which includes the MQTT-forbidden U+0000) now throws `MQTT topic_prefix contains characters that are not valid in an MQTT topic.` A `+` prefix would otherwise turn `<prefix>/out` into a wildcard subscription and make `<prefix>/in` an invalid publish topic. The check is a character scan, never a regex, so it cannot trip CodeQL's `js/polynomial-redos` rule.
+
+## 0.2.30
+
+- **BREAKING (MQTT data plane)**: migrate HiveMind MQTT topics to the `<topic_prefix>/in|out|status` scheme. Identity MQTT credentials now carry exactly `{ endpoint, username, password, topic_prefix, tls }`, where `topic_prefix` is the full plaintext base `hivemind/<hub-id>/<access-key>`. Publish requests go to `<topic_prefix>/in` (was `c2s`), subscribe replies to `<topic_prefix>/out` (was `s2c`), and retained presence to `<topic_prefix>/status`. `mqttTopicsForIdentity()` now requires a non-empty `topic_prefix` and derives the three topics by suffix; the retired `c2s`/`s2c`/`status` parsing, the `satellite_id`/hash derivation, and the explicit-topic reads are gone. The leading/trailing-slash trim on `topic_prefix` is a character scan, not a regex, so it does not trip CodeQL's `js/polynomial-redos` rule.
+
 ## 0.2.29
 
 Security hardening release. No new endpoints or features.

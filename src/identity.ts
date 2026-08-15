@@ -124,14 +124,20 @@ export class MqttBrokerCredentials {
 
   /**
    * Human-readable form with the broker credentials redacted. Debug/display
-   * only — the transports read `username`/`password` directly, and
-   * `asObject(true)` still returns the real values.
+   * only — the transports read `username`/`password`/`topicPrefix` directly,
+   * and `asObject(true)` still returns the real values. `topic_prefix` is
+   * redacted alongside the credentials: since the HiveMind topic migration it
+   * is `hivemind/<hub-id>/<access-key>` and embeds the access key that
+   * username redaction hides, so `console.log`/`util.inspect` must never print
+   * it. The override wins over any `topic_prefix` a future `asObject(false)`
+   * might add, so the raw value cannot leak through the spread.
    */
   toString(): string {
     return `MqttBrokerCredentials ${JSON.stringify({
       ...this.asObject(false),
       username: REDACTED,
       password: REDACTED,
+      ...(this.topicPrefix ? { topic_prefix: REDACTED } : {}),
     })}`;
   }
 
