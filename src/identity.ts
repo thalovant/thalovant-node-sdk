@@ -6,8 +6,16 @@ import {
   readSecretFile,
 } from "./platform/node.js";
 import { HubDataPlaneEndpoints, HubProtocol, HubProtocolSettings } from "./protocols.js";
+import { REDACTED, redactUrlUserinfo, withoutSecretKeys } from "./redact.js";
 
 const DEFAULT_CONFIG_FILENAME = "config.yaml";
+
+/**
+ * Node's `util.inspect` extension point (used by `console.log`). Registered
+ * through `Symbol.for`, which exists on every platform, so this file stays
+ * browser-safe; browsers simply never call the method.
+ */
+const customInspect: unique symbol = Symbol.for("nodejs.util.inspect.custom");
 
 export interface IdentityInput {
   accessKey?: string;
@@ -116,7 +124,9 @@ export class MqttBrokerCredentials {
 
   asObject(includeSecrets = false): Record<string, unknown> {
     const data: Record<string, unknown> = {
-      endpoint: this.endpoint,
+      // The broker URL can carry `user:pass@` userinfo; strip it in the
+      // default view but keep the raw endpoint under includeSecrets.
+      endpoint: includeSecrets ? this.endpoint : redactUrlUserinfo(this.endpoint),
       tls: this.tls,
     };
     if (includeSecrets) {
@@ -145,6 +155,24 @@ export class MqttBrokerCredentials {
       }
     }
     return data;
+  }
+
+  /**
+   * Human-readable form with the broker credentials redacted. Debug/display
+   * only — the transports read `username`/`password` directly, and
+   * `asObject(true)` still returns the real values.
+   */
+  toString(): string {
+    return `MqttBrokerCredentials ${JSON.stringify({
+      ...this.asObject(false),
+      username: REDACTED,
+      password: REDACTED,
+    })}`;
+  }
+
+  /** Node `console.log`/`util.inspect` print the redacted form, never secrets. */
+  [customInspect](): string {
+    return this.toString();
   }
 }
 
@@ -273,7 +301,9 @@ export class ThalovantIdentity {
   asObject(includeSecrets = false): Record<string, unknown> {
     const data: Record<string, unknown> = {
       site_id: this.siteId,
-      default_master: this.defaultMaster,
+      // default_master may carry `user:pass@` userinfo; strip it in the
+      // default view, keep it raw under includeSecrets.
+      default_master: includeSecrets ? this.defaultMaster : redactUrlUserinfo(this.defaultMaster),
       default_port: this.defaultPort,
       default_path: this.defaultPath,
     };
@@ -282,7 +312,9 @@ export class ThalovantIdentity {
       data.data_plane_endpoints = endpoints;
     }
     if (Object.keys(this.metadata).length > 0) {
-      data.metadata = { ...this.metadata };
+      // metadata is free-form; secret-named entries (nested included) are
+      // dropped from the default view, but kept verbatim under includeSecrets.
+      data.metadata = includeSecrets ? { ...this.metadata } : withoutSecretKeys(this.metadata);
     }
     if (includeSecrets) {
       data.access_key = this.accessKey;
@@ -293,6 +325,26 @@ export class ThalovantIdentity {
       data.mqtt = this.mqtt.asObject(includeSecrets);
     }
     return data;
+  }
+
+  /**
+   * Human-readable form with `access_key`, `password`, and `crypto_key`
+   * redacted. Debug/display only — it never feeds the wire protocol or
+   * identity-file persistence, and `asObject(true)` still returns the real
+   * values. `JSON.stringify(identity)` is intentionally left untouched.
+   */
+  toString(): string {
+    return `ThalovantIdentity ${JSON.stringify({
+      ...this.asObject(false),
+      access_key: REDACTED,
+      password: REDACTED,
+      ...(this.cryptoKey ? { crypto_key: REDACTED } : {}),
+    })}`;
+  }
+
+  /** Node `console.log`/`util.inspect` print the redacted form, never secrets. */
+  [customInspect](): string {
+    return this.toString();
   }
 }
 

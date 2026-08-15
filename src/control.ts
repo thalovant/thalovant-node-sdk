@@ -11,6 +11,7 @@ import {
   SelectedHubEndpoint,
   selectDataPlaneEndpoint,
 } from "./protocols.js";
+import { REDACTED, redactSecretsInText, withoutSecretKeys } from "./redact.js";
 import { USER_AGENT } from "./version.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
@@ -20,6 +21,16 @@ const DEFAULT_CONTROL_USER_AGENT = USER_AGENT;
 const DEFAULT_DEVICE_POLL_INTERVAL_MS = 5_000;
 const DEVICE_SLOW_DOWN_STEP_MS = 5_000;
 const DEFAULT_DEVICE_LOGIN_TIMEOUT_MS = 900_000;
+
+/**
+ * Node's `util.inspect` extension point (used by `console.log`). Registered
+ * through `Symbol.for`, which exists on every platform, so this file stays
+ * browser-safe; browsers simply never call the method.
+ */
+const customInspect: unique symbol = Symbol.for("nodejs.util.inspect.custom");
+
+/** Upper bound for the server detail kept in thrown API error messages. */
+const MAX_ERROR_DETAIL_LENGTH = 160;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -70,10 +81,8 @@ export interface CreateClientIdentityOptions {
 }
 
 export interface AnalyticsOverviewOptions {
-  admin?: boolean;
   range?: string;
   bucket?: string;
-  ownerId?: string;
   hubId?: string;
   clientId?: string;
   country?: string;
@@ -273,6 +282,11 @@ export interface LoginWithBrowserOptions {
   openUrl?: (url: string) => unknown;
 }
 
+/**
+ * Options for the internal device-token poll loop.
+ *
+ * @internal
+ */
 export interface DevicePollOptions {
   /** Initial poll interval in milliseconds. Default 5000. */
   intervalMs?: number;
@@ -293,6 +307,23 @@ export class ThalovantControlPlane {
     this.apiUrl = normalizeControlApiUrl(apiUrl);
     this.accessToken = options.accessToken;
     this.userAgent = options.userAgent ?? DEFAULT_CONTROL_USER_AGENT;
+  }
+
+  /**
+   * Human-readable form that never contains the bearer token. Debug/display
+   * only — requests keep reading `accessToken` directly.
+   */
+  toString(): string {
+    return `ThalovantControlPlane ${JSON.stringify({
+      apiUrl: this.apiUrl,
+      userAgent: this.userAgent,
+      accessToken: this.accessToken ? REDACTED : undefined,
+    })}`;
+  }
+
+  /** Node `console.log`/`util.inspect` print the redacted form, never the token. */
+  [customInspect](): string {
+    return this.toString();
   }
 
   async login(
@@ -378,7 +409,11 @@ export class ThalovantControlPlane {
    * Poll `POST /v1/auth/device/token` until approval or a terminal state.
    *
    * `sleep` and `now` are injectable so tests can drive the loop without real
-   * waiting. Most callers should use `loginWithBrowser()` instead.
+   * waiting. Use `loginWithBrowser()` instead: this poll loop is an
+   * implementation detail of the device flow (kept internal in every other
+   * Thalovant SDK) and is not part of the public API surface.
+   *
+   * @internal
    */
   async pollDeviceToken(deviceCode: string, options: DevicePollOptions = {}): Promise<JsonRecord> {
     const sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
@@ -414,7 +449,7 @@ export class ThalovantControlPlane {
             "Call loginWithBrowser() again to request a new code.",
         );
       } else if (error !== "authorization_pending") {
-        throw new ThalovantApiError(`Thalovant API request failed with HTTP ${response.status}: ${text}`);
+        throw new ThalovantApiError(apiErrorMessage(response.status, text));
       }
       const remaining = deadline - now();
       if (remaining <= 0) {
@@ -483,11 +518,10 @@ export class ThalovantControlPlane {
   }
 
   getAnalyticsOverview(options: AnalyticsOverviewOptions = {}): Promise<JsonRecord> {
-    const endpoint = options.admin ? "/v1/admin/analytics/overview" : "/v1/analytics/overview";
+    const endpoint = "/v1/analytics/overview";
     const params = new URLSearchParams();
     setStringParam(params, "range", options.range);
     setStringParam(params, "bucket", options.bucket);
-    if (options.admin) setStringParam(params, "owner_id", options.ownerId);
     setStringParam(params, "hub_id", options.hubId);
     setStringParam(params, "client_id", options.clientId);
     setStringParam(params, "country", options.country);
@@ -865,7 +899,14 @@ export class ThalovantControlPlane {
     };
     if (options.ownerId) payload.owner_id = options.ownerId;
 
-    const client = await this.createClient(payload, { idempotencyKey: options.idempotencyKey });
+    // Send POST /v1/clients directly (rather than via createClient) so the
+    // generated apiKey/password/cryptoKey can be scrubbed from any thrown
+    // error: this route echoes the sent spec on validation failures.
+    const client = await this.request("POST", "/v1/clients", {
+      body: payload,
+      headers: { "Idempotency-Key": options.idempotencyKey ?? randomUUID() },
+      redactSecrets: [apiKey, password, cryptoKey],
+    });
     const protocols = HubProtocolSettings.from(hubResource);
     const endpoints = HubDataPlaneEndpoints.fromHub(hubResource);
     const endpoint = selectDataPlaneEndpoint(
@@ -895,10 +936,15 @@ export class ThalovantControlPlane {
       endpoint,
       selectedProtocol: endpoint?.protocol,
       asObject(resultOptions: { includeSecrets?: boolean } = {}) {
+        const includeSecrets = resultOptions.includeSecrets ?? false;
         return {
-          identity: identity.asObject(resultOptions.includeSecrets ?? false),
-          hub: hubResource,
-          client,
+          identity: identity.asObject(includeSecrets),
+          // The raw client record carries the POST /v1/clients secrets (the
+          // initial_identify credential bundle plus the echoed spec apiKey/
+          // password/cryptoKey), so both records are scrubbed unless the
+          // caller explicitly opts in — the same gate the identity uses.
+          hub: includeSecrets ? hubResource : withoutSecretKeys(hubResource),
+          client: includeSecrets ? client : withoutSecretKeys(client),
           selectedProtocol: endpoint?.protocol,
           selectedEndpoint: endpoint?.endpoint,
         };
@@ -923,11 +969,17 @@ export class ThalovantControlPlane {
   private async request(
     method: string,
     path: string,
-    options: { body?: JsonRecord; headers?: Record<string, string>; auth?: boolean } = {},
+    options: {
+      body?: JsonRecord;
+      headers?: Record<string, string>;
+      auth?: boolean;
+      /** SDK-generated secrets sent in this request, scrubbed from any error. */
+      redactSecrets?: ReadonlyArray<string | undefined>;
+    } = {},
   ): Promise<JsonRecord> {
     const response = await this.send(method, path, options);
     if (!response.ok) {
-      throw new ThalovantApiError(`Thalovant API request failed with HTTP ${response.status}: ${await response.text()}`);
+      throw new ThalovantApiError(apiErrorMessage(response.status, await response.text(), options.redactSecrets));
     }
     const text = await response.text();
     if (!text.trim()) {
@@ -1060,4 +1112,63 @@ function stripPath(endpoint: string): string {
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Build a thrown-error message from an HTTP status and response body without
+ * ever embedding the raw body: bodies can echo request secrets (for example
+ * `POST /v1/clients` validation errors repeating the sent spec). Any secrets
+ * the SDK itself generated and sent (`redactSecrets`) are scrubbed from the
+ * body first — before bounding, so a truncated secret cannot survive. Then
+ * structured JSON keeps only a short string detail field, and non-JSON bodies
+ * keep a newline-stripped snippet bounded to {@link MAX_ERROR_DETAIL_LENGTH}.
+ */
+function apiErrorMessage(status: number, bodyText: string, redactSecrets?: ReadonlyArray<string | undefined>): string {
+  const safeBody = redactSecrets?.length ? redactSecretsInText(bodyText, redactSecrets) : bodyText;
+  const detail = apiErrorDetail(safeBody);
+  return detail
+    ? `Thalovant API request failed with HTTP ${status}: ${detail}`
+    : `Thalovant API request failed with HTTP ${status}.`;
+}
+
+function apiErrorDetail(bodyText: string): string {
+  let detail: string | undefined;
+  let isJsonBody = false;
+  try {
+    const parsed: unknown = JSON.parse(bodyText);
+    isJsonBody = true;
+    if (isRecord(parsed)) {
+      for (const key of ["detail", "error_description", "message", "error", "title", "code"]) {
+        detail = detailString(parsed[key]);
+        if (detail) break;
+      }
+    }
+  } catch {
+    // Not JSON; fall through to the bounded plain-text snippet.
+  }
+  // A JSON body without a recognized string detail is dropped entirely rather
+  // than quoted: unknown JSON shapes are exactly where echoed secrets hide.
+  const source = detail ?? (isJsonBody ? "" : bodyText);
+  const compact = source.replace(/\s+/g, " ").trim();
+  return compact.length > MAX_ERROR_DETAIL_LENGTH
+    ? `${compact.slice(0, MAX_ERROR_DETAIL_LENGTH)}…`
+    : compact;
+}
+
+/** First short human-readable string in a JSON error detail value. */
+function detailString(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const nested = detailString(entry);
+      if (nested) return nested;
+    }
+    return undefined;
+  }
+  if (isRecord(value)) {
+    return detailString(value.msg ?? value.message ?? value.detail);
+  }
+  return undefined;
 }
