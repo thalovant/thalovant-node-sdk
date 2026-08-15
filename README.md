@@ -148,6 +148,140 @@ for (const hub of page.data as Array<{ id: string; slug: string; title: string }
 }
 ```
 
+## Provision Hubs
+
+Hubs, runtime groups, and skills can be created and managed from code. These
+routes need a **paid plan** and a token with the **`hubs:write`** scope
+("Create and update your hubs" on the dashboard's API Tokens page). A free-plan
+token fails with HTTP 402 `API access requires a paid plan.`, and a token
+without the scope fails with HTTP 403 `Insufficient scopes`. Both surface as
+`ThalovantApiError`.
+
+```ts
+const api = new ThalovantControlPlane(undefined, {
+  accessToken: process.env.THALOVANT_API_TOKEN,
+});
+
+// 1. Discover what is installable before provisioning anything.
+const catalog = await api.listMarketplaceSkills();
+for (const skill of catalog.data as Array<Record<string, unknown>>) {
+  console.log(skill.skill_id, skill.title, skill.access_tier);
+}
+
+// 2. Create a runtime group to run the skills.
+const group = await api.createRuntimeGroup({ name: "kiosks", description: "Lobby kiosks" });
+
+// 3. Create a hub attached to it.
+const hub = await api.createHub({
+  name: "joke-garden",
+  runtimeGroupId: group.id as string,
+  spec: { protocols: { wss: { enabled: true } } },
+});
+
+// 4. Install a skill from the marketplace catalog.
+await api.installRuntimeGroupSkill(group.id as string, "skill-weather");
+
+// 5. Release: roll the runtime and the hub onto a release channel.
+await api.releaseRuntimeGroup(group.id as string, { channel: "stable" });
+await api.releaseHub(hub.id as string, { channel: "stable" });
+```
+
+Creating a hub is idempotent. `createHub` sends a generated `Idempotency-Key`
+header, so a retried call after a timeout returns the hub that was already
+created instead of making a second one. Pass your own `idempotencyKey` to
+control the key.
+
+Updating and deleting a hub use optimistic locking. Pass the `etag` from the
+hub resource you read; the SDK sends it as `If-Match`, and the API rejects a
+stale **or missing** value with HTTP 412 without changing anything — which is
+why `etag` is required rather than optional:
+
+```ts
+const current = await api.getHub(hub.id as string);
+const disabled = await api.updateHub(current.id as string, { active: false }, {
+  etag: current.etag as string,
+});
+await api.deleteHub(disabled.id as string, { etag: disabled.etag as string });
+```
+
+Deleting a hub also deletes its clients and ACLs. Runtime groups have no
+`If-Match` requirement, but the API refuses to delete the workspace default
+group or a group that still has hubs attached (HTTP 409).
+
+Runtime configuration is merged, not replaced:
+
+```ts
+await api.updateRuntimeGroupConfig(group.id as string, { lang: "en-us" });
+const config = await api.getRuntimeGroupConfig(group.id as string);
+console.log(config.config);
+```
+
+Rating a public hub needs the `hubs:write` scope but **no** paid plan:
+
+```ts
+await api.setHubRating("public-hub-id", 5);
+await api.clearHubRating("public-hub-id");
+```
+
+Reading what a hub is actually running needs the `hubs:inspect` scope instead.
+This is the one read that answers HTTP 409 when no connected client can report
+inventory:
+
+```ts
+const capabilities = await api.getHubRuntimeCapabilities(hub.id as string);
+console.log((capabilities.counts as Record<string, number>).total_intents);
+```
+
+## Discover Skills
+
+The marketplace catalog is readable with the **`hubs:read`** scope and, unlike
+the provisioning routes above, is **not paid-gated** — a free-plan token can
+browse the whole catalog before upgrading, and only the install needs a paid
+plan.
+
+```ts
+const catalog = await api.listMarketplaceSkills();
+for (const skill of catalog.data as Array<Record<string, unknown>>) {
+  console.log(skill.skill_id, skill.category, skill.access_tier);
+}
+```
+
+Each entry carries what an install needs (`skill_id`, `source_type`,
+`source_ref`, `config_schema`, `secret_schema`) next to presentation fields
+(`title`, `summary`, `tags`, `verified`). Admin tokens can additionally pass
+`ownerId` to read another tenant's catalog and `includeInactive: true` to see
+retired entries; both are silently ignored for non-admin callers rather than
+rejected. `forceRefresh: true` re-syncs the global catalog from source first,
+which is slower and is available to every caller.
+
+Two group-scoped reads need the **`hubs:inspect`** scope and are likewise not
+paid-gated. The first resolves the catalog against one runtime group, so each
+entry reports whether it is already desired, whether it was observed running,
+and whether the tenant plan allows installing it:
+
+```ts
+const view = await api.listRuntimeGroupMarketplace(group.id as string);
+for (const entry of view.data as Array<Record<string, unknown>>) {
+  if (entry.installable && !entry.active) console.log("available:", entry.skill_id);
+}
+```
+
+The second answers what the group is actually running right now, rather than
+what could be installed:
+
+```ts
+const inventory = await api.listRuntimeGroupInventory(group.id as string, { refresh: true });
+console.log(inventory.source, (inventory.data as unknown[]).length);
+```
+
+Both answer from a cached inventory snapshot by default; pass
+`refreshInventory: true` or `refresh: true` to force a live read from the
+runtime operator. Neither fails when nothing is reporting yet: they return an
+empty `data` list with the observation's provenance in `source`
+(`runtime-group-cache-empty` for an unrefreshed group view,
+`ovos-runtime-operator-pending` for an inventory refresh the operator has not
+answered). `getHubRuntimeCapabilities` is the one that answers HTTP 409 instead.
+
 ## Workspace Analytics
 
 Authenticated accounts can read the same overview used by the dashboard:
@@ -474,6 +608,26 @@ it before resending. Per-plan limits are listed in the dashboard and at
 - `controlPlane.getPublicHub(hubRef)`
 - `controlPlane.listHubs(options)`
 - `controlPlane.getHub(hubId)`
+- `controlPlane.createHub(payload, options)` with optional `idempotencyKey`
+- `controlPlane.updateHub(hubId, payload, { etag })` — `etag` required, sent as `If-Match`
+- `controlPlane.deleteHub(hubId, { etag })` — `etag` required, sent as `If-Match`
+- `controlPlane.releaseHub(hubId, options)` with optional `channel`, `mode`, `version`, `images`, and `reason`
+- `controlPlane.setHubRating(hubId, rating)`
+- `controlPlane.clearHubRating(hubId)`
+- `controlPlane.getHubRuntimeCapabilities(hubId)`
+- `controlPlane.listRuntimeGroups(options)`
+- `controlPlane.getRuntimeGroup(runtimeGroupId)`
+- `controlPlane.createRuntimeGroup(payload)`
+- `controlPlane.updateRuntimeGroup(runtimeGroupId, payload)`
+- `controlPlane.getRuntimeGroupConfig(runtimeGroupId)`
+- `controlPlane.updateRuntimeGroupConfig(runtimeGroupId, config, options)` with optional `personas`
+- `controlPlane.releaseRuntimeGroup(runtimeGroupId, options)`
+- `controlPlane.deleteRuntimeGroup(runtimeGroupId)`
+- `controlPlane.installRuntimeGroupSkill(runtimeGroupId, skillId, options)` with optional `marketplaceSkillId`, `sourceType`, `sourceRef`, `versionPin`, and `active`
+- `controlPlane.uninstallRuntimeGroupSkill(runtimeGroupId, skillId)`
+- `controlPlane.listMarketplaceSkills(options)` with optional `ownerId`, `includeInactive`, and `forceRefresh`
+- `controlPlane.listRuntimeGroupMarketplace(runtimeGroupId, options)` with optional `refreshInventory`
+- `controlPlane.listRuntimeGroupInventory(runtimeGroupId, options)` with optional `refresh`
 - `controlPlane.getOperation(operationId)`
 - `controlPlane.getAnalyticsOverview(options)`
 - `controlPlane.listMemoryItems(options)`
