@@ -755,6 +755,347 @@ test("control plane manages memory items", async () => {
   }
 });
 
+test("control plane provisions hubs", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  let idempotencyKey: string | undefined;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const parsed = new URL(String(url));
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    assert.equal(headers.authorization, "Bearer token");
+    if (init?.method === "POST" && parsed.pathname === "/api/v1/hubs") {
+      idempotencyKey = headers["Idempotency-Key"];
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      assert.equal(payload.name, "joke-garden");
+      assert.equal(payload.runtime_group_id, "group-1");
+      assert.equal(payload.capacity_profile, "autoscaling");
+      assert.equal(payload.owner_id, "owner-1");
+      assert.equal(payload.runtimeGroupId, undefined);
+      assert.deepEqual(payload.spec, { protocols: { wss: { enabled: true } } });
+      return jsonResponse(201, { id: "hub-1", name: "joke-garden", etag: "etag-1" });
+    }
+    if (init?.method === "PATCH" && parsed.pathname === "/api/v1/hubs/hub-1") {
+      assert.equal(headers["If-Match"], "etag-1");
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      assert.equal(payload.active, false);
+      assert.equal(payload.is_locked, true);
+      return jsonResponse(200, { id: "hub-1", active: false, etag: "etag-2" });
+    }
+    if (init?.method === "DELETE" && parsed.pathname === "/api/v1/hubs/hub-1") {
+      assert.equal(headers["If-Match"], "etag-2");
+      return new Response(null, { status: 204 });
+    }
+    if (init?.method === "POST" && parsed.pathname === "/api/v1/hubs/hub-1/release") {
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      assert.deepEqual(payload, {
+        channel: "stable",
+        mode: "custom",
+        images: { core: "ghcr.io/thalovant/core:1.2.3" },
+        reason: "pin the kiosk fleet",
+      });
+      return jsonResponse(200, { id: "hub-1", release_channel: "stable" });
+    }
+    if (init?.method === "PUT" && parsed.pathname === "/api/v1/hubs/hub-2/rating") {
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      assert.deepEqual(payload, { rating: 5 });
+      return jsonResponse(200, { id: "hub-2", rating_average: 5 });
+    }
+    if (init?.method === "DELETE" && parsed.pathname === "/api/v1/hubs/hub-2/rating") {
+      assert.equal(init.body, undefined);
+      return jsonResponse(200, { id: "hub-2", rating_average: null });
+    }
+    if (init?.method === "GET" && parsed.pathname === "/api/v1/hubs/hub-1/runtime-capabilities") {
+      return jsonResponse(200, { data: [{ skill_id: "skill-weather" }], counts: { total_intents: 4 } });
+    }
+    throw new Error(`unexpected request ${init?.method} ${url}`);
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    const hub = await api.createHub({
+      name: "joke-garden",
+      runtimeGroupId: "group-1",
+      capacityProfile: "autoscaling",
+      ownerId: "owner-1",
+      spec: { protocols: { wss: { enabled: true } } },
+    });
+    const updated = await api.updateHub("hub-1", { active: false, isLocked: true }, { etag: "etag-1" });
+    await api.deleteHub("hub-1", { etag: "etag-2" });
+    const released = await api.releaseHub("hub-1", {
+      channel: "stable",
+      mode: "custom",
+      images: { core: "ghcr.io/thalovant/core:1.2.3" },
+      reason: "pin the kiosk fleet",
+    });
+    const rated = await api.setHubRating("hub-2", 5);
+    const cleared = await api.clearHubRating("hub-2");
+    const capabilities = await api.getHubRuntimeCapabilities("hub-1");
+
+    assert.equal(hub.id, "hub-1");
+    assert.equal(updated.active, false);
+    assert.equal(released.release_channel, "stable");
+    assert.equal(rated.rating_average, 5);
+    assert.equal(cleared.rating_average, null);
+    assert.equal((capabilities.counts as Record<string, unknown>).total_intents, 4);
+    assert.match(String(idempotencyKey), /^[0-9a-f-]{36}$/);
+    assert.equal(requests.length, 7);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane honors a caller-supplied hub idempotency key", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    assert.equal(headers["Idempotency-Key"], "retry-key-1");
+    return jsonResponse(201, { id: "hub-1" });
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    const hub = await api.createHub({ name: "joke-garden", spec: {} }, { idempotencyKey: "retry-key-1" });
+    assert.equal(hub.id, "hub-1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane manages runtime groups and skills", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const parsed = new URL(String(url));
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    assert.equal(headers.authorization, "Bearer token");
+    // Runtime group routes read neither If-Match nor an idempotency header.
+    assert.equal(headers["If-Match"], undefined);
+    assert.equal(headers["Idempotency-Key"], undefined);
+    if (init?.method === "GET" && parsed.pathname === "/api/v1/runtime-groups") {
+      assert.equal(parsed.searchParams.get("owner_id"), "owner-1");
+      return jsonResponse(200, { data: [{ id: "group-1", name: "kiosks" }] });
+    }
+    if (init?.method === "POST" && parsed.pathname === "/api/v1/runtime-groups") {
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      assert.equal(payload.name, "kiosks");
+      assert.equal(payload.owner_id, "owner-1");
+      assert.equal(payload.clone_from_default, true);
+      assert.equal(payload.cloneFromDefault, undefined);
+      return jsonResponse(201, { id: "group-1", name: "kiosks" });
+    }
+    if (init?.method === "GET" && parsed.pathname === "/api/v1/runtime-groups/group-1") {
+      return jsonResponse(200, { id: "group-1", name: "kiosks" });
+    }
+    if (init?.method === "PATCH" && parsed.pathname === "/api/v1/runtime-groups/group-1") {
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      assert.equal(payload.description, "Lobby kiosks");
+      return jsonResponse(200, { id: "group-1", description: "Lobby kiosks" });
+    }
+    if (init?.method === "GET" && parsed.pathname === "/api/v1/runtime-groups/group-1/config") {
+      return jsonResponse(200, { config: { lang: "en-us" }, personas: {} });
+    }
+    if (init?.method === "PATCH" && parsed.pathname === "/api/v1/runtime-groups/group-1/config") {
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      assert.deepEqual(payload, { config: { lang: "en-us" }, personas: { default: "helpful" } });
+      return jsonResponse(200, { config: { lang: "en-us" }, pending: true });
+    }
+    if (init?.method === "POST" && parsed.pathname === "/api/v1/runtime-groups/group-1/release") {
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      assert.deepEqual(payload, { channel: "stable" });
+      return jsonResponse(200, { id: "group-1", release_channel: "stable" });
+    }
+    if (init?.method === "POST" && parsed.pathname === "/api/v1/runtime-groups/group-1/skills") {
+      const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      if (payload.source_type === "catalog") {
+        assert.deepEqual(payload, { skill_id: "skill-weather", source_type: "catalog", active: true });
+      } else {
+        assert.deepEqual(payload, {
+          skill_id: "skill-lab",
+          source_type: "git",
+          active: false,
+          marketplace_skill_id: "marketplace-1",
+          source_ref: "https://github.com/example/skill-lab",
+          version_pin: "1.2.3",
+        });
+      }
+      // The install route answers 200, not 201.
+      return jsonResponse(200, { skill_id: payload.skill_id });
+    }
+    if (init?.method === "DELETE" && parsed.pathname === "/api/v1/runtime-groups/group-1/skills/skill-weather") {
+      return new Response(null, { status: 204 });
+    }
+    if (init?.method === "DELETE" && parsed.pathname === "/api/v1/runtime-groups/group-1") {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected request ${init?.method} ${url}`);
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    const groups = await api.listRuntimeGroups({ ownerId: "owner-1" });
+    const created = await api.createRuntimeGroup({
+      name: "kiosks",
+      ownerId: "owner-1",
+      cloneFromDefault: true,
+    });
+    const group = await api.getRuntimeGroup("group-1");
+    const updated = await api.updateRuntimeGroup("group-1", { description: "Lobby kiosks" });
+    const config = await api.getRuntimeGroupConfig("group-1");
+    const merged = await api.updateRuntimeGroupConfig(
+      "group-1",
+      { lang: "en-us" },
+      { personas: { default: "helpful" } },
+    );
+    const released = await api.releaseRuntimeGroup("group-1", { channel: "stable" });
+    const installed = await api.installRuntimeGroupSkill("group-1", "skill-weather");
+    const custom = await api.installRuntimeGroupSkill("group-1", "skill-lab", {
+      marketplaceSkillId: "marketplace-1",
+      sourceType: "git",
+      sourceRef: "https://github.com/example/skill-lab",
+      versionPin: "1.2.3",
+      active: false,
+    });
+    await api.uninstallRuntimeGroupSkill("group-1", "skill-weather");
+    await api.deleteRuntimeGroup("group-1");
+
+    assert.equal((groups.data as Record<string, unknown>[]).length, 1);
+    assert.equal(created.id, "group-1");
+    assert.equal(group.name, "kiosks");
+    assert.equal(updated.description, "Lobby kiosks");
+    assert.deepEqual(config.config, { lang: "en-us" });
+    assert.equal(merged.pending, true);
+    assert.equal(released.release_channel, "stable");
+    assert.equal(installed.skill_id, "skill-weather");
+    assert.equal(custom.skill_id, "skill-lab");
+    assert.equal(requests.length, 11);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane omits unset runtime group config personas and release fields", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (url, init) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return jsonResponse(200, { id: "group-1" });
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    await api.updateRuntimeGroupConfig("group-1", { lang: "en-us" });
+    await api.releaseRuntimeGroup("group-1");
+    await api.releaseHub("hub-1");
+
+    assert.deepEqual(bodies[0], { config: { lang: "en-us" } });
+    assert.deepEqual(bodies[1], {});
+    assert.deepEqual(bodies[2], {});
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane discovers marketplace skills", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const parsed = new URL(String(url));
+    assert.equal((init?.headers as Record<string, string>).authorization, "Bearer token");
+    if (init?.method === "GET" && parsed.pathname === "/api/v1/marketplace/skills") {
+      if (parsed.searchParams.has("owner_id")) {
+        assert.equal(parsed.searchParams.get("owner_id"), "owner-1");
+        assert.equal(parsed.searchParams.get("include_inactive"), "true");
+        assert.equal(parsed.searchParams.get("force_refresh"), "true");
+      } else {
+        // Falsy booleans are omitted rather than sent as "false".
+        assert.equal(parsed.search, "");
+      }
+      return jsonResponse(200, {
+        data: [{ skill_id: "skill-weather", source_type: "catalog", access_tier: "free" }],
+      });
+    }
+    if (init?.method === "GET" && parsed.pathname === "/api/v1/runtime-groups/group-1/marketplace") {
+      assert.equal(parsed.searchParams.get("refresh_inventory"), "true");
+      return jsonResponse(200, {
+        runtime_group_id: "group-1",
+        source: "ovos-runtime-operator",
+        data: [{ skill_id: "skill-weather", installable: true, purchase_required: false }],
+      });
+    }
+    if (init?.method === "GET" && parsed.pathname === "/api/v1/runtime-groups/group-1/inventory") {
+      assert.equal(parsed.search, "");
+      // No client connected: an empty list with a pending source, never HTTP 409.
+      return jsonResponse(200, { source: "ovos-runtime-operator-pending", data: [] });
+    }
+    throw new Error(`unexpected request ${init?.method} ${url}`);
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    const catalog = await api.listMarketplaceSkills();
+    const adminCatalog = await api.listMarketplaceSkills({
+      ownerId: "owner-1",
+      includeInactive: true,
+      forceRefresh: true,
+    });
+    const view = await api.listRuntimeGroupMarketplace("group-1", { refreshInventory: true });
+    const inventory = await api.listRuntimeGroupInventory("group-1");
+
+    assert.equal((catalog.data as Record<string, unknown>[])[0].skill_id, "skill-weather");
+    assert.equal((adminCatalog.data as Record<string, unknown>[]).length, 1);
+    assert.equal((view.data as Record<string, unknown>[])[0].installable, true);
+    assert.equal(inventory.source, "ovos-runtime-operator-pending");
+    assert.deepEqual(inventory.data, []);
+    assert.equal(requests.length, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("control plane surfaces provisioning plan, scope, and precondition errors", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === "/api/v1/hubs") {
+      return jsonResponse(402, { detail: "API access requires a paid plan." });
+    }
+    if (parsed.pathname === "/api/v1/hubs/hub-1") {
+      return jsonResponse(412, { detail: "The hub changed since it was read." });
+    }
+    if (parsed.pathname === "/api/v1/runtime-groups/group-1/marketplace") {
+      return jsonResponse(403, { detail: "Insufficient scopes" });
+    }
+    throw new Error(`unexpected request ${init?.method} ${url}`);
+  };
+
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+    await assert.rejects(
+      () => api.createHub({ name: "joke-garden", spec: {} }),
+      (error: unknown) =>
+        error instanceof ThalovantApiError && /HTTP 402/.test((error as Error).message) && /paid plan/.test((error as Error).message),
+    );
+    await assert.rejects(
+      () => api.updateHub("hub-1", { active: false }, { etag: "stale" }),
+      (error: unknown) => error instanceof ThalovantApiError && /HTTP 412/.test((error as Error).message),
+    );
+    await assert.rejects(
+      () => api.deleteHub("hub-1", { etag: "stale" }),
+      (error: unknown) => error instanceof ThalovantApiError && /HTTP 412/.test((error as Error).message),
+    );
+    await assert.rejects(
+      () => api.listRuntimeGroupMarketplace("group-1"),
+      (error: unknown) =>
+        error instanceof ThalovantApiError && /HTTP 403/.test((error as Error).message) && /Insufficient scopes/.test((error as Error).message),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("control plane fetches analytics overview", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {

@@ -130,6 +130,123 @@ export interface MemoryUpdatePayload {
   clearExpiresAt?: boolean;
 }
 
+/**
+ * Hub create and update body.
+ *
+ * `name` and `spec` are required by the create route; every field is optional
+ * on update. camelCase keys are sent as the snake_case names the API takes, and
+ * unknown keys pass through untouched.
+ */
+export interface HubPayload {
+  name?: string;
+  slug?: string;
+  namespace?: string;
+  domain?: string;
+  active?: boolean;
+  visibility?: string;
+  spec?: JsonRecord;
+  /** Sent as `owner_id`. */
+  ownerId?: string;
+  /** Sent as `runtime_group_id`. */
+  runtimeGroupId?: string;
+  /** Sent as `capacity_profile`. `"standard"` (the API default) or `"autoscaling"`. */
+  capacityProfile?: string;
+  /** Sent as `is_locked`. */
+  isLocked?: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * Optimistic-locking options for the hub write routes.
+ *
+ * `PATCH` and `DELETE /v1/hubs/{id}` require `If-Match`, so `etag` is required:
+ * a stale or missing value fails with HTTP 412 and changes nothing.
+ */
+export interface HubWriteOptions {
+  /** The `etag` of the hub resource you read, sent as `If-Match`. */
+  etag: string;
+}
+
+/**
+ * Runtime group create and update body.
+ *
+ * `name` is required by the create route. camelCase keys are sent as the
+ * snake_case names the API takes, and unknown keys pass through untouched.
+ */
+export interface RuntimeGroupPayload {
+  name?: string;
+  description?: string;
+  environment?: string;
+  spec?: JsonRecord;
+  /** Sent as `owner_id`. */
+  ownerId?: string;
+  /** Sent as `clone_from_default`. */
+  cloneFromDefault?: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * Release-apply options shared by `releaseHub` and `releaseRuntimeGroup`.
+ *
+ * Every option is optional; omitted fields fall back to the workspace release
+ * policy. Passing `images` switches to `custom` mode unless `mode` is also set.
+ */
+export interface ReleaseOptions {
+  channel?: string;
+  mode?: string;
+  version?: string;
+  images?: Record<string, string>;
+  reason?: string;
+}
+
+/** Options for `listRuntimeGroups`. */
+export interface RuntimeGroupListOptions {
+  /** Sent as `owner_id`. Admin tokens only. */
+  ownerId?: string;
+}
+
+/** Options for `updateRuntimeGroupConfig`. */
+export interface RuntimeGroupConfigOptions {
+  /** Replaces the stored personas. Left untouched when omitted. */
+  personas?: JsonRecord;
+}
+
+/** Options for `installRuntimeGroupSkill`. */
+export interface RuntimeGroupSkillInstallOptions {
+  /** Sent as `marketplace_skill_id`. */
+  marketplaceSkillId?: string;
+  /** Sent as `source_type`. Defaults to `"catalog"`. */
+  sourceType?: string;
+  /** Sent as `source_ref`. Required for `git` installs. */
+  sourceRef?: string;
+  /** Sent as `version_pin`. */
+  versionPin?: string;
+  /** Sent as `active`. Defaults to `true`. */
+  active?: boolean;
+}
+
+/** Options for `listMarketplaceSkills`. */
+export interface MarketplaceSkillListOptions {
+  /** Sent as `owner_id`. Honored for admin tokens only. */
+  ownerId?: string;
+  /** Sent as `include_inactive`. Honored for admin tokens only. */
+  includeInactive?: boolean;
+  /** Sent as `force_refresh`. Re-syncs the global catalog first, which is slower. */
+  forceRefresh?: boolean;
+}
+
+/** Options for `listRuntimeGroupMarketplace`. */
+export interface RuntimeGroupMarketplaceOptions {
+  /** Sent as `refresh_inventory`. Forces a live operator read. */
+  refreshInventory?: boolean;
+}
+
+/** Options for `listRuntimeGroupInventory`. */
+export interface RuntimeGroupInventoryOptions {
+  /** Sent as `refresh`. Forces a live operator read. */
+  refresh?: boolean;
+}
+
 /** Payload returned by `POST /v1/auth/device/authorize`. */
 export interface DeviceAuthorizationGrant {
   device_code: string;
@@ -393,6 +510,331 @@ export class ThalovantControlPlane {
     return this.request("GET", `/v1/public/hubs/${encodeURIComponent(hubRef)}`, { auth: false });
   }
 
+  /**
+   * Create a hub.
+   *
+   * `payload` mirrors the API's hub create body: `name` and `spec` are
+   * required, and `slug`, `namespace`, `runtimeGroupId`, `domain`, `active`,
+   * `visibility`, `capacityProfile`, and `ownerId` are optional. camelCase keys
+   * are sent as snake_case.
+   *
+   * The request is idempotent: a generated `Idempotency-Key` is sent unless you
+   * pass your own, so a retried create returns the first hub instead of making
+   * a second one.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  createHub(payload: HubPayload, options: { idempotencyKey?: string } = {}): Promise<JsonRecord> {
+    return this.request("POST", "/v1/hubs", {
+      body: hubPayload(payload),
+      headers: { "Idempotency-Key": options.idempotencyKey ?? randomUUID() },
+    });
+  }
+
+  /**
+   * Partially update a hub.
+   *
+   * The API enforces optimistic locking on this route: pass the `etag` from the
+   * hub resource you read, which is sent as `If-Match`. A stale or missing
+   * value fails with HTTP 412 and no change is made; re-read the hub with
+   * `getHub()` and retry with the new `etag`.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  updateHub(hubId: string, payload: HubPayload, options: HubWriteOptions): Promise<JsonRecord> {
+    return this.request("PATCH", `/v1/hubs/${encodeURIComponent(hubId)}`, {
+      body: hubPayload(payload),
+      headers: { "If-Match": options.etag },
+    });
+  }
+
+  /**
+   * Delete a hub and its dependent clients and ACLs.
+   *
+   * Like `updateHub()` this route requires the hub's current `etag`, sent as
+   * `If-Match`; a stale or missing value fails with HTTP 412.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  async deleteHub(hubId: string, options: HubWriteOptions): Promise<void> {
+    await this.request("DELETE", `/v1/hubs/${encodeURIComponent(hubId)}`, {
+      headers: { "If-Match": options.etag },
+    });
+  }
+
+  /**
+   * Apply a hub release policy and return the updated hub.
+   *
+   * Every option is optional; omitted fields fall back to the workspace release
+   * policy. Passing `images` switches the hub to `custom` mode unless you also
+   * pass `mode`.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  releaseHub(hubId: string, options: ReleaseOptions = {}): Promise<JsonRecord> {
+    return this.request("POST", `/v1/hubs/${encodeURIComponent(hubId)}/release`, {
+      body: releasePayload(options),
+    });
+  }
+
+  /**
+   * Rate a public hub from 1 to 5 and return the updated hub.
+   *
+   * Only public hubs can be rated, and owners cannot rate their own hubs.
+   * Requires a token with the `hubs:write` scope; no paid plan is needed.
+   */
+  setHubRating(hubId: string, rating: number): Promise<JsonRecord> {
+    return this.request("PUT", `/v1/hubs/${encodeURIComponent(hubId)}/rating`, { body: { rating } });
+  }
+
+  /**
+   * Remove the caller's rating from a public hub and return the hub.
+   *
+   * Requires a token with the `hubs:write` scope; no paid plan is needed.
+   */
+  clearHubRating(hubId: string): Promise<JsonRecord> {
+    return this.request("DELETE", `/v1/hubs/${encodeURIComponent(hubId)}/rating`);
+  }
+
+  /**
+   * Read the live skill and intent inventory a hub runtime exposes.
+   *
+   * Requires a token with the `hubs:inspect` scope. The API answers HTTP 409
+   * when the hub has no connected client that can report inventory.
+   */
+  getHubRuntimeCapabilities(hubId: string): Promise<JsonRecord> {
+    return this.request("GET", `/v1/hubs/${encodeURIComponent(hubId)}/runtime-capabilities`);
+  }
+
+  /**
+   * List runtime groups visible to the authenticated user.
+   *
+   * Requires a token with the `hubs:read` scope.
+   */
+  listRuntimeGroups(options: RuntimeGroupListOptions = {}): Promise<JsonRecord> {
+    const params = new URLSearchParams();
+    setStringParam(params, "owner_id", options.ownerId);
+    const query = params.toString();
+    return this.request("GET", query ? `/v1/runtime-groups?${query}` : "/v1/runtime-groups");
+  }
+
+  /**
+   * Fetch one runtime group.
+   *
+   * Requires a token with the `hubs:read` scope.
+   */
+  getRuntimeGroup(runtimeGroupId: string): Promise<JsonRecord> {
+    return this.request("GET", `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}`);
+  }
+
+  /**
+   * Create a runtime group.
+   *
+   * `payload` takes the API's create body: `name` is required, and
+   * `description`, `environment`, `ownerId`, and `cloneFromDefault` are
+   * optional. camelCase keys are sent as snake_case.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  createRuntimeGroup(payload: RuntimeGroupPayload): Promise<JsonRecord> {
+    return this.request("POST", "/v1/runtime-groups", { body: runtimeGroupPayload(payload) });
+  }
+
+  /**
+   * Update a runtime group's `name`, `description`, or `spec`.
+   *
+   * `spec` patches `replicas` and container `resources`. This route does not
+   * use `If-Match`.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  updateRuntimeGroup(runtimeGroupId: string, payload: RuntimeGroupPayload): Promise<JsonRecord> {
+    return this.request("PATCH", `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}`, {
+      body: runtimeGroupPayload(payload),
+    });
+  }
+
+  /**
+   * Read a runtime group's runtime configuration and personas.
+   *
+   * Requires a token with the `hubs:read` scope.
+   */
+  getRuntimeGroupConfig(runtimeGroupId: string): Promise<JsonRecord> {
+    return this.request("GET", `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}/config`);
+  }
+
+  /**
+   * Merge runtime configuration into a runtime group.
+   *
+   * The API merges `config` into the stored configuration rather than replacing
+   * it, and marks the group pending so the runtime operator reconciles the
+   * change. `personas` is replaced only when provided.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  updateRuntimeGroupConfig(
+    runtimeGroupId: string,
+    config: JsonRecord,
+    options: RuntimeGroupConfigOptions = {},
+  ): Promise<JsonRecord> {
+    const body: JsonRecord = { config };
+    if (options.personas !== undefined) body.personas = options.personas;
+    return this.request("PATCH", `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}/config`, { body });
+  }
+
+  /**
+   * Apply a runtime image policy and return the updated runtime group.
+   *
+   * Options behave like `releaseHub()`.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  releaseRuntimeGroup(runtimeGroupId: string, options: ReleaseOptions = {}): Promise<JsonRecord> {
+    return this.request("POST", `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}/release`, {
+      body: releasePayload(options),
+    });
+  }
+
+  /**
+   * Delete a runtime group.
+   *
+   * The API answers HTTP 409 for the workspace default group and for a group
+   * that still has hubs attached.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  async deleteRuntimeGroup(runtimeGroupId: string): Promise<void> {
+    await this.request("DELETE", `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}`);
+  }
+
+  /**
+   * List the marketplace skill catalog visible to the authenticated user.
+   *
+   * Returns `{ data: [...] }` where each entry carries the catalog fields an
+   * install needs — `skill_id`, `source_type`, `source_ref`, `package_name`,
+   * `version` compatibility, `config_schema` and `secret_schema` — alongside
+   * presentation and access fields such as `category`, `tags`, `verified`,
+   * `access_tier` and `billing_sku`. Global catalog entries and the caller's own
+   * tenant entries are both included.
+   *
+   * `ownerId` and `includeInactive` are honored for admin tokens only; the API
+   * silently scopes a non-admin caller to their own tenant and to active
+   * entries. `forceRefresh` re-syncs the global catalog from its source before
+   * answering, which is slower.
+   *
+   * Requires a token with the `hubs:read` scope. Unlike the provisioning routes
+   * this catalog is **not** paid-gated, so free-tier callers can browse the
+   * marketplace before upgrading — only the install itself needs a paid plan.
+   */
+  listMarketplaceSkills(options: MarketplaceSkillListOptions = {}): Promise<JsonRecord> {
+    const params = new URLSearchParams();
+    setStringParam(params, "owner_id", options.ownerId);
+    if (options.includeInactive) params.set("include_inactive", "true");
+    if (options.forceRefresh) params.set("force_refresh", "true");
+    const query = params.toString();
+    return this.request("GET", query ? `/v1/marketplace/skills?${query}` : "/v1/marketplace/skills");
+  }
+
+  /**
+   * List the marketplace catalog resolved against one runtime group.
+   *
+   * This is the discovery view to use before installing: every catalog entry is
+   * returned with the group's own state folded in — whether the skill is
+   * desired (`active`, `version_pin`, `source_type`), whether it was observed
+   * running (`observed_source`, `observed_at`, intent counts), operator status
+   * fields, and the access verdict for the tenant plan (`purchase_required`,
+   * `installable`, `access_message`). The envelope also carries
+   * `runtime_group_id`, `observed_at`, `source`, `operator_phase` and
+   * `operator_message`.
+   *
+   * `refreshInventory` forces a live read from the runtime operator instead of
+   * answering from the cached inventory snapshot; without it the envelope
+   * `source` is `runtime-group-cache` (or `runtime-group-cache-empty` when
+   * nothing has been observed yet), never a live operator read.
+   *
+   * Requires a token with the `hubs:inspect` scope; no paid plan is needed to
+   * browse. The API answers HTTP 404 for an unknown group and HTTP 403 when the
+   * caller does not own it.
+   */
+  listRuntimeGroupMarketplace(
+    runtimeGroupId: string,
+    options: RuntimeGroupMarketplaceOptions = {},
+  ): Promise<JsonRecord> {
+    const params = new URLSearchParams();
+    if (options.refreshInventory) params.set("refresh_inventory", "true");
+    const query = params.toString();
+    const path = `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}/marketplace`;
+    return this.request("GET", query ? `${path}?${query}` : path);
+  }
+
+  /**
+   * List the skills a runtime group is actually observed running.
+   *
+   * Where `listRuntimeGroupMarketplace()` answers "what could be installed
+   * here", this answers "what is loaded right now": each entry carries
+   * `skill_id`, `version`, `source`, `active`, `adapt_intents`,
+   * `padatious_intents`, `total_intents` and `observed_at`. The envelope reports
+   * `source` — the observation's provenance, one of `ovos-runtime-operator`,
+   * `runtime-group-cache` or `ovos-runtime-operator-pending` — plus
+   * `operator_phase` and `operator_message`.
+   *
+   * `refresh` forces a live operator read; the API also refreshes on its own
+   * when it holds no cached snapshot. Unlike `getHubRuntimeCapabilities()` this
+   * route does not answer HTTP 409 when nothing is reporting — it returns an
+   * empty `data` list with a pending `source` instead.
+   *
+   * Requires a token with the `hubs:inspect` scope; no paid plan is needed.
+   */
+  listRuntimeGroupInventory(
+    runtimeGroupId: string,
+    options: RuntimeGroupInventoryOptions = {},
+  ): Promise<JsonRecord> {
+    const params = new URLSearchParams();
+    if (options.refresh) params.set("refresh", "true");
+    const query = params.toString();
+    const path = `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}/inventory`;
+    return this.request("GET", query ? `${path}?${query}` : path);
+  }
+
+  /**
+   * Install (or re-install) a skill in a runtime group.
+   *
+   * The default `sourceType` of `catalog` installs a marketplace skill and
+   * requires the skill to exist in the catalog. `git` installs need a
+   * `sourceRef` repository URL. Installing a skill that is already present
+   * updates the existing entry.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope. Paid
+   * marketplace skills also need marketplace access on the tenant plan.
+   */
+  installRuntimeGroupSkill(
+    runtimeGroupId: string,
+    skillId: string,
+    options: RuntimeGroupSkillInstallOptions = {},
+  ): Promise<JsonRecord> {
+    const body: JsonRecord = {
+      skill_id: skillId,
+      source_type: options.sourceType ?? "catalog",
+      active: options.active ?? true,
+    };
+    if (options.marketplaceSkillId !== undefined) body.marketplace_skill_id = options.marketplaceSkillId;
+    if (options.sourceRef !== undefined) body.source_ref = options.sourceRef;
+    if (options.versionPin !== undefined) body.version_pin = options.versionPin;
+    return this.request("POST", `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}/skills`, { body });
+  }
+
+  /**
+   * Remove a skill from a runtime group.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  async uninstallRuntimeGroupSkill(runtimeGroupId: string, skillId: string): Promise<void> {
+    await this.request(
+      "DELETE",
+      `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}/skills/${encodeURIComponent(skillId)}`,
+    );
+  }
+
   createClient(payload: JsonRecord, options: { idempotencyKey?: string } = {}): Promise<JsonRecord> {
     return this.request("POST", "/v1/clients", {
       body: payload,
@@ -549,6 +991,33 @@ function memoryPayload(payload: MemoryCreatePayload | MemoryUpdatePayload): Json
   renameKey(result, "expiresAt", "expires_at");
   renameKey(result, "clearExpiresAt", "clear_expires_at");
   return result;
+}
+
+function hubPayload(payload: HubPayload): JsonRecord {
+  const result: JsonRecord = { ...payload };
+  renameKey(result, "ownerId", "owner_id");
+  renameKey(result, "runtimeGroupId", "runtime_group_id");
+  renameKey(result, "capacityProfile", "capacity_profile");
+  renameKey(result, "isLocked", "is_locked");
+  return result;
+}
+
+function runtimeGroupPayload(payload: RuntimeGroupPayload): JsonRecord {
+  const result: JsonRecord = { ...payload };
+  renameKey(result, "ownerId", "owner_id");
+  renameKey(result, "cloneFromDefault", "clone_from_default");
+  return result;
+}
+
+/** Build a release-apply body, omitting the options the caller left unset. */
+function releasePayload(options: ReleaseOptions): JsonRecord {
+  const body: JsonRecord = {};
+  if (options.channel !== undefined) body.channel = options.channel;
+  if (options.mode !== undefined) body.mode = options.mode;
+  if (options.version !== undefined) body.version = options.version;
+  if (options.images !== undefined) body.images = { ...options.images };
+  if (options.reason !== undefined) body.reason = options.reason;
+  return body;
 }
 
 function renameKey(values: JsonRecord, from: string, to: string): void {

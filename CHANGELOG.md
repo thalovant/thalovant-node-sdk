@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.28
+
+- Add the hub provisioning surface, which was read-only until now: `createHub(payload, options)`, `updateHub(hubId, payload, { etag })`, `deleteHub(hubId, { etag })`, `releaseHub(hubId, options)`, `setHubRating(hubId, rating)`, `clearHubRating(hubId)`, and `getHubRuntimeCapabilities(hubId)`.
+- Add the runtime group and skill surface: `listRuntimeGroups`, `getRuntimeGroup`, `createRuntimeGroup`, `updateRuntimeGroup`, `getRuntimeGroupConfig`, `updateRuntimeGroupConfig`, `releaseRuntimeGroup`, `deleteRuntimeGroup`, `installRuntimeGroupSkill`, and `uninstallRuntimeGroupSkill`.
+- Add skill discovery, so callers can find what is installable instead of having to know a skill id: `listMarketplaceSkills(options)` reads the catalog, `listRuntimeGroupMarketplace(runtimeGroupId, options)` resolves that catalog against one group (desired state, observed state, and the plan's `installable`/`purchase_required` verdict), and `listRuntimeGroupInventory(runtimeGroupId, options)` reports only what the group is observed running.
+- `PATCH` and `DELETE /v1/hubs/{id}` enforce optimistic locking, so `updateHub` and `deleteHub` take a **required** `etag` option and send it as `If-Match`; a stale *or missing* value is HTTP 412 and changes nothing. The runtime group routes read no `If-Match`. `createHub` sends an `Idempotency-Key` header, generated unless you pass `idempotencyKey`, so a retried create cannot make a second hub.
+- Plan and scope gates surface as the usual `ThalovantApiError`: the provisioning writes need a paid plan and `hubs:write` (HTTP 402 on the free plan, HTTP 403 without the scope), the ratings need `hubs:write` with no plan gate, and the three discovery reads are **not** paid-gated at all (`hubs:read` for the catalog, `hubs:inspect` for the two group reads) so a free-plan token can browse before upgrading.
+- Unlike `getHubRuntimeCapabilities`, neither group read answers HTTP 409 when nothing is reporting; they return an empty `data` list with the provenance in `source`.
+- New exported types: `HubPayload`, `HubWriteOptions`, `RuntimeGroupPayload`, `ReleaseOptions`, `RuntimeGroupListOptions`, `RuntimeGroupConfigOptions`, `RuntimeGroupSkillInstallOptions`, `MarketplaceSkillListOptions`, `RuntimeGroupMarketplaceOptions`, and `RuntimeGroupInventoryOptions`. camelCase options and payload keys map to the API's snake_case bodies and query params, and falsy boolean options are omitted rather than sent as `false`. No existing signature changed and the browser bundle is unaffected.
+- Document the provisioning walkthrough (discover skills, create a runtime group, create a hub, install a skill, release) and the skill discovery reads in the README, with the paid-plan and scope requirements per route.
+
 ## 0.2.27
 
 - Derive every user agent from a single version constant. `src/version.ts` now owns `SDK_VERSION` and builds `USER_AGENT` from it; `DEFAULT_USER_AGENT` (data plane) and the control plane's default user agent are that one value. Both keep their names and their exact string values, and no runtime behavior changes. The new module imports nothing and reads no files, so browser bundles are unaffected.
