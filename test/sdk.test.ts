@@ -1258,6 +1258,17 @@ test("control plane bootstrap preserves API returned MQTT credentials", async ()
   }
 });
 
+/**
+ * Debug output is `<ClassName> <json>`; return the parsed JSON body so tests
+ * can assert on exact field values instead of substring-matching URL literals
+ * against the rendered text.
+ */
+function parseDebugPayload(rendered: string): Record<string, any> {
+  const start = rendered.indexOf("{");
+  assert.ok(start >= 0, `debug output is not in the expected "<Name> <json>" form: ${rendered}`);
+  return JSON.parse(rendered.slice(start)) as Record<string, any>;
+}
+
 test("identity, MQTT credentials, and control plane redact secrets in debug output", () => {
   const identity = new ThalovantIdentity({
     access_key: "id-access-key-XYZ",
@@ -1273,34 +1284,52 @@ test("identity, MQTT credentials, and control plane redact secrets in debug outp
     },
   });
 
-  // console.log (util.inspect) and string interpolation never print secrets.
-  for (const rendered of [inspect(identity), String(identity)]) {
-    for (const secret of [
-      "id-access-key-XYZ",
-      "id-password-XYZ",
-      "id-crypto-key-XYZ",
-      "mqtt-user-XYZ",
-      "mqtt-password-XYZ",
-    ]) {
-      assert.ok(!rendered.includes(secret), `identity debug output leaked ${secret}`);
-    }
-    assert.ok(rendered.includes("ThalovantIdentity"));
-    assert.ok(rendered.includes("[redacted]"));
-    assert.ok(rendered.includes('"site_id":"debug-site"'));
-  }
+  // Every secret value, scanned as a variable needle (never a literal), must
+  // be absent from both console.log (util.inspect) and interpolation output.
+  const secretsToScan = [
+    "id-access-key-XYZ",
+    "id-password-XYZ",
+    "id-crypto-key-XYZ",
+    "mqtt-user-XYZ",
+    "mqtt-password-XYZ",
+    "bearer-token-XYZ",
+  ];
 
   assert.ok(identity.mqtt);
+  for (const rendered of [inspect(identity), String(identity)]) {
+    for (const secret of secretsToScan) {
+      assert.ok(!rendered.includes(secret), `identity debug output leaked ${secret}`);
+    }
+    assert.ok(rendered.startsWith("ThalovantIdentity "));
+    const payload = parseDebugPayload(rendered);
+    assert.equal(payload.access_key, "[redacted]");
+    assert.equal(payload.password, "[redacted]");
+    assert.equal(payload.crypto_key, "[redacted]");
+    // Non-secret fields stay visible for debugging (compared to the object's
+    // own field values, not to URL string literals).
+    assert.equal(payload.site_id, identity.siteId);
+    assert.equal(payload.default_master, identity.defaultMaster);
+    assert.equal(payload.mqtt.endpoint, identity.mqtt.endpoint);
+  }
+
   for (const rendered of [inspect(identity.mqtt), String(identity.mqtt)]) {
-    assert.ok(!rendered.includes("mqtt-user-XYZ"));
-    assert.ok(!rendered.includes("mqtt-password-XYZ"));
-    assert.ok(rendered.includes("mqtts://mqtt.example.com:8883"));
+    const payload = parseDebugPayload(rendered);
+    assert.equal(payload.username, "[redacted]");
+    assert.equal(payload.password, "[redacted]");
+    // The non-secret broker endpoint stays visible.
+    assert.equal(payload.endpoint, identity.mqtt.endpoint);
   }
 
   const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "bearer-token-XYZ" });
   for (const rendered of [inspect(api), String(api)]) {
-    assert.ok(!rendered.includes("bearer-token-XYZ"), "control plane debug output leaked the bearer token");
-    assert.ok(rendered.includes("https://dash.example.com/api"));
-    assert.ok(rendered.includes("[redacted]"));
+    for (const secret of secretsToScan) {
+      assert.ok(!rendered.includes(secret), "control plane debug output leaked a secret");
+    }
+    assert.ok(rendered.startsWith("ThalovantControlPlane "));
+    const payload = parseDebugPayload(rendered);
+    assert.equal(payload.accessToken, "[redacted]");
+    // The non-secret base URL stays visible.
+    assert.equal(payload.apiUrl, api.apiUrl);
   }
 
   // No toJSON anywhere: JSON persistence of an identity keeps the real
