@@ -1,6 +1,6 @@
 {
   "name": "@thalovant/sdk",
-  "version": "0.2.33",
+  "version": "0.2.34",
   "description": "Node.js, browser, and TypeScript SDK for direct Thalovant hub data-plane clients and agents",
   "type": "module",
   "license": "MIT",
