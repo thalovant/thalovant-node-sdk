@@ -1909,6 +1909,48 @@ test("client ask waits for fallback replies after intent failure", async () => {
   ]);
 });
 
+test("client ask treats ovos.intent.unmatched like the legacy intent-miss name", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const eventTarget = new EventTarget();
+  const transport = Object.assign(eventTarget, {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return { connected: true, handshakeComplete: true, transportAlive: true };
+    },
+    async emitBus(_eventType: string, _data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: { type: "ovos.intent.unmatched", data: { utterance: "flibbertigibbet" }, context },
+      }));
+      setTimeout(() => {
+        eventTarget.dispatchEvent(new CustomEvent("bus", {
+          detail: { type: "speak", data: { utterance: "Let me try that a different way." }, context },
+        }));
+        eventTarget.dispatchEvent(new CustomEvent("bus", {
+          detail: { type: "ovos.utterance.handled", data: {}, context },
+        }));
+      }, 10);
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 0 });
+  const reply = await client.ask("flibbertigibbet");
+
+  assert.equal(reply.ok, true);
+  assert.equal(reply.text, "Let me try that a different way.");
+  // The current OVOS name is recorded just like complete_intent_failure would be.
+  assert.deepEqual(reply.events.map((event) => event.name), [
+    "ovos.intent.unmatched",
+    "speak",
+    "ovos.utterance.handled",
+  ]);
+});
+
 test("client ask ignores replies without matching correlation", async () => {
   const identity = new ThalovantIdentity({
     key: "access",

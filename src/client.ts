@@ -1,5 +1,6 @@
 import {
   EVENT_INTENT_FAILURE,
+  EVENT_INTENT_UNMATCHED,
   EVENT_OVOS_UTTERANCE_SPEAK,
   EVENT_POLICY_DENIED,
   EVENT_QUERY_TIMEOUT,
@@ -274,6 +275,11 @@ export class ThalovantClient {
         finishHandled();
       }, optionsWithCorrelation),
       this.on(EVENT_INTENT_FAILURE, event => {
+        events.push(event);
+      }, optionsWithCorrelation),
+      // Current OVOS name for the same intent-miss; treat it exactly like the
+      // legacy name above so a fallback reply can still resolve the ask (#22).
+      this.on(EVENT_INTENT_UNMATCHED, event => {
         events.push(event);
       }, optionsWithCorrelation),
       this.on(EVENT_POLICY_DENIED, event => {
