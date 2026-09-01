@@ -240,6 +240,9 @@ export class ThalovantClient {
     const fragments: string[] = [];
     const events: ThalovantEvent[] = [];
     let failureEvent: ThalovantEvent | undefined;
+    // An intent miss is a soft failure: it ends phase 1 but leaves failureEvent
+    // undefined so the empty-reply wait still runs and a fallback reply can win.
+    let softFailureEvent: ThalovantEvent | undefined;
     await this.connect();
     let finishHandled!: () => void;
     let failHandled!: (error: Error) => void;
@@ -274,13 +277,18 @@ export class ThalovantClient {
         events.push(event);
         finishHandled();
       }, optionsWithCorrelation),
+      // Legacy and current OVOS names for an intent miss. Soft failure: end
+      // phase 1 (a fallback may still answer during the empty-reply wait), but
+      // leave failureEvent unset so that wait runs and a reply can take over (#22).
       this.on(EVENT_INTENT_FAILURE, event => {
+        softFailureEvent = event;
         events.push(event);
+        finishHandled();
       }, optionsWithCorrelation),
-      // Current OVOS name for the same intent-miss; treat it exactly like the
-      // legacy name above so a fallback reply can still resolve the ask (#22).
       this.on(EVENT_INTENT_UNMATCHED, event => {
+        softFailureEvent = event;
         events.push(event);
+        finishHandled();
       }, optionsWithCorrelation),
       this.on(EVENT_POLICY_DENIED, event => {
         failureEvent = event;
@@ -310,23 +318,26 @@ export class ThalovantClient {
       if (replySettleMs > 0) {
         await sleep(replySettleMs);
       }
-      if (!failureEvent && fragments.length === 0) {
+      // A soft intent-miss becomes the surfaced failure only if no reply (not
+      // even a fallback) arrived; a reply means a fallback recovered the turn.
+      const effectiveFailure = failureEvent ?? (fragments.length === 0 ? softFailureEvent : undefined);
+      if (!effectiveFailure && fragments.length === 0) {
         throw new ThalovantTimeoutError(`Hub handled the utterance but did not emit a speak reply within ${options.emptyReplyWaitMs ?? this.emptyReplyWaitMs}ms.`);
       }
-      if (failureEvent && fragments.length === 0) {
-        throw new ThalovantRuntimeError(failureEvent.text || `Hub reported ${failureEvent.name}.`);
+      if (effectiveFailure && fragments.length === 0) {
+        throw new ThalovantRuntimeError(effectiveFailure.text || `Hub reported ${effectiveFailure.name}.`);
       }
       const text = fragments.join(" ");
       return {
         text,
         displayText: stripSsml(text),
         utterances: fragments,
-        handled: !failureEvent,
-        ok: !failureEvent,
+        handled: !effectiveFailure,
+        ok: !effectiveFailure,
         sessionId: context.session?.session_id,
         requestId,
         events,
-        failureEvent,
+        failureEvent: effectiveFailure,
         displayItems(options: { maxTextChars?: number } = {}): ThalovantDisplayItem[] {
           const items = events.flatMap(event => event.displayItems(options));
           return items.length ? items : [{ kind: "text", text: stripSsml(text) }];

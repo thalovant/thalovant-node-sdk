@@ -16,7 +16,7 @@ import { HubDataPlaneEndpoints, HubProtocolSettings, selectDataPlaneEndpoint } f
 import { displayItemsFromEventData } from "../src/rich.js";
 import { ThalovantControlPlane } from "../src/control.js";
 import { ThalovantClient } from "../src/client.js";
-import { ThalovantApiError, ThalovantConnectionError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "../src/errors.js";
+import { ThalovantApiError, ThalovantConnectionError, ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "../src/errors.js";
 import { HiveMindHttpTransport, HiveMindWSSTransport, mqttConnectionEndpoint, mqttTopicsForIdentity } from "../src/transport.js";
 import { decodeHiveBinaryFrame, encodeHiveBinaryFrame } from "../src/wire.js";
 
@@ -1949,6 +1949,40 @@ test("client ask treats ovos.intent.unmatched like the legacy intent-miss name",
     "speak",
     "ovos.utterance.handled",
   ]);
+});
+
+test("client ask surfaces an unrecovered intent miss after the empty-reply wait", async () => {
+  const identity = new ThalovantIdentity({
+    key: "access",
+    password: "secret",
+    site: "site",
+    host: "https://hub.example.com",
+  });
+  const eventTarget = new EventTarget();
+  const transport = Object.assign(eventTarget, {
+    async connect(): Promise<void> {},
+    async disconnect(): Promise<void> {},
+    healthcheck() {
+      return { connected: true, handshakeComplete: true, transportAlive: true };
+    },
+    async emitBus(_eventType: string, _data: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+      // Intent miss and NOTHING else -- no fallback reply arrives.
+      eventTarget.dispatchEvent(new CustomEvent("bus", {
+        detail: { type: "ovos.intent.unmatched", data: { utterance: "flibbertigibbet" }, context },
+      }));
+    },
+  });
+
+  const client = new ThalovantClient(identity, { transport, replySettleMs: 0 });
+  // A short empty-reply wait: the miss must surface promptly after it, not wait
+  // out the full timeout.
+  const start = Date.now();
+  await assert.rejects(
+    client.ask("flibbertigibbet", { emptyReplyWaitMs: 100, timeoutMs: 10000 }),
+    (err: Error) => err instanceof ThalovantRuntimeError,
+    "an unrecovered intent miss must surface as a runtime error, not a timeout",
+  );
+  assert.ok(Date.now() - start < 5000, "must surface within the bounded empty-reply wait, not the full timeout");
 });
 
 test("client ask ignores replies without matching correlation", async () => {
