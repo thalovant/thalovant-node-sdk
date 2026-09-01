@@ -1708,6 +1708,15 @@ test("events expose text and match compatible context", () => {
   assert.equal(eventMatchesContext(event, contextWithCorrelation({}, { sessionId: "other" })), false);
 });
 
+test("events treat both OVOS and legacy intent-miss names as failures", () => {
+  // OVOS renamed the terminal "nothing matched" bus event from the Mycroft
+  // name to ovos.intent.unmatched (#22); both must be recognized so ask()
+  // returns promptly instead of waiting out its timeout.
+  assert.equal(new ThalovantEvent("ovos.intent.unmatched").isFailure, true);
+  assert.equal(new ThalovantEvent("complete_intent_failure").isFailure, true);
+  assert.equal(new ThalovantEvent("speak").isFailure, false);
+});
+
 test("client ask keeps speak listeners open through reply settle", async () => {
   const identity = new ThalovantIdentity({
     key: "access",
