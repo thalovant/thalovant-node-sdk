@@ -20,6 +20,7 @@ import {
   newSessionId,
   ThalovantEvent,
   ThalovantReply,
+  sessionIdsMatch,
   utterancePayload,
 } from "./events.js";
 import { ThalovantIdentity } from "./identity.js";
@@ -532,7 +533,7 @@ function requestOnlyCorrelationContext(context: EventContext, requestId: string)
 function eventMatchesRequiredCorrelation(event: ThalovantEvent, expected: EventContext): boolean {
   const expectedSession = correlationSessionId(expected);
   const expectedRequest = correlationRequestId(expected);
-  if (expectedSession && event.sessionId && expectedSession !== event.sessionId) {
+  if (expectedSession && event.sessionId && !sessionIdsMatch(expectedSession, event.sessionId)) {
     return false;
   }
   if (expectedRequest && event.requestId && expectedRequest !== event.requestId) {
