@@ -4,9 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Published npm version to verify
-        required: true
-        default: 0.2.19
+        # No default. It was pinned at 0.2.19, which is not even on npm any
+        # more, so a bare dispatch failed with ETARGET and looked like a
+        # broken release.
+        description: Published npm version to verify; leave blank to use package.json
+        required: false
 
 permissions:
   contents: read
@@ -15,13 +17,24 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      - name: Resolve the version to verify
+        id: target
+        # Falls back to package.json so a bare dispatch checks what this
+        # commit actually ships instead of a hardcoded version.
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          VERSION="${REQUESTED:-$(node -p "require('./package.json').version")}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Verifying @thalovant/sdk $VERSION"
       - name: Install from npm in a clean project
         env:
-          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ steps.target.outputs.version }}
         run: |
           mkdir -p "$RUNNER_TEMP/thalovant-smoke"
           npm install --prefix "$RUNNER_TEMP/thalovant-smoke" "@thalovant/sdk@$PACKAGE_VERSION"
