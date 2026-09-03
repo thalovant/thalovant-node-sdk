@@ -154,35 +154,22 @@ export function contextWithCorrelation(
   return next;
 }
 
-/**
- * True when a reply's session id is the one we asked for.
- *
- * A hub rewrites a client-declared session id before the orchestrator sees it:
- * hivemind-core derives a Layer-1 identity as `${conn_nonce}:${declared}` so two
- * clients cannot collide on the same declared name (HIVEMIND-BRIDGE-1 §4), and
- * only admin connections are exempt. Replies can therefore carry either form,
- * and comparing for equality rejected every one of them -- ask() timed out
- * while the hub had already answered and emitted ovos.utterance.handled.
- *
- * Matching the part after the first ":" mirrors what the hub does on the way
- * out. Deliberately not a bare endsWith: a declared id of "b" must not match a
- * reply for "a:xb".
- */
-export function sessionIdsMatch(expected: string, actual: string): boolean {
-  if (actual === expected) {
-    return true;
-  }
-  const separator = actual.indexOf(":");
-  return separator >= 0 && actual.slice(separator + 1) === expected;
-}
-
 export function eventMatchesContext(event: ThalovantEvent, expected?: EventContext): boolean {
-  const expectedSession = sessionIdFromContext(expected);
-  if (expectedSession && event.sessionId && !sessionIdsMatch(expectedSession, event.sessionId)) {
-    return false;
-  }
+  // The request id decides, when both sides carry one. A hub does not echo a
+  // client-declared session id: it substitutes its own. Observed against a live
+  // hub on 2026-09-03 - sent "observe-me", every reply came back as
+  // "71048b7f-e7b0-4360-8fb5-a03816f78617" - so comparing session ids rejected
+  // replies the request id had already identified as ours, and ask() timed out
+  // while the hub had answered and emitted ovos.utterance.handled.
   const expectedRequest = requestIdFromContext(expected);
-  if (expectedRequest && event.requestId && expectedRequest !== event.requestId) {
+  if (expectedRequest && event.requestId) {
+    return expectedRequest === event.requestId;
+  }
+  // No request id on one side or the other: fall back to the session, which is
+  // all a caller had before request ids existed. Deliberately lenient - a reply
+  // carrying no request id is not evidence either way.
+  const expectedSession = sessionIdFromContext(expected);
+  if (expectedSession && event.sessionId && expectedSession !== event.sessionId) {
     return false;
   }
   return true;
