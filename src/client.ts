@@ -486,10 +486,15 @@ export class ThalovantClient {
    * person says to reach it, as the skill wrote them, `{slot}` placeholders
    * included. `languages` defaults to `en-us`.
    *
+   * `ovos.intent.describe` is needed only when the sentences are wanted, which
+   * is the default; `{ describe: false }` lists with `ovos.intent.list` alone.
+   *
    * Rejects with `ThalovantPolicyDeniedError` when the hub refuses the query
    * and `fallback` is off; with it on (the default), a hub allowed for only
    * the engines' manifests yields intent names with `source` set to
-   * `engine-manifests`.
+   * `engine-manifests`. A hub that answers the listing with `ok: false`
+   * rejects with `ThalovantRuntimeError`: it failed the query, which is not
+   * the same as having no intents.
    */
   async intents(
     languages?: Iterable<string>,
@@ -499,7 +504,11 @@ export class ThalovantClient {
     return intentQueries.intentInventory(this, chosen.length > 0 ? chosen : ["en-us"], options);
   }
 
-  /** The hub's intent manifest for one language, one row per registration. */
+  /**
+   * The hub's intent manifest for one language, one row per registration.
+   *
+   * Rejects with `ThalovantRuntimeError` when the hub answers `ok: false`.
+   */
   async listIntents(
     lang?: string,
     options: { timeoutMs?: number; includeDefinitions?: boolean } = {},

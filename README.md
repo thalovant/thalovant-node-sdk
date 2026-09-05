@@ -607,11 +607,15 @@ Each intent carries the sentences a person says to reach it, per language, as
 the skill wrote them (`{location}` marks a slot): `intent.phrases` keyed by
 language, `intent.phrasesFor(lang)`, and `intent.examples(lang, limit)`, which
 prefers whole sentences over ones with a slot. `inventory.asObject()` is
-JSON-ready. The hub's connection must be allowed to publish `ovos.intent.list`
-and `ovos.intent.describe`; a hub that refuses rejects with
+JSON-ready. The hub's connection must be allowed to publish `ovos.intent.list`;
+`ovos.intent.describe` is needed only when the sentences are wanted, which is
+the default (`describe: true`), so `intents(langs, { describe: false })` lists
+with `ovos.intent.list` alone. A hub that refuses either rejects with
 `ThalovantPolicyDeniedError` naming the type, or with the default
 `fallback: true` lists intent names only and marks the result
-`source: "engine-manifests"` with `denied: ["ovos.intent.list"]`.
+`source: "engine-manifests"` with `denied: ["ovos.intent.list"]`. A hub that
+answers the listing with `ok: false` rejects with `ThalovantRuntimeError`
+carrying the hub's `error`: a refused listing is not an empty hub.
 
 `client.listIntents(lang)` and `client.describeIntent(skillId, intentName, lang)`
 expose the two underlying queries when you need the manifest rows or a

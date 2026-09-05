@@ -583,3 +583,81 @@ test("a policy refusal parses the hub's event as sent", () => {
   assert.deepEqual(bare.allowed, []);
   assert.match(bare.message, /refused by the hub's policy/);
 });
+
+test("a refused listing is an error, not an empty hub", async () => {
+  // `ok: false` on a listing means the query failed. Reading the missing
+  // `intents` key as an empty list would show a person an empty hub.
+  class Refuses extends FakeHubTransport {
+    override async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+      if (eventType === EVENT_INTENT_LIST) {
+        this.emitted.push({ eventType, data: { ...data }, context: { ...context } });
+        this.deliver("ovos.intent.list.response", { ok: false, error: "manifest unavailable" }, context);
+        return;
+      }
+      await super.emitBus(eventType, data, context);
+    }
+  }
+
+  const hub = new Refuses();
+  await assert.rejects(
+    client(hub).intents(["en-us"], { timeoutMs: 5000 }),
+    (error: unknown) =>
+      error instanceof ThalovantRuntimeError &&
+      !(error instanceof ThalovantPolicyDeniedError) &&
+      /ovos\.intent\.list failed: manifest unavailable/.test(error.message),
+  );
+  // The engines' manifests are the fallback for a refusal, not for a failure:
+  // the hub answered, and what it said was that it could not answer.
+  assert.equal(emittedOf(hub, EVENT_PADATIOUS_MANIFEST_GET).length, 0);
+});
+
+test("a listing that fails without saying why still names the query", async () => {
+  class Mute extends FakeHubTransport {
+    override async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+      if (eventType === EVENT_INTENT_LIST) {
+        this.emitted.push({ eventType, data: { ...data }, context: { ...context } });
+        this.deliver("ovos.intent.list.response", { ok: false }, context);
+        return;
+      }
+      await super.emitBus(eventType, data, context);
+    }
+  }
+
+  await assert.rejects(
+    client(new Mute()).intents(["en-us"], { timeoutMs: 5000 }),
+    (error: unknown) =>
+      error instanceof ThalovantRuntimeError && /ovos\.intent\.list failed: the hub refused the listing/.test(error.message),
+  );
+});
+
+test("a describe that does not know the intent is not an error", async () => {
+  // The other half of the rule: `ok: false` from describe is a real answer --
+  // the hub does not know that registration -- and leaves it without sentences.
+  class KnowsNothing extends FakeHubTransport {
+    override async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+      if (eventType === EVENT_INTENT_DESCRIBE) {
+        this.emitted.push({ eventType, data: { ...data }, context: { ...context } });
+        this.deliver("ovos.intent.describe.response", { ok: false, error: "unknown intent" }, context);
+        return;
+      }
+      await super.emitBus(eventType, data, context);
+    }
+  }
+
+  const inventory = await client(new KnowsNothing()).intents(["en-us"], { timeoutMs: 5000 });
+  assert.equal(inventory.source, SOURCE_MANIFEST);
+  assert.deepEqual(inventory.intents.map(intent => intent.id), [`${SHADOW}:custos.incidents`, `${WEATHER}:current.weather`]);
+  assert.equal(inventory.hasPhrases, false, "every intent is listed, none carries sentences");
+});
+
+test("only string entries survive in the allowed list", () => {
+  // A number or a null in `allowed` is not a message type; stringifying one
+  // would put "3" in front of an operator reading which types to allow.
+  const error = ThalovantPolicyDeniedError.fromEvent(new ThalovantEvent(EVENT_POLICY_DENIED, {
+    denied_type: EVENT_INTENT_LIST,
+    code: "acl_disallowed_type",
+    data: { allowed: ["speak", 3, null, { msg_type: "speak" }, "recognizer_loop:utterance"] },
+  }));
+
+  assert.deepEqual(error.allowed, ["speak", "recognizer_loop:utterance"]);
+});
