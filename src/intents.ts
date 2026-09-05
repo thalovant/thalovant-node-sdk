@@ -39,7 +39,7 @@ import {
   EVENT_PADATIOUS_MANIFEST_GET,
   EVENT_POLICY_DENIED,
 } from "./constants.js";
-import { ThalovantPolicyDeniedError, ThalovantTimeoutError } from "./errors.js";
+import { ThalovantPolicyDeniedError, ThalovantRuntimeError, ThalovantTimeoutError } from "./errors.js";
 import { EventContext, newRequestId, ThalovantEvent } from "./events.js";
 
 /** The inventory was read from the runtime's intent manifest: sentences per language. */
@@ -370,6 +370,14 @@ export async function listIntents(
     lang,
     timeoutMs: options.timeoutMs,
   });
+  if (event.data.ok === false) {
+    // A refused listing is not an empty hub. Describe answers `ok: false` for
+    // an intent it does not know, which is a real answer; a listing that fails
+    // has told us nothing, and reading the missing `intents` key as an empty
+    // list would show a person a device that can do nothing.
+    const detail = String(event.data.error ?? "").trim() || "the hub refused the listing";
+    throw new ThalovantRuntimeError(`${EVENT_INTENT_LIST} failed: ${detail}`);
+  }
   const rows = event.data.intents;
   if (!Array.isArray(rows)) return [];
   return rows.map(registrationFromRow).filter((row): row is IntentRegistration => row !== undefined);

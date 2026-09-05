@@ -607,11 +607,17 @@ Each intent carries the sentences a person says to reach it, per language, as
 the skill wrote them (`{location}` marks a slot): `intent.phrases` keyed by
 language, `intent.phrasesFor(lang)`, and `intent.examples(lang, limit)`, which
 prefers whole sentences over ones with a slot. `inventory.asObject()` is
-JSON-ready. The hub's connection must be allowed to publish `ovos.intent.list`
-and `ovos.intent.describe`; a hub that refuses rejects with
-`ThalovantPolicyDeniedError` naming the type, or with the default
-`fallback: true` lists intent names only and marks the result
-`source: "engine-manifests"` with `denied: ["ovos.intent.list"]`.
+JSON-ready. The hub's connection must be allowed to publish `ovos.intent.list`;
+`ovos.intent.describe` is needed only when the sentences are wanted, which is
+the default (`describe: true`), so `intents(langs, { describe: false })` lists
+with `ovos.intent.list` alone. A hub that refuses a query rejects with
+`ThalovantPolicyDeniedError` naming the type; only when the hub refuses
+`ovos.intent.list` and `fallback` is on (the default) does the SDK fall back to
+the engines' manifests, listing intent names only and marking the result
+`source: "engine-manifests"` with `denied: ["ovos.intent.list"]`. A refused
+`ovos.intent.describe` rejects either way, and a hub that answers the listing
+with `ok: false` rejects with `ThalovantRuntimeError` carrying the hub's
+`error`: a refused listing is not an empty hub.
 
 `client.listIntents(lang)` and `client.describeIntent(skillId, intentName, lang)`
 expose the two underlying queries when you need the manifest rows or a
@@ -633,8 +639,8 @@ registration as the skill made it.
 - `ThalovantPolicyDeniedError`: the hub refused a message type this connection
   may not publish. `deniedType` names it and `allowed` lists what the
   connection may send; allow the type in the dashboard's connection settings.
-  `intents(...)` falls back to intent names when only the engine manifests are
-  allowed.
+  `intents(...)` falls back to intent names when `ovos.intent.list` is the
+  refused type and `fallback` is on; a refused `ovos.intent.describe` rejects.
 - `HTTP 429` with `"code": "token_rate_limited"`: the API token exceeded its
   plan's per-minute request rate (60 requests per minute on the free plan).
   The response carries a `Retry-After` header and a matching

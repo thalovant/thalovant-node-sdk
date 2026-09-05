@@ -40,7 +40,10 @@ export class ThalovantPolicyDeniedError extends ThalovantRuntimeError {
   static fromEvent(event: Pick<ThalovantEvent, "data">): ThalovantPolicyDeniedError {
     const data = event.data ?? {};
     const inner = isRecord(data.data) ? data.data : {};
-    const allowed = Array.isArray(inner.allowed) ? inner.allowed.map(item => String(item)) : [];
+    // Only strings: a number or a null in the list is not a message type, and
+    // stringifying one would put "3" or "null" in front of an operator reading
+    // which types to allow.
+    const allowed = Array.isArray(inner.allowed) ? inner.allowed.filter((item): item is string => typeof item === "string") : [];
     return new ThalovantPolicyDeniedError(String(data.denied_type ?? ""), {
       code: String(data.code ?? ""),
       reason: String(data.reason ?? ""),
