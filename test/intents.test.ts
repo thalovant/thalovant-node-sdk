@@ -476,10 +476,7 @@ test("describes go out in bounded batches", async () => {
   // A hub with many intents must not put more requests in flight than a
   // bounded reply queue can hold: 69 intents is 69 describes, and every reply
   // arrives twice. They go out 32 at a time, each batch its own window.
-  const many: Registrations = {
-    "en-us": Array.from({ length: 69 }, (_, n) => [WEATHER, `intent.${String(n).padStart(3, "0")}`, [`sentence ${n}`]] as const)
-      .map(([skillId, intentName, samples]) => [skillId, intentName, [...samples]] as [string, string, string[]]),
-  };
+  const many = manyIntents();
   const hub = new FakeHubTransport({ registrations: many });
   const inventory = await client(hub).intents(["en-us"]);
 
@@ -506,6 +503,57 @@ test("describes go out in bounded batches", async () => {
   assert.equal((await describeMany(client(atOnce), wanted, { timeoutMs: 5000, batch: 0 })).size, 69);
   assert.equal(atOnce.describeWindows, 1, "batch 0 sends them all at once");
   assert.equal(atOnce.maxInFlightDescribes, 69);
+});
+
+// 69 intents, one language: windows are 0-31, 32-63, 64-68.
+function manyIntents(): Registrations {
+  return {
+    "en-us": Array.from({ length: 69 }, (_, n): [string, string, string[]] => [
+      WEATHER,
+      `intent.${String(n).padStart(3, "0")}`,
+      [`sentence ${n}`],
+    ]),
+  };
+}
+
+test("a silent window keeps what the earlier windows found", async () => {
+  // Windows are contiguous slices, so a skill that stops answering can own a
+  // whole window. Losing its sentences is right; losing the inventory is not.
+  const quietFrom = 40;
+
+  class GoesQuiet extends FakeHubTransport {
+    override async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+      if (eventType === EVENT_INTENT_DESCRIBE && Number(String(data.intent_name).split(".").at(-1)) >= quietFrom) {
+        this.emitted.push({ eventType, data: { ...data }, context: { ...context } });
+        return;
+      }
+      await super.emitBus(eventType, data, context);
+    }
+  }
+
+  const hub = new GoesQuiet({ registrations: manyIntents() });
+  const inventory = await client(hub).intents(["en-us"], { timeoutMs: 300 });
+
+  assert.equal(inventory.intents.length, 69, "every intent is still listed");
+  // The first window answers in full, the second in part, the third not at
+  // all -- and the third does not discard the rest.
+  assert.equal(inventory.intents.filter(intent => intent.phrasesFor("en-us").length > 0).length, quietFrom);
+  assert.deepEqual(inventory.intents[0].phrasesFor("en-us"), ["sentence 0"]);
+  assert.deepEqual(inventory.intents[39].phrasesFor("en-us"), ["sentence 39"]);
+  assert.deepEqual(inventory.intents[40].phrasesFor("en-us"), []);
+  assert.deepEqual(inventory.intents[68].phrasesFor("en-us"), []);
+  assert.equal(inventory.hasPhrases, true);
+});
+
+test("a hub silent from the first window still fails fast", async () => {
+  const hub = new FakeHubTransport({ registrations: manyIntents(), silent: [EVENT_INTENT_DESCRIBE] });
+  const wanted = manyIntents()["en-us"].map(([skillId, intentName]) => ({ skillId, intentName, lang: "en-us" }));
+
+  await assert.rejects(
+    describeMany(client(hub), wanted, { timeoutMs: 200 }),
+    (error: unknown) => error instanceof ThalovantTimeoutError && /ovos\.intent\.describe/.test(error.message),
+  );
+  assert.equal(emittedOf(hub, EVENT_INTENT_DESCRIBE).length, DESCRIBE_BATCH, "it gives up after one window, not after all 69");
 });
 
 test("language tags compare case-insensitively with separators folded", () => {

@@ -427,9 +427,10 @@ export function describeKey(target: DescribeTarget): string {
  * that does not echo the id, by the definition's own
  * `skill_id`/`intent_name`/`lang`. Repeats are dropped and the deadline
  * covers each batch, so a registration the hub did not describe in time is
- * simply absent from the result (keyed by `describeKey`), only a batch
- * nothing answered rejects with the timeout, and a hub that answers nothing
- * fails after one batch rather than holding every request open.
+ * simply absent from the result (keyed by `describeKey`). A window that
+ * received nothing contributes nothing, and the call rejects with the timeout
+ * only when no window produced a definition -- so a hub silent from the start
+ * fails at the first window rather than holding every request open.
  *
  * @internal Reached through `ThalovantClient.intents()`.
  */
@@ -447,8 +448,18 @@ export async function describeMany(
   if (batch > 0 && wanted.size > batch) {
     const all = [...wanted.values()];
     for (let start = 0; start < all.length; start += batch) {
-      const window = await describeMany(client, all.slice(start, start + batch), { timeoutMs, batch: 0 });
-      for (const [key, definitions] of window) found.set(key, definitions);
+      try {
+        const window = await describeMany(client, all.slice(start, start + batch), { timeoutMs, batch: 0 });
+        for (const [key, definitions] of window) found.set(key, definitions);
+      } catch (error) {
+        // A partial answer is an answer, across windows as within one: windows
+        // are contiguous slices, so an unresponsive skill with more than one
+        // window's worth of intents would otherwise turn the whole inventory
+        // into a timeout while the same skill with fewer intents only loses
+        // its sentences. A hub silent from the start still fails at the first
+        // window, since nothing is found.
+        if (!(error instanceof ThalovantTimeoutError) || found.size === 0) throw error;
+      }
     }
     return found;
   }
