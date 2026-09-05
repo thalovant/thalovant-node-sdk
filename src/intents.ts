@@ -528,8 +528,8 @@ function skillsFrom(bySkill: Map<string, HubIntent[]>): HubSkillIntents[] {
 }
 
 function inventoryFromNames(names: Record<string, string[]>, languages: readonly string[], denied: string): HubIntentInventory {
-  // Names are `<skill_id>:<intent_name>`; a name registered by both engines
-  // keeps the later one, as the reference implementation does.
+  // Names are `<skill_id>:<intent_name>`. The first engine to name an intent
+  // decides its engine, as on the manifest path; adapt is asked first.
   const intents = new Map<string, HubIntent>();
   for (const [engine, entries] of Object.entries(names)) {
     for (const raw of entries) {
@@ -537,7 +537,8 @@ function inventoryFromNames(names: Record<string, string[]>, languages: readonly
       let skillId = separator >= 0 ? raw.slice(0, separator) : "";
       let name = separator >= 0 ? raw.slice(separator + 1) : "";
       if (!name) [skillId, name] = ["", raw];
-      intents.set(JSON.stringify([skillId, name]), new HubIntent({ skillId, name, engine }));
+      const key = JSON.stringify([skillId, name]);
+      if (!intents.has(key)) intents.set(key, new HubIntent({ skillId, name, engine }));
     }
   }
   const bySkill = new Map<string, HubIntent[]>();
@@ -602,12 +603,17 @@ export async function intentInventory(
       const key = JSON.stringify([entry.skillId, entry.intentName]);
       const intent = gathered.get(key) ?? { skillId: entry.skillId, name: entry.intentName, engine: entry.engine, enabled: false, phrases: {} };
       intent.enabled ||= entry.enabled;
+      let sentences: readonly string[];
       if (entry.definition !== undefined) {
-        intent.phrases[lang] = samplesOf(entry.definition);
+        sentences = samplesOf(entry.definition);
       } else {
         const definitions = described.get(describeKey({ skillId: entry.skillId, intentName: entry.intentName, lang })) ?? [];
-        intent.phrases[lang] = definitions.find(definition => definition.samples.length > 0)?.samples ?? [];
+        sentences = definitions.find(definition => definition.samples.length > 0)?.samples ?? [];
       }
+      // An intent registered under both engines has two rows for the language;
+      // the keyword row carries no sentences and must not erase the template
+      // row's, whichever order the rows arrive in.
+      if (sentences.length > 0 || !(lang in intent.phrases)) intent.phrases[lang] = sentences;
       gathered.set(key, intent);
     }
   }

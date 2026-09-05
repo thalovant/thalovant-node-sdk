@@ -387,7 +387,7 @@ test("languages default to English", async () => {
 
 test("each language is asked once, trimmed, in its first spelling", async () => {
   const hub = new FakeHubTransport();
-  const inventory = await client(hub).intents([" en-us ", "en-US", "fr_FR", "fr-fr", ""]);
+  const inventory = await client(hub).intents([" en-us ", "en-US", "en_us", "fr_FR", "fr-fr", ""]);
 
   assert.deepEqual(emittedOf(hub, EVENT_INTENT_LIST).map(entry => entry.data.lang), ["en-us", "fr_FR"]);
   assert.deepEqual(inventory.languages, ["en-us", "fr_FR"]);
@@ -395,6 +395,70 @@ test("each language is asked once, trimmed, in its first spelling", async () => 
   assert.deepEqual(weather?.languages, ["en-us", "fr_FR"]);
   assert.deepEqual(weather?.phrasesFor("fr-fr"), REGISTRATIONS["fr-fr"][0][2]);
   await assert.rejects(client(hub).intents([" ", ""]), /at least one language/);
+});
+
+test("hasPhrases means at least one sentence", async () => {
+  const hub = new FakeHubTransport({ registrations: { "en-us": [[SHADOW, "custos.incidents", []]] } });
+  const inventory = await client(hub).intents(["en-us"]);
+  assert.equal(inventory.intents.length, 1);
+  assert.deepEqual(inventory.intents[0].languages, ["en-us"]);
+  assert.equal(inventory.hasPhrases, false);
+});
+
+// One intent, two registrations in one language: the keyword row has no
+// samples and must not erase the template row's, whichever comes first.
+class Dual extends FakeHubTransport {
+  constructor(private readonly order: "template-first" | "keyword-first") {
+    super();
+  }
+
+  override async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+    if (eventType !== EVENT_INTENT_LIST) return super.emitBus(eventType, data, context);
+    const lang = String(data.lang);
+    const template = {
+      skill_id: WEATHER, intent_name: "current.weather", lang, method: "template", enabled: true, session_id: "default",
+      definition: { skill_id: WEATHER, intent_name: "current.weather", lang, samples: ["what is the weather"] },
+    };
+    const keyword = {
+      skill_id: WEATHER, intent_name: "current.weather", lang, method: "keyword", enabled: true, session_id: "default",
+      definition: { skill_id: WEATHER, intent_name: "current.weather", lang, required: [["WeatherKeyword"]] },
+    };
+    const rows = this.order === "template-first" ? [template, keyword] : [keyword, template];
+    this.emitted.push({ eventType, data: { ...data }, context: { ...context } });
+    this.deliver("ovos.intent.list.response", { ok: true, intents: rows }, context);
+  }
+}
+
+test("a keyword row does not erase the template row's sentences", async () => {
+  const inventory = await client(new Dual("template-first")).intents(["en-us"]);
+  assert.equal(inventory.intents.length, 1);
+  assert.deepEqual(inventory.intents[0].phrasesFor("en-us"), ["what is the weather"]);
+  assert.equal(inventory.intents[0].engine, "padatious", "the first row names the engine");
+});
+
+test("a template row after the keyword row still carries the sentences", async () => {
+  const inventory = await client(new Dual("keyword-first")).intents(["en-us"]);
+  assert.equal(inventory.intents.length, 1);
+  assert.deepEqual(inventory.intents[0].phrasesFor("en-us"), ["what is the weather"]);
+  assert.equal(inventory.intents[0].engine, "adapt", "the first row names the engine");
+});
+
+test("the fallback keeps the first engine that names an intent", async () => {
+  class BothEngines extends FakeHubTransport {
+    override async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+      if (eventType !== EVENT_ADAPT_MANIFEST_GET) return super.emitBus(eventType, data, context);
+      this.emitted.push({ eventType, data: { ...data }, context: { ...context } });
+      this.deliver("intent.service.adapt.manifest", { intents: [`${WEATHER}:current.weather`] }, context);
+    }
+  }
+
+  const hub = new BothEngines({ refuse: [EVENT_INTENT_LIST] });
+  const inventory = await client(hub).intents(["en-us"]);
+  assert.deepEqual(hub.emitted.map(entry => entry.eventType).slice(1), [EVENT_ADAPT_MANIFEST_GET, EVENT_PADATIOUS_MANIFEST_GET]);
+  const weather = inventory.intents.find(intent => intent.name === "current.weather");
+  assert.equal(weather?.engine, "adapt");
+  assert.equal(inventory.intents.find(intent => intent.name === "custos.incidents")?.engine, "padatious");
+  assert.equal(inventory.intents.length, 2, "the same name from both engines is one intent");
 });
 
 test("language tags compare case-insensitively with separators folded", () => {
