@@ -19,7 +19,7 @@ import {
 import { ThalovantPolicyDeniedError, ThalovantRuntimeError, ThalovantTimeoutError } from "../src/errors.js";
 import { EventContext, ThalovantEvent } from "../src/events.js";
 import { ThalovantIdentity } from "../src/identity.js";
-import { HubIntentInventory, sameLanguage, SOURCE_ENGINES, SOURCE_MANIFEST } from "../src/intents.js";
+import { DESCRIBE_BATCH, describeMany, HubIntentInventory, sameLanguage, SOURCE_ENGINES, SOURCE_MANIFEST } from "../src/intents.js";
 
 const WEATHER = "thalovant-skill-weather.thalovant";
 const SHADOW = "thalovant-skill-custos-shadow.thalovant";
@@ -67,6 +67,11 @@ class FakeHubTransport extends EventTarget {
   readonly repeats: number;
   readonly sync: boolean;
   connected = false;
+  /** Describes emitted but not yet answered, and the high-water mark. */
+  inFlightDescribes = 0;
+  maxInFlightDescribes = 0;
+  /** A window opens when a describe goes out with none outstanding. */
+  describeWindows = 0;
 
   constructor(options: FakeHubOptions = {}) {
     super();
@@ -91,10 +96,11 @@ class FakeHubTransport extends EventTarget {
     return { connected: this.connected, handshakeComplete: this.connected, transportAlive: this.connected };
   }
 
-  protected deliver(type: string, data: Record<string, unknown>, context: EventContext): void {
+  protected deliver(type: string, data: Record<string, unknown>, context: EventContext, onSend?: () => void): void {
     const replyContext: EventContext = { ...context };
     if (!this.echoRequestId) delete replyContext.request_id;
     const send = (): void => {
+      onSend?.();
       for (let copy = 0; copy < this.repeats; copy += 1) {
         this.dispatchEvent(new CustomEvent("bus", { detail: { type, data, context: replyContext } }));
       }
@@ -136,6 +142,9 @@ class FakeHubTransport extends EventTarget {
       });
       this.deliver("ovos.intent.list.response", { ok: true, intents: rows }, context);
     } else if (eventType === EVENT_INTENT_DESCRIBE) {
+      if (this.inFlightDescribes === 0) this.describeWindows += 1;
+      this.inFlightDescribes += 1;
+      this.maxInFlightDescribes = Math.max(this.maxInFlightDescribes, this.inFlightDescribes);
       const match = (this.registrations[lang] ?? []).find(
         ([skillId, intentName]) => skillId === data.skill_id && intentName === data.intent_name,
       );
@@ -148,7 +157,9 @@ class FakeHubTransport extends EventTarget {
             }],
           }
         : { ok: false, error: "unknown intent" };
-      this.deliver("ovos.intent.describe.response", payload, context);
+      this.deliver("ovos.intent.describe.response", payload, context, () => {
+        this.inFlightDescribes -= 1;
+      });
     } else if (eventType === EVENT_ADAPT_MANIFEST_GET) {
       this.deliver("intent.service.adapt.manifest", { intents: [] }, context);
     } else if (eventType === EVENT_PADATIOUS_MANIFEST_GET) {
@@ -459,6 +470,42 @@ test("the fallback keeps the first engine that names an intent", async () => {
   assert.equal(weather?.engine, "adapt");
   assert.equal(inventory.intents.find(intent => intent.name === "custos.incidents")?.engine, "padatious");
   assert.equal(inventory.intents.length, 2, "the same name from both engines is one intent");
+});
+
+test("describes go out in bounded batches", async () => {
+  // A hub with many intents must not put more requests in flight than a
+  // bounded reply queue can hold: 69 intents is 69 describes, and every reply
+  // arrives twice. They go out 32 at a time, each batch its own window.
+  const many: Registrations = {
+    "en-us": Array.from({ length: 69 }, (_, n) => [WEATHER, `intent.${String(n).padStart(3, "0")}`, [`sentence ${n}`]] as const)
+      .map(([skillId, intentName, samples]) => [skillId, intentName, [...samples]] as [string, string, string[]]),
+  };
+  const hub = new FakeHubTransport({ registrations: many });
+  const inventory = await client(hub).intents(["en-us"]);
+
+  assert.equal(DESCRIBE_BATCH, 32);
+  assert.equal(emittedOf(hub, EVENT_INTENT_DESCRIBE).length, 69);
+  assert.equal(hub.describeWindows, 3, "69 describes go out in three batches of at most 32");
+  assert.equal(hub.maxInFlightDescribes, DESCRIBE_BATCH, "never more than a batch in flight");
+  assert.equal(inventory.intents.length, 69);
+  assert.deepEqual(
+    inventory.intents.filter(intent => intent.phrasesFor("en-us").length === 0).map(intent => intent.id),
+    [],
+    "every intent came back with its sentence",
+  );
+  assert.deepEqual(inventory.intents[0].phrasesFor("en-us"), ["sentence 0"]);
+  assert.deepEqual(inventory.intents[68].phrasesFor("en-us"), ["sentence 68"]);
+
+  // The same through the low-level call, and unbatched on request.
+  const direct = new FakeHubTransport({ registrations: many });
+  const wanted = many["en-us"].map(([skillId, intentName]) => ({ skillId, intentName, lang: "en-us" }));
+  assert.equal((await describeMany(client(direct), wanted, { timeoutMs: 5000 })).size, 69);
+  assert.equal(direct.describeWindows, 3);
+
+  const atOnce = new FakeHubTransport({ registrations: many });
+  assert.equal((await describeMany(client(atOnce), wanted, { timeoutMs: 5000, batch: 0 })).size, 69);
+  assert.equal(atOnce.describeWindows, 1, "batch 0 sends them all at once");
+  assert.equal(atOnce.maxInFlightDescribes, 69);
 });
 
 test("language tags compare case-insensitively with separators folded", () => {

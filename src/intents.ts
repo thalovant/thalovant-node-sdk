@@ -51,6 +51,19 @@ export type HubIntentSource = typeof SOURCE_MANIFEST | typeof SOURCE_ENGINES;
 const DEFAULT_TIMEOUT_MS = 5000;
 const ENGINE_BY_METHOD: Record<string, string> = { template: "padatious", keyword: "adapt" };
 
+/**
+ * How many describes may be in flight at once.
+ *
+ * A hub with 69 intents in two languages is 138 requests and, with every
+ * reply delivered twice, 276 inbound events; an SDK whose reply queue is
+ * bounded (the Rust port's bus channel holds 64) drops replies past its
+ * capacity and the inventory comes back missing sentences. Batching also
+ * spares the hub a burst it never asked for.
+ *
+ * @internal
+ */
+export const DESCRIBE_BATCH = 32;
+
 /** `fr-fr` and `fr_FR` are the same language tag. */
 export function sameLanguage(a: string, b: string): boolean {
   return foldLanguage(a) === foldLanguage(b);
@@ -408,25 +421,37 @@ export function describeKey(target: DescribeTarget): string {
 /**
  * Describe many registrations with the requests in flight together.
  *
- * One subscription, one request id per registration, replies matched by that
- * id -- or, for a hub that does not echo the id, by the definition's own
+ * At most `batch` of them are in flight at a time (`DESCRIBE_BATCH` by
+ * default, `0` sends them all at once). One subscription per batch, one
+ * request id per registration, replies matched by that id -- or, for a hub
+ * that does not echo the id, by the definition's own
  * `skill_id`/`intent_name`/`lang`. Repeats are dropped and the deadline
- * covers the whole batch: a registration the hub did not describe in time is
- * simply absent from the result (keyed by `describeKey`), and only a batch
- * nothing answered rejects with the timeout.
+ * covers each batch, so a registration the hub did not describe in time is
+ * simply absent from the result (keyed by `describeKey`), only a batch
+ * nothing answered rejects with the timeout, and a hub that answers nothing
+ * fails after one batch rather than holding every request open.
  *
  * @internal Reached through `ThalovantClient.intents()`.
  */
 export async function describeMany(
   client: ThalovantClient,
   targets: Iterable<DescribeTarget>,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; batch?: number } = {},
 ): Promise<Map<string, IntentDefinition[]>> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const batch = options.batch ?? DESCRIBE_BATCH;
   const wanted = new Map<string, DescribeTarget>();
   for (const target of targets) wanted.set(describeKey(target), target);
   const found = new Map<string, IntentDefinition[]>();
   if (wanted.size === 0) return found;
+  if (batch > 0 && wanted.size > batch) {
+    const all = [...wanted.values()];
+    for (let start = 0; start < all.length; start += batch) {
+      const window = await describeMany(client, all.slice(start, start + batch), { timeoutMs, batch: 0 });
+      for (const [key, definitions] of window) found.set(key, definitions);
+    }
+    return found;
+  }
 
   const byRequest = new Map<string, string>();
   let finish!: () => void;
