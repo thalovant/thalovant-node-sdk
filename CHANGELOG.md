@@ -4,7 +4,7 @@
 
 - `listIntents()` rejects with `ThalovantRuntimeError` when the hub answers `ovos.intent.list` with `ok: false`, instead of reading the missing `intents` key as an empty list. A refused listing is not an empty hub, and reporting it as no intents showed a person a device that can do nothing; the rejection carries the hub's `error` text. The engines' manifests stay the fallback for a policy refusal only, not for a listing the hub answered and failed. `describeIntent()` keeps returning an empty list for `ok: false`, which is a real answer: the hub does not know that registration. Reported by the Kotlin port's review.
 - `ThalovantPolicyDeniedError.allowed` keeps only string entries. A number or a null in the hub's `allowed` list is not a message type, and stringifying one put `"3"` or `"null"` in front of an operator reading which types to allow. Reported by the Kotlin port's review.
-- README: `intents(...)` needs `ovos.intent.describe` only when definitions are requested, which is the default; listing alone (`describe: false`) needs `ovos.intent.list` alone.
+- README: `intents(...)` needs `ovos.intent.describe` only when definitions are requested, which is the default; listing alone (`describe: false`) needs `ovos.intent.list` alone. The engine-manifest fallback is documented as what it is — reached only when the hub refuses `ovos.intent.list` and `fallback` is on — so the documented `source` and `denied` values stay correct; a refused `ovos.intent.describe` rejects either way.
 
 ## 0.2.38
 

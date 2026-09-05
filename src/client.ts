@@ -489,12 +489,13 @@ export class ThalovantClient {
    * `ovos.intent.describe` is needed only when the sentences are wanted, which
    * is the default; `{ describe: false }` lists with `ovos.intent.list` alone.
    *
-   * Rejects with `ThalovantPolicyDeniedError` when the hub refuses the query
-   * and `fallback` is off; with it on (the default), a hub allowed for only
-   * the engines' manifests yields intent names with `source` set to
-   * `engine-manifests`. A hub that answers the listing with `ok: false`
-   * rejects with `ThalovantRuntimeError`: it failed the query, which is not
-   * the same as having no intents.
+   * Rejects with `ThalovantPolicyDeniedError` when the hub refuses a query.
+   * The engines' manifests are the fallback only when the hub refuses
+   * `ovos.intent.list` and `fallback` is on (the default), and yield intent
+   * names with `source` set to `engine-manifests`; a refused
+   * `ovos.intent.describe` rejects either way. A hub that answers the listing
+   * with `ok: false` rejects with `ThalovantRuntimeError`: it failed the
+   * query, which is not the same as having no intents.
    */
   async intents(
     languages?: Iterable<string>,
