@@ -298,6 +298,8 @@ function deniedTypeOf(event: ThalovantEvent): string {
  *
  * A reply may arrive more than once; the first one wins and repeats are
  * dropped. A `hive.policy.denied` naming the query rejects at once.
+ *
+ * @internal Reached through `ThalovantClient`; not part of the package surface.
  */
 export async function requestReply(
   client: ThalovantClient,
@@ -339,7 +341,11 @@ export async function requestReply(
   }
 }
 
-/** The hub's intent manifest for one language. */
+/**
+ * The hub's intent manifest for one language.
+ *
+ * @internal Use `ThalovantClient.listIntents()`.
+ */
 export async function listIntents(
   client: ThalovantClient,
   lang: string,
@@ -356,7 +362,11 @@ export async function listIntents(
   return rows.map(registrationFromRow).filter((row): row is IntentRegistration => row !== undefined);
 }
 
-/** Every registration behind one intent in one language, keyword ones first. */
+/**
+ * Every registration behind one intent in one language, keyword ones first.
+ *
+ * @internal Use `ThalovantClient.describeIntent()`.
+ */
 export async function describeIntent(
   client: ThalovantClient,
   skillId: string,
@@ -375,14 +385,22 @@ export async function describeIntent(
   return definitionsFromReply(event);
 }
 
-/** One registration to describe: a skill's intent in one language. */
+/**
+ * One registration to describe: a skill's intent in one language.
+ *
+ * @internal
+ */
 export interface DescribeTarget {
   skillId: string;
   intentName: string;
   lang: string;
 }
 
-/** The key `describeMany` files a target's definitions under. */
+/**
+ * The key `describeMany` files a target's definitions under.
+ *
+ * @internal
+ */
 export function describeKey(target: DescribeTarget): string {
   return JSON.stringify([target.skillId, target.intentName, target.lang]);
 }
@@ -396,6 +414,8 @@ export function describeKey(target: DescribeTarget): string {
  * covers the whole batch: a registration the hub did not describe in time is
  * simply absent from the result (keyed by `describeKey`), and only a batch
  * nothing answered rejects with the timeout.
+ *
+ * @internal Reached through `ThalovantClient.intents()`.
  */
 export async function describeMany(
   client: ThalovantClient,
@@ -477,6 +497,8 @@ export async function describeMany(
  * Names only, and the same names whatever the language asked, because an
  * intent's name is the same in every language. The fallback for a hub
  * allowed for these queries but not the intent manifest.
+ *
+ * @internal Reached through `ThalovantClient.intents()`.
  */
 export async function intentNames(
   client: ThalovantClient,
@@ -532,6 +554,8 @@ function inventoryFromNames(names: Record<string, string[]>, languages: readonly
  * definitions to the listing, describes every registration at once. When the
  * hub refuses `ovos.intent.list` and `fallback` is on, the engines' manifests
  * give the names and the result says so.
+ *
+ * @internal Use `ThalovantClient.intents()`.
  */
 export async function intentInventory(
   client: ThalovantClient,

@@ -6,7 +6,21 @@ export * from "./crypto.js";
 export * from "./errors.js";
 export * from "./events.js";
 export * from "./identity.js";
-export * from "./intents.js";
+// The intent models and constants only. The wire helpers behind them
+// (`requestReply`, `describeMany`, ...) stay package-internal and are reached
+// through `ThalovantClient.intents()`, `listIntents()` and `describeIntent()`,
+// as the Python SDK keeps them in `thalovant.intents` rather than its root.
+export {
+  HubIntent,
+  HubIntentInventory,
+  HubSkillIntents,
+  sameLanguage,
+  SOURCE_ENGINES,
+  SOURCE_MANIFEST,
+  type HubIntentSource,
+  type IntentDefinition,
+  type IntentRegistration,
+} from "./intents.js";
 export * from "./protocols.js";
 export * from "./rich.js";
 export * from "./transport.js";
