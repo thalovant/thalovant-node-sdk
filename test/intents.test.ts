@@ -115,7 +115,9 @@ class FakeHubTransport extends EventTarget {
       return;
     }
     if (this.silent.includes(eventType)) return;
-    const lang = String(data.lang ?? "");
+    // The runtime folds the tag it is asked for; the fake keys registrations
+    // by the folded form and answers with the standardised one.
+    const lang = String(data.lang ?? "").toLowerCase().replaceAll("_", "-");
     if (eventType === EVENT_INTENT_LIST) {
       const rows = (this.registrations[lang] ?? []).map(([skillId, intentName, samples]) => {
         const row: Record<string, unknown> = {
@@ -381,6 +383,18 @@ test("languages default to English", async () => {
   hub.emitted.length = 0;
   await client(hub).listIntents();
   assert.equal(hub.emitted[0].data.lang, "en-us");
+});
+
+test("each language is asked once, trimmed, in its first spelling", async () => {
+  const hub = new FakeHubTransport();
+  const inventory = await client(hub).intents([" en-us ", "en-US", "fr_FR", "fr-fr", ""]);
+
+  assert.deepEqual(emittedOf(hub, EVENT_INTENT_LIST).map(entry => entry.data.lang), ["en-us", "fr_FR"]);
+  assert.deepEqual(inventory.languages, ["en-us", "fr_FR"]);
+  const weather = inventory.intents.find(intent => intent.skillId === WEATHER);
+  assert.deepEqual(weather?.languages, ["en-us", "fr_FR"]);
+  assert.deepEqual(weather?.phrasesFor("fr-fr"), REGISTRATIONS["fr-fr"][0][2]);
+  await assert.rejects(client(hub).intents([" ", ""]), /at least one language/);
 });
 
 test("language tags compare case-insensitively with separators folded", () => {

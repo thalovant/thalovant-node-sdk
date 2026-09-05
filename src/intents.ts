@@ -564,7 +564,13 @@ export async function intentInventory(
 ): Promise<HubIntentInventory> {
   const describe = options.describe ?? true;
   const fallback = options.fallback ?? true;
-  const asked = [...new Set([...languages].map(lang => String(lang)).filter(lang => lang.trim() !== ""))];
+  // Each language once, in its first spelling: `en-us` and `en-US` are one
+  // listing and one `phrases` key, and a padded tag is sent as the hub stores it.
+  const asked: string[] = [];
+  for (const value of languages) {
+    const lang = String(value).trim();
+    if (lang !== "" && !asked.some(seen => sameLanguage(seen, lang))) asked.push(lang);
+  }
   if (asked.length === 0) throw new Error("intentInventory() requires at least one language.");
 
   const listed = new Map<string, IntentRegistration[]>();
