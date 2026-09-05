@@ -23,6 +23,8 @@ import {
   utterancePayload,
 } from "./events.js";
 import { ThalovantIdentity } from "./identity.js";
+import * as intentQueries from "./intents.js";
+import { HubIntentInventory, IntentDefinition, IntentRegistration } from "./intents.js";
 import { DEFAULT_PROTOCOL_PREFERENCE, HubProtocol } from "./protocols.js";
 import { stripSsml, ThalovantDisplayItem } from "./rich.js";
 import {
@@ -474,6 +476,45 @@ export class ThalovantClient {
       clearTimeout(timer);
       this.transport.removeEventListener("query", listener);
     }
+  }
+
+  /**
+   * Everything the hub can be asked, per language, grouped by skill.
+   *
+   * Read from the runtime's intent manifest over this session, so no
+   * control-plane credential is involved. Each intent carries the sentences a
+   * person says to reach it, as the skill wrote them, `{slot}` placeholders
+   * included. `languages` defaults to `en-us`.
+   *
+   * Rejects with `ThalovantPolicyDeniedError` when the hub refuses the query
+   * and `fallback` is off; with it on (the default), a hub allowed for only
+   * the engines' manifests yields intent names with `source` set to
+   * `engine-manifests`.
+   */
+  async intents(
+    languages?: Iterable<string>,
+    options: { timeoutMs?: number; describe?: boolean; fallback?: boolean } = {},
+  ): Promise<HubIntentInventory> {
+    const chosen = languages ? [...languages] : [];
+    return intentQueries.intentInventory(this, chosen.length > 0 ? chosen : ["en-us"], options);
+  }
+
+  /** The hub's intent manifest for one language, one row per registration. */
+  async listIntents(
+    lang?: string,
+    options: { timeoutMs?: number; includeDefinitions?: boolean } = {},
+  ): Promise<IntentRegistration[]> {
+    return intentQueries.listIntents(this, lang ?? "en-us", options);
+  }
+
+  /** The registrations behind one intent in one language, sentences included. */
+  async describeIntent(
+    skillId: string,
+    intentName: string,
+    lang?: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<IntentDefinition[]> {
+    return intentQueries.describeIntent(this, skillId, intentName, lang ?? "en-us", options);
   }
 
   private contextWithIdentityMetadata(context: EventContext): EventContext {

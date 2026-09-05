@@ -10,6 +10,18 @@ export const EVENT_INTENT_UNMATCHED = "ovos.intent.unmatched";
 export const EVENT_INTENT_FAILURE = "complete_intent_failure";
 export const EVENT_POLICY_DENIED = "hive.policy.denied";
 export const EVENT_QUERY_TIMEOUT = "hive.query.timeout";
+/**
+ * The hub runtime's intent manifest (OVOS-INTENT-4 section 10) and the
+ * engines' own manifests. See `./intents.js`.
+ */
+export const EVENT_INTENT_LIST = "ovos.intent.list";
+export const EVENT_INTENT_LIST_RESPONSE = "ovos.intent.list.response";
+export const EVENT_INTENT_DESCRIBE = "ovos.intent.describe";
+export const EVENT_INTENT_DESCRIBE_RESPONSE = "ovos.intent.describe.response";
+export const EVENT_ADAPT_MANIFEST_GET = "intent.service.adapt.manifest.get";
+export const EVENT_ADAPT_MANIFEST = "intent.service.adapt.manifest";
+export const EVENT_PADATIOUS_MANIFEST_GET = "intent.service.padatious.manifest.get";
+export const EVENT_PADATIOUS_MANIFEST = "intent.service.padatious.manifest";
 
 export const FAILURE_EVENTS = new Set([
   EVENT_INTENT_UNMATCHED,
