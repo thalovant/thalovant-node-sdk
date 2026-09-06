@@ -8,7 +8,7 @@
  * through a stubbed global `WebSocket`. No real network access is involved.
  */
 import assert from "node:assert/strict";
-import { createDecipheriv, webcrypto } from "node:crypto";
+import { webcrypto } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,6 +16,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import { build } from "esbuild";
+
+import { createV3HubPeer } from "./v3-hub.js";
 
 // Compiled location is dist/test/, so the repository root is two levels up.
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -75,6 +77,13 @@ function createSandbox(): Record<string, unknown> {
   return sandbox;
 }
 
+/** A copy of the bytes as a standalone ArrayBuffer, the way a browser hands one over. */
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(copy).set(bytes);
+  return copy;
+}
+
 function jsonReply(status: number, body: unknown): { ok: boolean; status: number; text(): Promise<string>; json(): Promise<unknown> } {
   return {
     ok: status < 400,
@@ -131,10 +140,9 @@ test("browser bundle drives the control plane through globalThis.fetch", async (
       });
     }
     if (target.endsWith("/v1/clients")) {
-      const payload = JSON.parse(String(init?.body)) as Record<string, { apiKey?: unknown; password?: unknown; cryptoKey?: unknown }> & { name?: unknown; hub_id?: unknown };
+      const payload = JSON.parse(String(init?.body)) as Record<string, { apiKey?: unknown; password?: unknown }> & { name?: unknown; hub_id?: unknown };
       assert.equal(typeof payload.spec.apiKey, "string");
       assert.equal(typeof payload.spec.password, "string");
-      assert.equal(typeof payload.spec.cryptoKey, "string");
       return jsonReply(201, { id: "client-1", name: payload.name, hub_id: payload.hub_id, spec: { version: "1" } });
     }
     throw new Error(`unexpected URL ${target}`);
@@ -164,24 +172,30 @@ test("browser bundle connects WSS through the global WebSocket and Web Crypto", 
   const sandbox = createSandbox();
   const sockets: any[] = [];
 
+  // The hub runs on the host and speaks the real v3 responder, so the bundle in
+  // the sandbox has to complete a genuine Noise handshake to connect.
+  let hub: ReturnType<typeof createV3HubPeer> | undefined;
+
   class StubWebSocket {
     url: string;
     binaryType = "blob";
     readyState = 0;
-    sent: string[] = [];
     private listeners = new Map<string, Array<(event: unknown) => void>>();
 
     constructor(url: unknown) {
       this.url = String(url);
       sockets.push(this);
+      hub = createV3HubPeer("secret", (data, binary) => {
+        // The client sets binaryType "arraybuffer", so binary frames arrive as
+        // an ArrayBuffer exactly as a browser would deliver them.
+        this.dispatch("message", {
+          data: binary && data instanceof Uint8Array ? toArrayBuffer(data) : String(data),
+        });
+      });
       setTimeout(() => {
         this.readyState = 1;
         this.dispatch("open", {});
-        setTimeout(() => {
-          this.dispatch("message", {
-            data: JSON.stringify({ msg_type: "shake", payload: { preshared_key: true }, metadata: {} }),
-          });
-        }, 5);
+        setTimeout(() => hub?.start(), 5);
       }, 5);
     }
 
@@ -192,7 +206,11 @@ test("browser bundle connects WSS through the global WebSocket and Web Crypto", 
     }
 
     send(data: unknown): void {
-      this.sent.push(String(data));
+      if (typeof data === "string") {
+        hub?.onMessage(data);
+        return;
+      }
+      hub?.onMessage(new Uint8Array(data as ArrayBufferLike));
     }
 
     close(): void {
@@ -217,7 +235,6 @@ test("browser bundle connects WSS through the global WebSocket and Web Crypto", 
   const identity = new sdk.ThalovantIdentity({
     access_key: "access",
     password: "secret",
-    crypto_key: "0123456789abcdef",
     site_id: "site",
     default_master: "wss://hub.example.com",
   });
@@ -230,27 +247,21 @@ test("browser bundle connects WSS through the global WebSocket and Web Crypto", 
   assert.ok(sockets[0].url.includes("authorization="));
   assert.equal(sockets[0].binaryType, "arraybuffer");
 
-  const hello = JSON.parse(sockets[0].sent[0]) as { msg_type: string; payload: { site_id: string } };
+  // Everything the client sent after Split() reached the hub as a Noise
+  // transport message and decrypted there, which is the whole point: the
+  // bundle did the X25519, ChaCha20-Poly1305 and argon2id itself, with no Node
+  // builtins available to it.
+  assert.ok(hub);
+  const helloFrame = hub.received[0];
+  assert.ok(helloFrame, "the client sent no encrypted HELLO");
+  const hello = JSON.parse(helloFrame) as { msg_type: string; payload: { site_id: string } };
   assert.equal(hello.msg_type, "hello");
   assert.equal(hello.payload.site_id, "site");
 
-  // Post-handshake sends are AES-128-GCM sealed with Web Crypto in the
-  // sandbox; verify with node:crypto on the host that the envelope round
-  // trips against the same preshared key.
   await client.emit("test.event", { ok: true });
-  const envelope = JSON.parse(sockets[0].sent[1]) as { ciphertext: string; nonce: string; tag: string };
-  assert.match(envelope.ciphertext, /^[0-9a-f]+$/);
-  const decipher = createDecipheriv(
-    "aes-128-gcm",
-    Buffer.from("0123456789abcdef"),
-    Buffer.from(envelope.nonce, "hex"),
-  );
-  decipher.setAuthTag(Buffer.from(envelope.tag, "hex"));
-  const plaintext = Buffer.concat([
-    decipher.update(Buffer.from(envelope.ciphertext, "hex")),
-    decipher.final(),
-  ]).toString("utf8");
-  const message = JSON.parse(plaintext) as { msg_type: string; payload: { type: string } };
+  const busFrame = hub.received[1];
+  assert.ok(busFrame, "the client sent no encrypted bus message");
+  const message = JSON.parse(busFrame) as { msg_type: string; payload: { type: string } };
   assert.equal(message.msg_type, "bus");
   assert.equal(message.payload.type, "test.event");
 

@@ -7,7 +7,6 @@
 import { connect as mqttConnect, type IClientOptions, type MqttClient } from "mqtt";
 
 import { ThalovantConnectionError } from "./errors.js";
-import { encryptAsBinary } from "./crypto.js";
 import { ThalovantIdentity } from "./identity.js";
 import { randomUUID } from "./platform/node.js";
 import { HiveMessage, HiveMindHttpTransport, TransportHealth } from "./transport-core.js";
@@ -34,6 +33,15 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
     const credentials = this.identity.mqtt;
     if (!credentials) {
       throw new ThalovantConnectionError("The identity does not include MQTT broker credentials.");
+    }
+    // TLS is the only confidentiality on this path. The identity crypto key
+    // that once sealed MQTT payloads separately is gone with v3, so a broker
+    // hop without TLS would put every message, and the broker password with
+    // them, on the wire in the clear.
+    if (!credentials.tls && !/^(mqtts|ssl|wss):$/.test(new URL(credentials.endpoint).protocol)) {
+      throw new ThalovantConnectionError(
+        "Refusing to connect to an MQTT broker without TLS. Use an mqtts:// endpoint, or set tls: true on the identity's mqtt block.",
+      );
     }
     const options: IClientOptions = {
       username: credentials.username,
@@ -110,9 +118,6 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
       throw new ThalovantConnectionError("HiveMind MQTT transport is not connected.");
     }
     let payload = encodeHiveBinaryFrame(message);
-    if (this.identity.cryptoKey) {
-      payload = encryptAsBinary(this.identity.cryptoKey, payload);
-    }
     await mqttPublish(client, this.topics.inbound, toNodeBuffer(payload), {
       qos: this.identity.mqtt?.qos ?? 1,
       retain: false,

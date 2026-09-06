@@ -882,13 +882,16 @@ export class ThalovantControlPlane {
     const siteId = cleanSiteId(options.siteId ?? options.name);
     const apiKey = newSecret();
     const password = newSecret();
-    const cryptoKey = newSecret();
+    // options.spec is caller-supplied and spread wholesale, so a legacy
+    // cryptoKey in it would be sent to /v1/clients and could come back inside
+    // a validation error. v3 issues no crypto key, so drop both spellings
+    // rather than carry a secret the platform no longer has a use for.
+    const { cryptoKey: _cryptoKey, crypto_key: _cryptoKeySnake, ...callerSpec } = options.spec ?? {};
     const spec: JsonRecord = {
-      ...(options.spec ?? {}),
+      ...callerSpec,
       version: String(options.spec?.version ?? "1"),
       apiKey,
       password,
-      cryptoKey,
       siteId,
     };
     const payload: JsonRecord = {
@@ -905,7 +908,7 @@ export class ThalovantControlPlane {
     const client = await this.request("POST", "/v1/clients", {
       body: payload,
       headers: { "Idempotency-Key": options.idempotencyKey ?? randomUUID() },
-      redactSecrets: [apiKey, password, cryptoKey],
+      redactSecrets: [apiKey, password],
     });
     const protocols = HubProtocolSettings.from(hubResource);
     const endpoints = HubDataPlaneEndpoints.fromHub(hubResource);
@@ -922,7 +925,6 @@ export class ThalovantControlPlane {
     } : {
       access_key: apiKey,
       password,
-      crypto_key: cryptoKey,
       site_id: siteId,
       default_master: defaultMaster(hubResource, endpoints, endpoint),
       default_port: 443,

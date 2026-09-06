@@ -1,7 +1,17 @@
-import { base64FromUtf8, utf8Decode } from "./bytes.js";
+import { base64FromUtf8, bytesToHex, hexToBytes, utf8Decode, utf8Encode } from "./bytes.js";
 import { DEFAULT_USER_AGENT } from "./constants.js";
 import { ThalovantConnectionError, ThalovantRuntimeError } from "./errors.js";
-import { decryptBinaryAsync, decryptFromJsonAsync, encryptAsJsonAsync, runtimeCryptoKey } from "./crypto.js";
+import {
+  buildPrologue,
+  canonicalJson,
+  derivePsk,
+  NOISE_PATTERN_KK,
+  NoiseHandshake,
+  NoiseSession,
+  noiseProtocolName,
+  selectNoiseOptions,
+} from "./noise.js";
+import { forgetNoisePin, loadNoisePin, loadOrCreateNoiseKey, pinHubKey } from "./noise-store.js";
 import { BusPayload, EventContext } from "./events.js";
 import { ThalovantIdentity } from "./identity.js";
 import { createPlatformWebSocket, randomUUID } from "./platform/node.js";
@@ -74,7 +84,23 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   get baseUrl(): string {
-    return this.identity.endpointBase();
+    const base = this.identity.endpointBase();
+    // TLS is the only confidentiality on this path. The identity crypto key
+    // that once sealed HTTP payloads separately is gone with v3, so a plain
+    // http:// hub would put every message, and the access key in the
+    // authorization query, on the wire in the clear.
+    let parsed: URL;
+    try {
+      parsed = new URL(base);
+    } catch {
+      throw new ThalovantConnectionError(`The HTTP transport needs a valid https:// endpoint; got ${base}.`);
+    }
+    if (parsed.protocol !== "https:") {
+      throw new ThalovantConnectionError(
+        `Refusing to use the HTTP transport over ${parsed.protocol}//. It needs an https:// endpoint: without TLS every message and the access key travel in the clear.`,
+      );
+    }
+    return base;
   }
 
   get authorization(): string {
@@ -177,7 +203,7 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   protected async handleRawMessage(raw: unknown): Promise<void> {
-    const message = await decodeRawHiveMessage(raw, this.identity.cryptoKey);
+    const message = decodeRawHiveMessage(raw);
     if (message.msg_type === "handshake" || message.msg_type === "shake") {
       await this.handleHandshake(message.payload);
     } else if (message.msg_type === "bus") {
@@ -187,11 +213,14 @@ export class HiveMindHttpTransport extends EventTarget {
     }
   }
 
+  /**
+   * Complete the HTTP handshake.
+   *
+   * HTTP runs no Noise session: it authenticates with the identity credentials
+   * and takes its confidentiality from TLS, so there is no key exchange here.
+   */
   protected async handleHandshake(payload: Record<string, unknown>): Promise<void> {
-    if (payload.preshared_key && !payload.handshake && !payload.envelope) {
-      if (!runtimeCryptoKey(this.identity.cryptoKey)) {
-        throw new ThalovantConnectionError("HiveMind requested a preshared key, but identity.crypto_key is missing.");
-      }
+    if (!payload.handshake && !payload.envelope) {
       await this.sendHiveMessage({
         msg_type: "hello",
         payload: {
@@ -209,7 +238,7 @@ export class HiveMindHttpTransport extends EventTarget {
       this.completeHandshake();
       return;
     }
-    throw new ThalovantConnectionError("Only HiveMind preshared-key HTTP handshakes are supported in this alpha.");
+    throw new ThalovantConnectionError("Unexpected HiveMind HTTP handshake envelope.");
   }
 
   protected beginConnection(): void {
@@ -297,11 +326,8 @@ export class HiveMindHttpTransport extends EventTarget {
     };
   }
 
-  async sendHiveMessage(message: HiveMessage, encrypt = true): Promise<void> {
-    const serialized = JSON.stringify(message);
-    const payload = encrypt && this.handshakeComplete && this.identity.cryptoKey
-      ? await encryptAsJsonAsync(this.identity.cryptoKey, serialized)
-      : serialized;
+  async sendHiveMessage(message: HiveMessage, _encrypt = true): Promise<void> {
+    const payload = JSON.stringify(message);
     const response = await fetch(`${this.baseUrl}/send_message?authorization=${encodeURIComponent(this.authorization)}`, {
       method: "POST",
       body: new URLSearchParams({ message: payload }),
@@ -317,9 +343,51 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
   private readonly sendTimeoutMs: number;
   private socket?: PlatformWebSocket;
 
-  constructor(identity: ThalovantIdentity, options: { userAgent?: string; pollIntervalMs?: number; sendTimeoutMs?: number } = {}) {
+  /**
+   * Where the Noise static key and the pin file live. Undefined uses the
+   * platform default: beside the SDK config file in Node, a `localStorage`
+   * namespace in a browser.
+   */
+  private readonly noiseStateDir?: string;
+
+  /**
+   * The hub's cleartext HELLO payload, kept verbatim because it is bound into
+   * the Noise prologue rather than read for the node id alone.
+   */
+  private serverHello?: Record<string, unknown>;
+  private nodeId = "";
+  private noiseHandshake?: NoiseHandshake;
+  private session?: NoiseSession;
+
+  /**
+   * Deriving the pre-shared key costs 64 MiB and a few hundred milliseconds,
+   * and the result is fixed for a (password, node id) pair, so a reconnect to
+   * the same hub reuses it.
+   */
+  private cachedPsk?: { nodeId: string; psk: Uint8Array };
+
+  /**
+   * Serializes sends. Encrypting a message advances the cipher state nonce
+   * counter, so two concurrent callers must not interleave: the hub decrypts
+   * strictly in counter order and would reject the second message onward.
+   */
+  private sendChain: Promise<void> = Promise.resolve();
+
+  constructor(
+    identity: ThalovantIdentity,
+    options: { userAgent?: string; pollIntervalMs?: number; sendTimeoutMs?: number; noiseStateDir?: string } = {},
+  ) {
     super(identity, options);
     this.sendTimeoutMs = options.sendTimeoutMs ?? 10000;
+    this.noiseStateDir = options.noiseStateDir;
+  }
+
+  /**
+   * The hub's Noise static public key for the current session, hex encoded.
+   * Undefined before the handshake completes.
+   */
+  get remoteStaticKey(): string | undefined {
+    return this.session?.remoteStaticKey;
   }
 
   get endpoint(): string {
@@ -330,9 +398,23 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
     return authorizedUrl(endpoint, this.authorization, "wss");
   }
 
-  override async connect(timeoutMs = 6000): Promise<void> {
+  /**
+   * @param timeoutMs budget for the whole connect. The first handshake with a
+   *   hub runs argon2id at 64 MiB, which costs a few hundred milliseconds on
+   *   top of the round trips, so the default is generous rather than tight.
+   */
+  override async connect(timeoutMs = 20000): Promise<void> {
     if (this.connected && this.handshakeComplete) return;
+    if (!this.identity.password) {
+      throw new ThalovantConnectionError(
+        "The v3 Noise handshake derives its pre-shared key from the identity password, which is missing.",
+      );
+    }
     this.beginConnection();
+    this.serverHello = undefined;
+    this.nodeId = "";
+    this.noiseHandshake = undefined;
+    this.session = undefined;
     const socket = createPlatformWebSocket(this.endpoint);
     this.socket = socket;
     socket.onMessage(data => {
@@ -379,6 +461,10 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
     }
     this.connected = false;
     this.handshakeComplete = false;
+    this.session = undefined;
+    this.noiseHandshake = undefined;
+    this.serverHello = undefined;
+    this.nodeId = "";
     this.markClosed();
   }
 
@@ -392,17 +478,228 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
     };
   }
 
-  override async sendHiveMessage(message: HiveMessage, encrypt = true): Promise<void> {
+  /**
+   * Handle one websocket message.
+   *
+   * Before the Noise session exists the frames are cleartext JSON handshake
+   * traffic. After it they are Noise transport messages, and the plaintext
+   * underneath is what gets parsed.
+   */
+  protected override async handleRawMessage(raw: unknown): Promise<void> {
+    let decoded = raw;
+
+    if (this.session) {
+      const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : raw;
+      if (!(bytes instanceof Uint8Array)) {
+        throw new ThalovantConnectionError("A text frame arrived on an established v3 Noise session.");
+      }
+      const frame = this.session.decryptFrame(bytes);
+      if (!frame.complete) return;
+      if (!frame.isJson) {
+        // A HIVEMIND-WIRE-1 binary frame. The Node SDK does not decode binary
+        // bus payloads on this transport yet, so it is dropped rather than
+        // mis-parsed as JSON.
+        return;
+      }
+      decoded = utf8Decode(frame.payload);
+    }
+
+    const message = decodeRawHiveMessage(decoded);
+    if (message.msg_type === "hello") {
+      this.recordServerHello(message.payload);
+      return;
+    }
+    if (message.msg_type === "handshake" || message.msg_type === "shake") {
+      await this.handleHandshake(message.payload);
+      return;
+    }
+    if (message.msg_type === "bus") {
+      this.dispatchEvent(new CustomEvent<BusPayload>("bus", { detail: message.payload as unknown as BusPayload }));
+    } else if (message.msg_type === "query" || message.msg_type === "cascade") {
+      this.dispatchEvent(new CustomEvent<HiveMessage>(message.msg_type, { detail: message }));
+    }
+  }
+
+  /**
+   * Record the hub's cleartext HELLO. Both its payload and the parameter
+   * HANDSHAKE payload are bound into the Noise prologue, so it is kept whole
+   * rather than reduced to the node id.
+   */
+  private recordServerHello(payload: Record<string, unknown>): void {
+    if (this.session || this.serverHello) return;
+    this.serverHello = payload;
+    this.nodeId = typeof payload.node_id === "string" ? payload.node_id : "";
+  }
+
+  protected override async handleHandshake(payload: Record<string, unknown>): Promise<void> {
+    const noiseParams = payload.noise as Record<string, unknown> | undefined;
+    if (!noiseParams || typeof noiseParams !== "object") {
+      throw new ThalovantConnectionError(
+        "This hub did not offer the v3 Noise handshake; the SDK requires a hub running HiveMind-core 5.x or newer.",
+      );
+    }
+    if (typeof noiseParams.msg === "string") {
+      await this.continueNoiseHandshake(noiseParams);
+      return;
+    }
+    await this.startNoiseHandshake(payload, noiseParams);
+  }
+
+  /**
+   * Select a pattern and suite, bind the negotiation into the prologue, and
+   * send Noise message 1.
+   */
+  private async startNoiseHandshake(
+    handshakePayload: Record<string, unknown>,
+    noiseParams: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.nodeId) {
+      throw new ThalovantConnectionError(
+        "The hub sent its HANDSHAKE parameters before a HELLO carrying node_id.",
+      );
+    }
+    const pinned = await loadNoisePin(this.noiseStateDir, this.nodeId);
+    const selection = selectNoiseOptions(stringList(noiseParams.patterns), stringList(noiseParams.suites), pinned);
+    if (!selection) {
+      throw new ThalovantConnectionError(
+        "No Noise pattern and suite this SDK supports are on offer from the hub.",
+      );
+    }
+
+    const protocolName = noiseProtocolName(selection.pattern, selection.suite);
+    const prologue = buildPrologue(this.serverHello ?? {}, handshakePayload, protocolName);
+    const staticKey = await loadOrCreateNoiseKey(this.noiseStateDir);
+    const psk = this.pskFor(this.nodeId);
+
+    this.noiseHandshake = new NoiseHandshake(
+      selection.pattern,
+      selection.suite,
+      psk,
+      prologue,
+      staticKey,
+      pinned ? hexToBytes(pinned) : undefined,
+    );
+
+    // Message 1 carries this node's binarize capability and its
+    // preference-ordered encodings, canonicalized so both peers hash the same
+    // bytes.
+    const message = this.noiseHandshake.writeMessage(
+      utf8Encode(canonicalJson({ binarize: false, encodings: [] })),
+    );
+    await this.sendCleartext({
+      msg_type: "shake",
+      payload: { noise: { pattern: selection.pattern, suite: selection.suite, msg: bytesToHex(message) } },
+      metadata: {},
+      route: [],
+    });
+  }
+
+  /**
+   * Consume the hub's Noise message, send the final one where the pattern needs
+   * it, and bring the transport up.
+   */
+  private async continueNoiseHandshake(noiseParams: Record<string, unknown>): Promise<void> {
+    const handshake = this.noiseHandshake;
+    if (!handshake) {
+      throw new ThalovantConnectionError("The hub sent a Noise handshake message before its parameters.");
+    }
+
+    try {
+      handshake.readMessage(hexToBytes(String(noiseParams.msg)));
+    } catch (error) {
+      // KKpsk0 needs each side to hold the other's static key, but the client
+      // chose it knowing only that it had pinned the hub's. The failure is as
+      // likely to mean the hub no longer has this client's, so drop the pin and
+      // let the next attempt fall back to XXpsk2.
+      if (handshake.pattern === NOISE_PATTERN_KK) {
+        await forgetNoisePin(this.noiseStateDir, this.nodeId).catch(() => undefined);
+      }
+      throw error;
+    }
+
+    if (!handshake.isFinished) {
+      // XXpsk2 message 3: our encrypted static key and the final DH mix. The
+      // pattern and suite are named only on message 1.
+      const final = handshake.writeMessage();
+      await this.sendCleartext({
+        msg_type: "shake",
+        payload: { noise: { msg: bytesToHex(final) } },
+        metadata: {},
+        route: [],
+      });
+    }
+
+    const session = handshake.intoSession();
+    if (session.remoteStaticKey) {
+      await pinHubKey(this.noiseStateDir, this.nodeId, session.remoteStaticKey);
+    }
+    this.session = session;
+    this.noiseHandshake = undefined;
+
+    // The first Noise transport message is the encrypted HELLO.
+    await this.sendHiveMessage({
+      msg_type: "hello",
+      payload: {
+        pubkey: this.identity.publicKey ?? "",
+        session: { session_id: `thalovant-node-${randomUUID()}` },
+        site_id: this.identity.siteId,
+      },
+      metadata: {},
+      route: [],
+    });
+    this.completeHandshake();
+  }
+
+  /** Derive, or reuse, the pre-shared key for a hub. */
+  private pskFor(nodeId: string): Uint8Array {
+    if (this.cachedPsk?.nodeId === nodeId) return this.cachedPsk.psk;
+    const psk = derivePsk(this.identity.password ?? "", nodeId);
+    this.cachedPsk = { nodeId, psk };
+    return psk;
+  }
+
+  /**
+   * Write a handshake message as a cleartext JSON text frame. Only the
+   * handshake exchange travels this way; everything after it goes through the
+   * Noise session.
+   */
+  private async sendCleartext(message: HiveMessage): Promise<void> {
     const socket = this.socket;
     if (!socket?.isOpen) {
       throw new ThalovantConnectionError("HiveMind WSS transport is not connected.");
     }
-    const serialized = JSON.stringify(message);
-    const payload = encrypt && this.handshakeComplete && this.identity.cryptoKey
-      ? await encryptAsJsonAsync(this.identity.cryptoKey, serialized)
-      : serialized;
-    await sendSocketPayload(socket, payload, this.sendTimeoutMs);
+    await sendSocketPayload(socket, JSON.stringify(message), this.sendTimeoutMs);
   }
+
+  override async sendHiveMessage(message: HiveMessage, _encrypt = true): Promise<void> {
+    const socket = this.socket;
+    if (!socket?.isOpen) {
+      throw new ThalovantConnectionError("HiveMind WSS transport is not connected.");
+    }
+    const session = this.session;
+    if (!session) {
+      throw new ThalovantConnectionError("Refusing to send before the v3 Noise session is established.");
+    }
+    // Sealing and sending happen inside the chain so a concurrent caller
+    // cannot slip a frame between this message's chunks, and cannot seal its
+    // own message against a counter this one has already moved past.
+    const serialized = utf8Encode(JSON.stringify(message));
+    const send = this.sendChain.then(async () => {
+      for (const frame of session.encryptMessage(serialized, true)) {
+        await sendSocketPayload(socket, frame, this.sendTimeoutMs);
+      }
+    });
+    // Keep the chain alive after a failed send: a rejected link would reject
+    // every later send with the same stale error.
+    this.sendChain = send.catch(() => undefined);
+    return send;
+  }
+}
+
+/** The string entries of a JSON array, ignoring anything else in it. */
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
 }
 
 function authorizedUrl(endpoint: string, authorization: string, expected: "wss"): string {
@@ -463,41 +760,22 @@ function sendSocketPayload(socket: PlatformWebSocket, payload: string | Uint8Arr
   });
 }
 
-async function decodeRawHiveMessage(raw: unknown, cryptoKey?: string): Promise<HiveMessage> {
+function decodeRawHiveMessage(raw: unknown): HiveMessage {
   if (raw instanceof ArrayBuffer) {
     raw = new Uint8Array(raw);
   }
   if (raw instanceof Uint8Array) {
-    const text = utf8Decode(raw);
     try {
-      return await decodeTextHiveMessage(text, cryptoKey);
+      return JSON.parse(utf8Decode(raw)) as HiveMessage;
     } catch {
-      // MQTT may deliver opaque encrypted binary frames.
-    }
-    if (cryptoKey) {
-      try {
-        return decodeHiveBinaryFrame(await decryptBinaryAsync(cryptoKey, raw)) as HiveMessage;
-      } catch {
-        // Fall through and try plaintext binary.
-      }
+      // MQTT delivers HiveMind binary frames rather than JSON text.
     }
     return decodeHiveBinaryFrame(raw) as HiveMessage;
   }
   if (typeof raw === "string") {
-    return decodeTextHiveMessage(raw, cryptoKey);
-  }
-  if (typeof raw === "object" && raw && "ciphertext" in raw && cryptoKey) {
-    return JSON.parse(await decryptFromJsonAsync(cryptoKey, raw as Record<string, unknown>)) as HiveMessage;
+    return JSON.parse(raw) as HiveMessage;
   }
   return raw as HiveMessage;
-}
-
-async function decodeTextHiveMessage(raw: string, cryptoKey?: string): Promise<HiveMessage> {
-  const parsed = JSON.parse(raw) as Record<string, unknown>;
-  if ("ciphertext" in parsed && cryptoKey) {
-    return JSON.parse(await decryptFromJsonAsync(cryptoKey, parsed)) as HiveMessage;
-  }
-  return parsed as unknown as HiveMessage;
 }
 
 function sleep(ms: number): Promise<void> {

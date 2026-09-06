@@ -9,9 +9,9 @@ import test from "node:test";
 import { inspect } from "node:util";
 import { WebSocketServer } from "ws";
 import { buildClientContext } from "../src/context.js";
-import { decryptBinary, decryptFromJson, encryptAsBinary, encryptAsJson, runtimeCryptoKey } from "../src/crypto.js";
 import { contextWithCorrelation, eventMatchesContext, ThalovantEvent } from "../src/events.js";
 import { ThalovantIdentity } from "../src/identity.js";
+import { createV3HubPeer } from "./v3-hub.js";
 import { HubDataPlaneEndpoints, HubProtocolSettings, selectDataPlaneEndpoint } from "../src/protocols.js";
 import { displayItemsFromEventData } from "../src/rich.js";
 import { ThalovantControlPlane } from "../src/control.js";
@@ -24,7 +24,6 @@ test("identity normalizes aliases", () => {
   const identity = new ThalovantIdentity({
     key: "access",
     password: "secret",
-    cryptoKey: "0123456789abcdef-extra",
     site: "site",
     host: "https://hub.example.com/",
     port: "443",
@@ -358,11 +357,11 @@ test("WSS connect reports socket and handshake timings", async t => {
   });
   await once(server, "listening");
   server.on("connection", socket => {
-    socket.send(JSON.stringify({
-      msg_type: "handshake",
-      payload: { preshared_key: true },
-      metadata: {},
-    }));
+    const hub = createV3HubPeer("secret", (data, binary) => socket.send(data, { binary }));
+    socket.on("message", (data: Buffer, isBinary: boolean) => {
+      hub.onMessage(isBinary ? new Uint8Array(data) : data.toString());
+    });
+    hub.start();
   });
   const address = server.address();
   assert.equal(typeof address, "object");
@@ -371,13 +370,18 @@ test("WSS connect reports socket and handshake timings", async t => {
   const identity = new ThalovantIdentity({
     access_key: "access",
     password: "secret",
-    crypto_key: "0123456789abcdef",
     site_id: "site",
     default_master: `ws://127.0.0.1:${port}`,
   });
-  const client = new ThalovantClient(identity, { protocol: "wss" });
+  // Point the Noise state at a temp directory: the default is the user's real
+  // config directory, and a test must not write a static key or a pin there.
+  const noiseStateDir = await mkdtemp(join(tmpdir(), "thalovant-noise-"));
+  t.after(async () => {
+    await rm(noiseStateDir, { recursive: true, force: true });
+  });
+  const client = new ThalovantClient(identity, { protocol: "wss", noiseStateDir });
 
-  const info = await client.connectWithInfo(2000);
+  const info = await client.connectWithInfo(4000);
   const health = client.healthcheck();
   await client.close();
 
@@ -525,8 +529,7 @@ test("control plane bootstrap keeps generated secrets local", async () => {
       const payload = JSON.parse(String(init?.body)) as Record<string, any>;
       assert.equal(typeof payload.spec.apiKey, "string");
       assert.equal(typeof payload.spec.password, "string");
-      assert.equal(typeof payload.spec.cryptoKey, "string");
-      return jsonResponse(201, {
+        return jsonResponse(201, {
         id: "client-1",
         name: payload.name,
         hub_id: payload.hub_id,
@@ -1215,13 +1218,12 @@ test("control plane bootstrap preserves API returned MQTT credentials", async ()
         id: "client-mqtt",
         name: payload.name,
         hub_id: payload.hub_id,
-        // The real route echoes the sent spec (apiKey/password/cryptoKey).
+        // The real route echoes the sent spec (apiKey/password).
         spec: { ...payload.spec, apiKeyRef: { name: "secret", key: "apiKey" } },
         initial_identify_token: "identify-token-1",
         initial_identify: {
           access_key: payload.spec.apiKey,
           password: payload.spec.password,
-          crypto_key: payload.spec.cryptoKey,
           site_id: payload.spec.siteId,
           default_master: "wss://mqtt.thalovant.io",
           mqtt: {
@@ -1271,7 +1273,6 @@ test("control plane bootstrap preserves API returned MQTT credentials", async ()
     for (const secret of [
       result.identity.accessKey,
       result.identity.password,
-      result.identity.cryptoKey ?? "",
       "broker-password",
       "identify-token-1",
     ]) {
@@ -1286,14 +1287,12 @@ test("control plane bootstrap preserves API returned MQTT credentials", async ()
     const fullIdentity = full.identity as Record<string, any>;
     assert.equal(fullIdentity.access_key, result.identity.accessKey);
     assert.equal(fullIdentity.password, result.identity.password);
-    assert.equal(fullIdentity.crypto_key, result.identity.cryptoKey);
     assert.equal(fullIdentity.mqtt.password, "broker-password");
 
     // The persisted includeSecrets form still round-trips into an identity.
     const restored = new ThalovantIdentity(fullIdentity);
     assert.equal(restored.accessKey, result.identity.accessKey);
     assert.equal(restored.password, result.identity.password);
-    assert.equal(restored.cryptoKey, result.identity.cryptoKey);
     assert.equal(restored.siteId, result.identity.siteId);
     assert.equal(restored.mqtt?.password, "broker-password");
   } finally {
@@ -1316,7 +1315,6 @@ test("identity, MQTT credentials, and control plane redact secrets in debug outp
   const identity = new ThalovantIdentity({
     access_key: "id-access-key-XYZ",
     password: "id-password-XYZ",
-    crypto_key: "id-crypto-key-XYZ",
     site_id: "debug-site",
     default_master: "wss://hub.example.com",
     mqtt: {
@@ -1332,7 +1330,6 @@ test("identity, MQTT credentials, and control plane redact secrets in debug outp
   const secretsToScan = [
     "id-access-key-XYZ",
     "id-password-XYZ",
-    "id-crypto-key-XYZ",
     "mqtt-user-XYZ",
     "mqtt-password-XYZ",
     "bearer-token-XYZ",
@@ -1347,7 +1344,6 @@ test("identity, MQTT credentials, and control plane redact secrets in debug outp
     const payload = parseDebugPayload(rendered);
     assert.equal(payload.access_key, "[redacted]");
     assert.equal(payload.password, "[redacted]");
-    assert.equal(payload.crypto_key, "[redacted]");
     // Non-secret fields stay visible for debugging (compared to the object's
     // own field values, not to URL string literals).
     assert.equal(payload.site_id, identity.siteId);
@@ -1383,7 +1379,9 @@ test("identity, MQTT credentials, and control plane redact secrets in debug outp
   const reloaded = new ThalovantIdentity(persisted);
   assert.equal(reloaded.accessKey, "id-access-key-XYZ");
   assert.equal(reloaded.password, "id-password-XYZ");
-  assert.equal(reloaded.cryptoKey, "id-crypto-key-XYZ");
+  // crypto_key is accepted so an older identity file still parses, and then
+  // ignored: v3 Noise derives its pre-shared key from the password.
+  assert.equal("cryptoKey" in (reloaded as object), false);
   assert.equal(reloaded.mqtt?.password, "mqtt-password-XYZ");
 });
 
@@ -1501,7 +1499,6 @@ test("createClientIdentity scrubs generated secrets from API error messages", as
   const originalFetch = globalThis.fetch;
   let sentApiKey = "";
   let sentPassword = "";
-  let sentCryptoKey = "";
   globalThis.fetch = async (url, init) => {
     const target = String(url);
     if (target.endsWith("/v1/hubs/hub-1")) {
@@ -1516,11 +1513,10 @@ test("createClientIdentity scrubs generated secrets from API error messages", as
       const payload = JSON.parse(String(init?.body)) as Record<string, any>;
       sentApiKey = payload.spec.apiKey;
       sentPassword = payload.spec.password;
-      sentCryptoKey = payload.spec.cryptoKey;
       // Worst case: the server echoes the sent secrets inside the detail
       // string itself, where the known-fields filter alone cannot help.
       return jsonResponse(400, {
-        detail: `spec rejected: apiKey=${payload.spec.apiKey} password=${payload.spec.password} cryptoKey=${payload.spec.cryptoKey}`,
+        detail: `spec rejected: apiKey=${payload.spec.apiKey} password=${payload.spec.password}`,
       });
     }
     throw new Error(`unexpected URL ${url}`);
@@ -1534,8 +1530,8 @@ test("createClientIdentity scrubs generated secrets from API error messages", as
         assert.ok(error instanceof ThalovantApiError);
         const message = (error as Error).message;
         assert.match(message, /HTTP 400/);
-        assert.ok(sentApiKey.length >= 8 && sentPassword.length >= 8 && sentCryptoKey.length >= 8);
-        for (const secret of [sentApiKey, sentPassword, sentCryptoKey]) {
+        assert.ok(sentApiKey.length >= 8 && sentPassword.length >= 8);
+        for (const secret of [sentApiKey, sentPassword]) {
           assert.ok(!message.includes(secret), "createClientIdentity error leaked a generated secret");
         }
         return true;
@@ -1618,9 +1614,6 @@ test("control plane API errors keep a bounded detail and never the raw body", as
   }
 });
 
-test("runtime crypto key truncates to HiveMind key size", () => {
-  assert.deepEqual(runtimeCryptoKey("0123456789abcdef-extra"), Buffer.from("0123456789abcdef"));
-});
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -1629,52 +1622,9 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-test("encryptAsJson emits HiveMind-compatible AES-GCM JSON-HEX payloads", () => {
-  const encrypted = encryptAsJson("0123456789abcdef-extra", "hello");
-  const parsed = JSON.parse(encrypted) as { ciphertext: string; nonce: string; tag: string };
 
-  assert.match(parsed.ciphertext, /^[0-9a-f]+$/);
-  assert.equal(Buffer.from(parsed.nonce, "hex").length, 16);
-  assert.equal(Buffer.from(parsed.tag, "hex").length, 16);
-  assert.equal(decryptFromJson("0123456789abcdef-extra", encrypted), "hello");
-});
 
-test("decryptFromJson accepts legacy AES-GCM JSON-HEX payloads", () => {
-  const key = Buffer.from("0123456789abcdef");
-  const nonce = Buffer.alloc(12, 7);
-  const cipher = createCipheriv("aes-128-gcm", key, nonce);
-  const ciphertext = Buffer.concat([cipher.update("hello", "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  const encrypted = JSON.stringify({
-    ciphertext: ciphertext.toString("hex"),
-    tag: tag.toString("hex"),
-    nonce: nonce.toString("hex"),
-  });
 
-  assert.equal(decryptFromJson("0123456789abcdef-extra", encrypted), "hello");
-});
-
-test("decryptFromJson accepts AES-GCM JSON-BASE64 payloads", () => {
-  const key = Buffer.from("0123456789abcdef");
-  const nonce = Buffer.alloc(16, 8);
-  const cipher = createCipheriv("aes-128-gcm", key, nonce);
-  const ciphertext = Buffer.concat([cipher.update("hello", "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  const encrypted = JSON.stringify({
-    ciphertext: ciphertext.toString("base64"),
-    tag: tag.toString("base64"),
-    nonce: nonce.toString("base64"),
-  });
-
-  assert.equal(decryptFromJson("0123456789abcdef-extra", encrypted), "hello");
-});
-
-test("encryptAsBinary round trips HiveMind MQTT payload bytes", () => {
-  const plaintext = Buffer.from("hello", "utf8");
-  const encrypted = encryptAsBinary("0123456789abcdef-extra", plaintext);
-
-  assert.deepEqual(decryptBinary("0123456789abcdef-extra", encrypted), plaintext);
-});
 
 test("HiveMind binary frames round trip message payloads", () => {
   const encoded = encodeHiveBinaryFrame({

@@ -395,6 +395,55 @@ Hubs may expose one or more public data-plane protocols:
 - `https`: request/response HTTP protocol exposed as HTTPS.
 - `mqtt`: broker-mediated MQTT over TLS. Requires per-client broker credentials.
 
+### Transport Security
+
+`wss` connections perform the HiveMind **v3 Noise handshake**
+(`Noise_XXpsk2_25519_ChaChaPoly_SHA256`, or `KKpsk0` once the hub's static key
+is pinned). It is the only key exchange a HiveMind-core 5.x hub accepts: there
+is no pre-shared `crypto_key` any more, no cleartext path, and a connection that
+cannot complete the handshake is closed with WebSocket `1008`.
+
+Nothing extra has to be provisioned. The Noise pre-shared key is derived from
+the identity `password` with argon2id, salted with the hub's node id, so an
+identity that can authenticate can already handshake. All of it runs on the
+audited `@noble` packages, so a browser bundle does the same work with no Node
+builtins.
+
+Two pieces of state persist. In Node they are files beside the SDK config file
+(`~/.config/thalovant` unless `XDG_CONFIG_HOME` or `%APPDATA%` says otherwise),
+both `0600`; in a browser they live under a `localStorage` namespace:
+
+- `noise_key` — this client's static X25519 key. It has to persist: a hub pins
+  it on first contact, so regenerating it makes the client look like a
+  different peer and the hub refuses it.
+- `noise_pins.json` — the hub static keys this client has pinned.
+
+Point both somewhere else with the `noiseStateDir` client option.
+
+The first connection to a hub trusts the key it presents and records it. A
+later connection presenting a different key is **refused**, because the SDK
+cannot tell a reinstalled hub from another machine answering at the same
+address. If the hub really was replaced, clear the pin deliberately:
+
+```ts
+import { forgetNoisePin } from "@thalovant/sdk";
+
+await forgetNoisePin(undefined, nodeId);
+```
+
+The derivation costs 64 MiB and a few hundred milliseconds. A transport caches
+the result per hub, so reconnects pay it once.
+
+<!-- The browser caveat is worth stating plainly rather than leaving a reader
+     to hit it as a 1008 close. -->
+In a browser, a viewer whose site data is cleared or who opens a private window
+loses the static key, and a hub that pinned the old one will refuse the
+reconnect until an operator clears its pin. That is a browser storage limit,
+not something the SDK can work around.
+
+`https` and `mqtt` do not run a Noise handshake. They authenticate with the
+identity credentials and take their confidentiality from TLS.
+
 Inspect what an identity supports:
 
 ```ts

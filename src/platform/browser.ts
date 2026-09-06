@@ -186,3 +186,54 @@ export async function openExternalUrl(url: string): Promise<boolean> {
     return false;
   }
 }
+
+export const NOISE_KEY_FILENAME = "noise_key";
+export const NOISE_PINS_FILENAME = "noise_pins.json";
+
+/**
+ * Browsers have no config directory, so the Noise state is namespaced under a
+ * single `localStorage` prefix instead.
+ */
+export function noiseStateDir(): string {
+  return "thalovant:noise";
+}
+
+const memoryNoiseState = new Map<string, string>();
+
+function localStore(): Storage | undefined {
+  try {
+    const storage = (globalThis as { localStorage?: Storage }).localStorage;
+    // Touch it: a browser with site data blocked exposes the object but throws
+    // on access, and a private window can throw on write.
+    storage?.getItem("thalovant:noise:probe");
+    return storage;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read persistent Noise state.
+ *
+ * The static key is kept in `localStorage` because a hub pins it on first
+ * contact: a client that presents a new key every page load is refused, and an
+ * operator has to clear the pin by hand. Where `localStorage` is unavailable
+ * (a private window, or site data blocked) this falls back to memory, which
+ * means the key lasts one page and a hub that has pinned this client will
+ * refuse it. That is a browser storage limit, not something the SDK can work
+ * around.
+ */
+export async function readNoiseState(directory: string, filename: string): Promise<string | undefined> {
+  const key = `${directory}:${filename}`;
+  return localStore()?.getItem(key) ?? memoryNoiseState.get(key) ?? undefined;
+}
+
+export async function writeNoiseState(directory: string, filename: string, contents: string): Promise<void> {
+  const key = `${directory}:${filename}`;
+  memoryNoiseState.set(key, contents);
+  try {
+    localStore()?.setItem(key, contents);
+  } catch {
+    // Quota or a private window; the in-memory copy above still serves this page.
+  }
+}
