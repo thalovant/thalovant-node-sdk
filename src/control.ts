@@ -882,13 +882,11 @@ export class ThalovantControlPlane {
     const siteId = cleanSiteId(options.siteId ?? options.name);
     const apiKey = newSecret();
     const password = newSecret();
-    const cryptoKey = newSecret();
     const spec: JsonRecord = {
       ...(options.spec ?? {}),
       version: String(options.spec?.version ?? "1"),
       apiKey,
       password,
-      cryptoKey,
       siteId,
     };
     const payload: JsonRecord = {
@@ -905,7 +903,7 @@ export class ThalovantControlPlane {
     const client = await this.request("POST", "/v1/clients", {
       body: payload,
       headers: { "Idempotency-Key": options.idempotencyKey ?? randomUUID() },
-      redactSecrets: [apiKey, password, cryptoKey],
+      redactSecrets: [apiKey, password],
     });
     const protocols = HubProtocolSettings.from(hubResource);
     const endpoints = HubDataPlaneEndpoints.fromHub(hubResource);
@@ -922,7 +920,6 @@ export class ThalovantControlPlane {
     } : {
       access_key: apiKey,
       password,
-      crypto_key: cryptoKey,
       site_id: siteId,
       default_master: defaultMaster(hubResource, endpoints, endpoint),
       default_port: 443,

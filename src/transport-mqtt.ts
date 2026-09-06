@@ -7,7 +7,6 @@
 import { connect as mqttConnect, type IClientOptions, type MqttClient } from "mqtt";
 
 import { ThalovantConnectionError } from "./errors.js";
-import { encryptAsBinary } from "./crypto.js";
 import { ThalovantIdentity } from "./identity.js";
 import { randomUUID } from "./platform/node.js";
 import { HiveMessage, HiveMindHttpTransport, TransportHealth } from "./transport-core.js";
@@ -110,9 +109,6 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
       throw new ThalovantConnectionError("HiveMind MQTT transport is not connected.");
     }
     let payload = encodeHiveBinaryFrame(message);
-    if (this.identity.cryptoKey) {
-      payload = encryptAsBinary(this.identity.cryptoKey, payload);
-    }
     await mqttPublish(client, this.topics.inbound, toNodeBuffer(payload), {
       qos: this.identity.mqtt?.qos ?? 1,
       retain: false,

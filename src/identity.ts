@@ -23,6 +23,11 @@ export interface IdentityInput {
   api_key?: string;
   key?: string;
   password?: string;
+  /**
+   * Accepted and ignored. It keyed the pre-shared transport cipher that v3
+   * Noise replaced, and hubs no longer issue one, but an identity file written
+   * before the change must still parse.
+   */
   cryptoKey?: string;
   crypto_key?: string;
   siteId?: string;
@@ -154,7 +159,6 @@ export class ThalovantIdentity {
   readonly defaultPort: number;
   readonly defaultPath: string;
   readonly siteId: string;
-  readonly cryptoKey?: string;
   readonly dataPlaneEndpoints: HubDataPlaneEndpoints;
   readonly protocols: HubProtocolSettings;
   readonly publicKey?: string;
@@ -171,7 +175,6 @@ export class ThalovantIdentity {
     this.siteId = required(input.siteId ?? input.site_id ?? input.site, "site_id");
     this.defaultPort = numberValue(input.defaultPort ?? input.default_port ?? input.hub_http_port ?? input.port ?? 5679);
     this.defaultPath = normalizePath(input.defaultPath ?? input.default_path ?? input.hub_http_path ?? input.path ?? input.uri_path);
-    this.cryptoKey = optional(input.cryptoKey ?? input.crypto_key);
     this.dataPlaneEndpoints = HubDataPlaneEndpoints.from(input);
     this.protocols = HubProtocolSettings.from(input);
     this.publicKey = optional(input.publicKey ?? input.public_key);
@@ -218,7 +221,6 @@ export class ThalovantIdentity {
     return new ThalovantIdentity({
       access_key: envVar(`${prefix}ACCESS_KEY`),
       password: envVar(`${prefix}PASSWORD`),
-      crypto_key: envVar(`${prefix}CRYPTO_KEY`),
       site_id: envVar(`${prefix}SITE_ID`),
       default_master: envVar(`${prefix}HUB_HTTP_HOST`) ?? envVar(`${prefix}DEFAULT_MASTER`),
       default_port: envVar(`${prefix}HUB_HTTP_PORT`) ?? envVar(`${prefix}DEFAULT_PORT`),
@@ -285,7 +287,6 @@ export class ThalovantIdentity {
     if (includeSecrets) {
       data.access_key = this.accessKey;
       data.password = this.password;
-      data.crypto_key = this.cryptoKey;
     }
     if (this.mqtt) {
       data.mqtt = this.mqtt.asObject(includeSecrets);
@@ -294,8 +295,7 @@ export class ThalovantIdentity {
   }
 
   /**
-   * Human-readable form with `access_key`, `password`, and `crypto_key`
-   * redacted. Debug/display only — it never feeds the wire protocol or
+   * Human-readable form with `access_key` and `password` redacted. Debug/display only — it never feeds the wire protocol or
    * identity-file persistence, and `asObject(true)` still returns the real
    * values. `JSON.stringify(identity)` is intentionally left untouched.
    */
@@ -304,7 +304,6 @@ export class ThalovantIdentity {
       ...this.asObject(false),
       access_key: REDACTED,
       password: REDACTED,
-      ...(this.cryptoKey ? { crypto_key: REDACTED } : {}),
     })}`;
   }
 

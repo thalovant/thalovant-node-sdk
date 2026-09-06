@@ -12,9 +12,9 @@ import {
   randomBytes as nodeRandomBytes,
   randomUUID as nodeRandomUUID,
 } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { inflateSync } from "node:zlib";
 import WebSocket from "ws";
 import { parse as parseYaml } from "yaml";
@@ -185,4 +185,50 @@ export async function openExternalUrl(url: string): Promise<boolean> {
 
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/**
+ * Persistent state for the v3 Noise handshake, kept beside the SDK config file.
+ *
+ * `noise_key` holds this client's static X25519 private key and `noise_pins.json`
+ * the hub keys it has pinned. Both are written `0600`, and the key file is
+ * refused if it is group- or world-accessible, matching every other on-disk
+ * secret the SDK reads.
+ *
+ * The static key has to persist: a hub pins it on first contact, so a client
+ * that regenerates it looks like a different peer and is refused.
+ */
+export async function readNoiseState(directory: string, filename: string): Promise<string | undefined> {
+  const path = join(directory, filename);
+  try {
+    await stat(path);
+  } catch {
+    return undefined;
+  }
+  if (filename === NOISE_KEY_FILENAME) {
+    return readSecretFile(path, "Noise key file");
+  }
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+export async function writeNoiseState(directory: string, filename: string, contents: string): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  // mode on writeFile only applies at creation, so an existing file keeps
+  // whatever it had; chmod after the write makes it 0600 either way.
+  const path = join(directory, filename);
+  await writeFile(path, contents, { mode: 0o600 });
+  if (process.platform !== "win32") {
+    await chmod(path, 0o600);
+  }
+}
+
+export const NOISE_KEY_FILENAME = "noise_key";
+export const NOISE_PINS_FILENAME = "noise_pins.json";
+
+export function noiseStateDir(): string {
+  return dirname(defaultConfigPath("config.yaml"));
 }

@@ -59,10 +59,25 @@ export class ThalovantClient {
 
   constructor(
     identity: ThalovantIdentity,
-    options: { transport?: HiveMindRuntimeTransport; protocol?: HubProtocol; replySettleMs?: number; emptyReplyWaitMs?: number } = {},
+    options: {
+      transport?: HiveMindRuntimeTransport;
+      protocol?: HubProtocol;
+      replySettleMs?: number;
+      emptyReplyWaitMs?: number;
+      /**
+       * Where the v3 Noise static key and pin file live. Undefined uses
+       * the platform default: beside the SDK config file in Node, a
+       * `localStorage` namespace in a browser.
+       */
+      noiseStateDir?: string;
+    } = {},
   ) {
     this.identity = identity;
-    this.transport = options.transport ?? transportForProtocol(identity, options.protocol ?? defaultRuntimeProtocol(identity));
+    this.transport =
+      options.transport ??
+      transportForProtocol(identity, options.protocol ?? defaultRuntimeProtocol(identity), {
+        noiseStateDir: options.noiseStateDir,
+      });
     this.replySettleMs = options.replySettleMs ?? 250;
     this.emptyReplyWaitMs = options.emptyReplyWaitMs ?? 5000;
   }
@@ -641,7 +656,11 @@ function defaultRuntimeProtocol(identity: ThalovantIdentity): HubProtocol {
   throw new ThalovantUnsupportedProtocolError("The identity does not include a usable WSS, HTTPS, or MQTT endpoint.");
 }
 
-function transportForProtocol(identity: ThalovantIdentity, protocol: HubProtocol): HiveMindRuntimeTransport {
+function transportForProtocol(
+  identity: ThalovantIdentity,
+  protocol: HubProtocol,
+  options: { noiseStateDir?: string } = {},
+): HiveMindRuntimeTransport {
   if (protocol === "https") {
     return new HiveMindHttpTransport(identity);
   }
@@ -649,7 +668,7 @@ function transportForProtocol(identity: ThalovantIdentity, protocol: HubProtocol
     if (!identity.endpointFor("wss")) {
       throw new ThalovantUnsupportedProtocolError("WSS is enabled, but the identity does not include a WSS endpoint.");
     }
-    return new HiveMindWSSTransport(identity);
+    return new HiveMindWSSTransport(identity, { noiseStateDir: options.noiseStateDir });
   }
   if (protocol === "mqtt") {
     if (!identity.mqtt) {
