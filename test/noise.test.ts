@@ -9,6 +9,9 @@
  */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { bytesToHex, utf8Decode, utf8Encode } from "../src/bytes.js";
@@ -21,12 +24,17 @@ import {
   NOISE_PATTERN_KK,
   NOISE_PATTERN_XX,
   NoiseHandshake,
+  noiseNonce,
   noiseProtocolName,
   selectNoiseOptions,
+  transportAead,
   x25519PublicKey,
 } from "../src/noise.js";
 import { ThalovantIdentity } from "../src/identity.js";
 import { HiveMindMqttTransport } from "../src/transport-mqtt.js";
+import { HiveMindHttpTransport } from "../src/transport-core.js";
+import { ThalovantControlPlane } from "../src/control.js";
+import { loadNoisePin, pinHubKey, saveNoisePin } from "../src/noise-store.js";
 
 test("derivePsk matches the reference vectors", () => {
   const vectors: Array<[string, string, string]> = [
@@ -39,6 +47,41 @@ test("derivePsk matches the reference vectors", () => {
       bytesToHex(derivePsk(password, nodeId)),
       expected,
       `the pre-shared key for ${JSON.stringify(password)} does not match the reference`,
+    );
+  }
+});
+
+test("the transport AEAD matches the reference ciphertexts", () => {
+  // The two suites encode the nonce counter differently -- ChaChaPoly
+  // little-endian, AESGCM big-endian (Noise spec rev 34, section 12) -- and
+  // they agree only at counter zero. A same-implementation round trip would
+  // pass with either convention and then fail against a real hub on the
+  // second transport message, so these are the reference implementation's own
+  // ciphertexts (noiseprotocol 0.3.1) at counters that tell the two apart.
+  const key = new Uint8Array(32).map((_, index) => index);
+  const plaintext = utf8Encode("noise-transport-vector");
+  const empty = new Uint8Array(0);
+
+  const vectors: Array<[string, bigint, string, string]> = [
+    ["25519_AESGCM_SHA256", 0n, "000000000000000000000000", "60d3dcadd001f7cf69c6da45775ee5b4a426352747f338bb2af87fdc1579d700c91a945fb6f8"],
+    ["25519_AESGCM_SHA256", 1n, "000000000000000000000001", "7bb9d68f21d9446c6f40224983d44eda63fa7f200bc0fffcd5d4c0be724d78c6ff213aeed524"],
+    ["25519_AESGCM_SHA256", 258n, "000000000000000000000102", "634779e501b1642347721a75d47243559573cbfac3370330645b209d163adf1c04f90a6a4bc2"],
+    ["25519_ChaChaPoly_SHA256", 0n, "000000000000000000000000", "76d72b42c8cbd2a3720f2f11c0313a0a8ed490818edfa398489a90977d28e1e804160e81b654"],
+    ["25519_ChaChaPoly_SHA256", 1n, "000000000100000000000000", "f1389a2cd007db6a48d8dd2c3de7edaab318887a2819064363d7678f8b9eea0e2ddfba8dc3d3"],
+    ["25519_ChaChaPoly_SHA256", 258n, "000000000201000000000000", "73da914e74a79fe130e33c0c5adf0eab01c818746c83c7b909d0302385d6735a45edfcacd811"],
+  ];
+
+  for (const [suite, counter, expectedNonce, expectedCiphertext] of vectors) {
+    const littleEndian = suite === "25519_ChaChaPoly_SHA256";
+    assert.equal(
+      bytesToHex(noiseNonce(counter, littleEndian)),
+      expectedNonce,
+      `${suite} nonce at counter ${counter} does not match the reference`,
+    );
+    assert.equal(
+      bytesToHex(transportAead(suite).encrypt(key, counter, empty, plaintext)),
+      expectedCiphertext,
+      `${suite} ciphertext at counter ${counter} does not match the reference`,
     );
   }
 });
@@ -326,4 +369,110 @@ test("MQTT refuses a cleartext broker", async () => {
     /without TLS/,
     "connected to a cleartext MQTT broker; every message and the broker password would go out in the clear",
   );
+});
+
+test("concurrent pins do not lose one another", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "thalovant-pins-"));
+  try {
+    // Read-modify-write on one file: without a lock the later write is built
+    // from a snapshot taken before the earlier one landed, and an entry
+    // disappears.
+    const hubs = Array.from({ length: 12 }, (_, index) => `hub-${index}`);
+    await Promise.all(hubs.map((hub, index) => saveNoisePin(dir, hub, String(index).repeat(64).slice(0, 64))));
+
+    for (const [index, hub] of hubs.entries()) {
+      assert.equal(
+        await loadNoisePin(dir, hub),
+        String(index).repeat(64).slice(0, 64),
+        `${hub} lost its pin to a concurrent write`,
+      );
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("pinHubKey refuses a changed key and keeps the original", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "thalovant-pins-"));
+  try {
+    await pinHubKey(dir, "hub", "aa".repeat(32));
+    // The same key again is a normal reconnect.
+    await pinHubKey(dir, "hub", "aa".repeat(32));
+
+    await assert.rejects(
+      () => pinHubKey(dir, "hub", "bb".repeat(32)),
+      /forgetNoisePin/,
+      "a changed hub key was accepted; pinning gives no protection",
+    );
+    assert.equal(
+      await loadNoisePin(dir, "hub"),
+      "aa".repeat(32),
+      "the stored pin was overwritten by the rejected key",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the HTTP transport refuses a cleartext endpoint", () => {
+  // TLS is the only confidentiality on this path now, and the access key
+  // travels in the authorization query.
+  const identity = new ThalovantIdentity({
+    access_key: "access",
+    password: "secret",
+    site_id: "site",
+    default_master: "http://hub.example.com",
+    default_port: 80,
+  });
+  const transport = new HiveMindHttpTransport(identity);
+
+  assert.throws(
+    () => transport.baseUrl,
+    /https:\/\//,
+    "the HTTP transport accepted a cleartext endpoint",
+  );
+});
+
+test("createClientIdentity never forwards a caller's legacy crypto key", async () => {
+  // options.spec is caller-supplied and spread wholesale into the request.
+  let sentSpec: Record<string, unknown> | undefined;
+  const control = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    const target = String(url);
+    if (target.endsWith("/v1/hubs/hub-1")) {
+      return new Response(JSON.stringify({
+        id: "hub-1",
+        name: "hub",
+        spec: { protocols: { wss: { enabled: true } } },
+        data_plane_endpoints: { wss: "wss://hub.example.com" },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (target.endsWith("/v1/clients")) {
+      const body = JSON.parse(String(init?.body)) as { spec: Record<string, unknown> };
+      sentSpec = body.spec;
+      return new Response(JSON.stringify({ id: "client-1", name: "kiosk", hub_id: "hub-1", spec: {} }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected request ${target}`);
+  }) as typeof globalThis.fetch;
+
+  try {
+    await control.createClientIdentity("hub-1", {
+      name: "kiosk",
+      spec: { cryptoKey: "caller-supplied-SECRET", crypto_key: "caller-supplied-SECRET-2", label: "keep-me" },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.ok(sentSpec);
+  assert.equal("cryptoKey" in sentSpec, false, "a caller-supplied cryptoKey reached /v1/clients");
+  assert.equal("crypto_key" in sentSpec, false, "a caller-supplied crypto_key reached /v1/clients");
+  assert.equal(sentSpec.label, "keep-me", "the rest of the caller's spec must survive");
 });

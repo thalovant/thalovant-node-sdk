@@ -43,6 +43,20 @@
   payload cipher with it, so TLS is the only confidentiality left on that hop;
   without it every message and the broker password would travel in the clear.
   Use an `mqtts://` endpoint, or set `tls: true` on the identity's `mqtt` block.
+- **Breaking.** The HTTPS transport now refuses a `baseUrl` that is not
+  `https://`. Removing the crypto key took the separate payload cipher with it,
+  so TLS is the only confidentiality left on that hop, and the access key
+  travels in the `authorization` query.
+- `createClientIdentity` strips `cryptoKey` and `crypto_key` from a
+  caller-supplied `options.spec` rather than forwarding them to `/v1/clients`.
+  The generated-secret redaction covers only what the SDK mints, so a legacy
+  value passed in by a caller could otherwise be echoed back inside a
+  `ThalovantApiError`.
+- Pin-file updates are serialized in-process and written through a temporary
+  file renamed into place. The read-modify-write was previously unguarded, so
+  two connections pinning different hubs at once could lose an entry, and a
+  failed write could leave the file empty -- which reads back as "no pins" and
+  would silently re-pin whatever key the next connection was offered.
 - Messages larger than one Noise transport message are chunked at 65000 bytes
   and reassembled by the peer, with reassembly capped at 32 MiB. Sends are
   serialized so two callers cannot interleave a message's chunks: the cipher

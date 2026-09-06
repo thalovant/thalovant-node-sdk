@@ -23,6 +23,20 @@ export { NOISE_KEY_FILENAME, NOISE_PINS_FILENAME, noiseStateDir };
 const KEY_LENGTH = 32;
 
 /**
+ * Serializes the read-modify-write of the pin file, so two connections pinning
+ * different hubs at once cannot lose one another's entry. This is the
+ * in-process half; the atomic rename in `writeNoiseState` covers a second
+ * process racing the same file.
+ */
+let pinChain: Promise<unknown> = Promise.resolve();
+
+function withPinLock<T>(work: () => Promise<T>): Promise<T> {
+  const result = pinChain.then(work, work);
+  pinChain = result.catch(() => undefined);
+  return result;
+}
+
+/**
  * Return this client's persistent static X25519 private key, generating and
  * storing one on first use.
  *
@@ -30,6 +44,10 @@ const KEY_LENGTH = 32;
  * regenerates it looks like a different peer and is refused.
  */
 export async function loadOrCreateNoiseKey(directory?: string): Promise<Uint8Array> {
+  return withPinLock(async () => loadOrCreateNoiseKeyLocked(directory));
+}
+
+async function loadOrCreateNoiseKeyLocked(directory?: string): Promise<Uint8Array> {
   const dir = directory ?? noiseStateDir();
   const stored = await readNoiseState(dir, NOISE_KEY_FILENAME);
   if (stored) {
@@ -60,6 +78,10 @@ async function readPins(directory: string): Promise<Record<string, string>> {
   }
 }
 
+async function writePins(directory: string, pins: Record<string, string>): Promise<void> {
+  await writeNoiseState(directory, NOISE_PINS_FILENAME, `${JSON.stringify(pins, null, 2)}\n`);
+}
+
 /** The pinned hub static key for a node id, or undefined for an unseen hub. */
 export async function loadNoisePin(directory: string | undefined, nodeId: string): Promise<string | undefined> {
   const pins = await readPins(directory ?? noiseStateDir());
@@ -69,11 +91,19 @@ export async function loadNoisePin(directory: string | undefined, nodeId: string
 /** Record the hub static key for a node id on first contact. */
 export async function saveNoisePin(directory: string | undefined, nodeId: string, publicKey: string): Promise<void> {
   if (!nodeId.trim() || !publicKey.trim()) return;
+  await withPinLock(() => saveNoisePinLocked(directory, nodeId, publicKey));
+}
+
+async function saveNoisePinLocked(
+  directory: string | undefined,
+  nodeId: string,
+  publicKey: string,
+): Promise<void> {
   const dir = directory ?? noiseStateDir();
   const pins = await readPins(dir);
   if (pins[nodeId] === publicKey) return;
   pins[nodeId] = publicKey;
-  await writeNoiseState(dir, NOISE_PINS_FILENAME, `${JSON.stringify(pins, null, 2)}\n`);
+  await writePins(dir, pins);
 }
 
 /**
@@ -83,11 +113,13 @@ export async function saveNoisePin(directory: string | undefined, nodeId: string
  * matching on its own is a failure to investigate, not one to clear.
  */
 export async function forgetNoisePin(directory: string | undefined, nodeId: string): Promise<void> {
-  const dir = directory ?? noiseStateDir();
-  const pins = await readPins(dir);
-  if (!(nodeId in pins)) return;
-  delete pins[nodeId];
-  await writeNoiseState(dir, NOISE_PINS_FILENAME, `${JSON.stringify(pins, null, 2)}\n`);
+  await withPinLock(async () => {
+    const dir = directory ?? noiseStateDir();
+    const pins = await readPins(dir);
+    if (!(nodeId in pins)) return;
+    delete pins[nodeId];
+    await writePins(dir, pins);
+  });
 }
 
 /**
@@ -104,14 +136,20 @@ export async function pinHubKey(
   remoteStaticKey: string,
 ): Promise<void> {
   if (!remoteStaticKey) return;
-  const pinned = await loadNoisePin(directory, nodeId);
-  if (!pinned) {
-    await saveNoisePin(directory, nodeId, remoteStaticKey);
-    return;
-  }
-  if (pinned !== remoteStaticKey) {
-    throw new ThalovantConnectionError(
-      "The hub's Noise static key changed. If the hub was not reinstalled or replaced, another machine may be answering at this address. If it was, drop the stale pin with forgetNoisePin and reconnect to trust the new key.",
-    );
-  }
+  // Read and write inside one critical section. Checking for a pin and then
+  // writing it as separate steps is the race itself: two connections could
+  // both see no pin and the later one would overwrite the earlier decision.
+  await withPinLock(async () => {
+    const pins = await readPins(directory ?? noiseStateDir());
+    const pinned = pins[nodeId];
+    if (!pinned) {
+      await saveNoisePinLocked(directory, nodeId, remoteStaticKey);
+      return;
+    }
+    if (pinned !== remoteStaticKey) {
+      throw new ThalovantConnectionError(
+        "The hub's Noise static key changed. If the hub was not reinstalled or replaced, another machine may be answering at this address. If it was, drop the stale pin with forgetNoisePin and reconnect to trust the new key.",
+      );
+    }
+  });
 }

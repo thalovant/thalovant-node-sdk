@@ -882,8 +882,13 @@ export class ThalovantControlPlane {
     const siteId = cleanSiteId(options.siteId ?? options.name);
     const apiKey = newSecret();
     const password = newSecret();
+    // options.spec is caller-supplied and spread wholesale, so a legacy
+    // cryptoKey in it would be sent to /v1/clients and could come back inside
+    // a validation error. v3 issues no crypto key, so drop both spellings
+    // rather than carry a secret the platform no longer has a use for.
+    const { cryptoKey: _cryptoKey, crypto_key: _cryptoKeySnake, ...callerSpec } = options.spec ?? {};
     const spec: JsonRecord = {
-      ...(options.spec ?? {}),
+      ...callerSpec,
       version: String(options.spec?.version ?? "1"),
       apiKey,
       password,

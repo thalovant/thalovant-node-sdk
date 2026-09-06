@@ -12,7 +12,7 @@ import {
   randomBytes as nodeRandomBytes,
   randomUUID as nodeRandomUUID,
 } from "node:crypto";
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -217,12 +217,24 @@ export async function readNoiseState(directory: string, filename: string): Promi
 
 export async function writeNoiseState(directory: string, filename: string, contents: string): Promise<void> {
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  // mode on writeFile only applies at creation, so an existing file keeps
-  // whatever it had; chmod after the write makes it 0600 either way.
   const path = join(directory, filename);
-  await writeFile(path, contents, { mode: 0o600 });
-  if (process.platform !== "win32") {
-    await chmod(path, 0o600);
+
+  // Write to a unique temporary file in the same directory and rename it into
+  // place. Truncating the real file first would leave it empty or half-written
+  // if the write failed, and readNoiseState maps empty pins to {} -- which
+  // would make the next connection look like first contact and re-pin whatever
+  // key it was offered.
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, contents, { mode: 0o600 });
+    // mode on writeFile only applies at creation, so make it 0600 either way.
+    if (process.platform !== "win32") {
+      await chmod(temporary, 0o600);
+    }
+    await rename(temporary, path);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
   }
 }
 

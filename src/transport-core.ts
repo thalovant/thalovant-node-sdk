@@ -84,7 +84,23 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   get baseUrl(): string {
-    return this.identity.endpointBase();
+    const base = this.identity.endpointBase();
+    // TLS is the only confidentiality on this path. The identity crypto key
+    // that once sealed HTTP payloads separately is gone with v3, so a plain
+    // http:// hub would put every message, and the access key in the
+    // authorization query, on the wire in the clear.
+    let parsed: URL;
+    try {
+      parsed = new URL(base);
+    } catch {
+      throw new ThalovantConnectionError(`The HTTP transport needs a valid https:// endpoint; got ${base}.`);
+    }
+    if (parsed.protocol !== "https:") {
+      throw new ThalovantConnectionError(
+        `Refusing to use the HTTP transport over ${parsed.protocol}//. It needs an https:// endpoint: without TLS every message and the access key travel in the clear.`,
+      );
+    }
+    return base;
   }
 
   get authorization(): string {

@@ -178,13 +178,17 @@ interface Aead {
 }
 
 /**
- * Noise nonces are 96 bits: four zero bytes then the 64-bit counter, little
- * endian. Both suites in use take a 12-byte nonce in that layout.
+ * Noise nonces are 96 bits: four zero bytes then the 64-bit counter.
+ *
+ * The byte order is per cipher, not per protocol: ChaChaPoly encodes the
+ * counter little-endian and AESGCM big-endian (Noise spec revision 34, §12).
+ * They agree only at counter zero, so getting this wrong survives a handshake
+ * and then fails on the second transport message against a conformant peer.
  */
-function noiseNonce(counter: bigint): Uint8Array {
+export function noiseNonce(counter: bigint, littleEndian: boolean): Uint8Array {
   const nonce = new Uint8Array(12);
   const view = new DataView(nonce.buffer);
-  view.setBigUint64(4, counter, true);
+  view.setBigUint64(4, counter, littleEndian);
   return nonce;
 }
 
@@ -192,18 +196,30 @@ function aeadFor(suite: string): Aead {
   switch (suite) {
     case "25519_ChaChaPoly_SHA256":
       return {
-        encrypt: (key, nonce, ad, plaintext) => chacha20poly1305(key, noiseNonce(nonce), ad).encrypt(plaintext),
-        decrypt: (key, nonce, ad, ciphertext) => chacha20poly1305(key, noiseNonce(nonce), ad).decrypt(ciphertext),
+        encrypt: (key, nonce, ad, plaintext) =>
+          chacha20poly1305(key, noiseNonce(nonce, true), ad).encrypt(plaintext),
+        decrypt: (key, nonce, ad, ciphertext) =>
+          chacha20poly1305(key, noiseNonce(nonce, true), ad).decrypt(ciphertext),
       };
     case "25519_AESGCM_SHA256":
       return {
-        encrypt: (key, nonce, ad, plaintext) => gcm(key, noiseNonce(nonce), ad).encrypt(plaintext),
-        decrypt: (key, nonce, ad, ciphertext) => gcm(key, noiseNonce(nonce), ad).decrypt(ciphertext),
+        encrypt: (key, nonce, ad, plaintext) => gcm(key, noiseNonce(nonce, false), ad).encrypt(plaintext),
+        decrypt: (key, nonce, ad, ciphertext) => gcm(key, noiseNonce(nonce, false), ad).decrypt(ciphertext),
       };
     default:
       throw new ThalovantConnectionError(`Unsupported Noise cipher suite ${suite}.`);
   }
 }
+
+/**
+ * The transport AEAD for a suite, exported so the tests can check it against
+ * reference ciphertexts rather than only against itself.
+ */
+export function transportAead(suite: string): Aead {
+  return aeadFor(suite);
+}
+
+export type { Aead };
 
 /** Noise HKDF: two or three 32-byte outputs chained from one HMAC key. */
 function hkdf(chainingKey: Uint8Array, inputKeyMaterial: Uint8Array, outputs: 2 | 3): Uint8Array[] {
