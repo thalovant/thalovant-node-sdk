@@ -38,6 +38,11 @@
   current session.
 - `connect()` now defaults to a 20 second budget rather than 6, because the
   first handshake with a hub runs argon2id at 64 MiB.
+- **Breaking.** `HiveMindMqttTransport.connect` now refuses a broker whose
+  identity does not enable TLS. Removing the crypto key took the separate
+  payload cipher with it, so TLS is the only confidentiality left on that hop;
+  without it every message and the broker password would travel in the clear.
+  Use an `mqtts://` endpoint, or set `tls: true` on the identity's `mqtt` block.
 - Messages larger than one Noise transport message are chunked at 65000 bytes
   and reassembled by the peer, with reassembly capped at 32 MiB. Sends are
   serialized so two callers cannot interleave a message's chunks: the cipher

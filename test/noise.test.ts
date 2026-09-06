@@ -25,6 +25,8 @@ import {
   selectNoiseOptions,
   x25519PublicKey,
 } from "../src/noise.js";
+import { ThalovantIdentity } from "../src/identity.js";
+import { HiveMindMqttTransport } from "../src/transport-mqtt.js";
 
 test("derivePsk matches the reference vectors", () => {
   const vectors: Array<[string, string, string]> = [
@@ -299,4 +301,29 @@ test("reassembly is capped", () => {
   assert.throws(() => {
     for (const frame of frames) hubSession.decryptFrame(frame);
   }, /exceeded the 33554432 byte cap/);
+});
+
+test("MQTT refuses a cleartext broker", async () => {
+  // Pins the one thing standing between an MQTT message and the wire now that
+  // v3 removed the separate payload cipher.
+  const identity = new ThalovantIdentity({
+    access_key: "access",
+    password: "secret",
+    site_id: "site",
+    default_master: "https://hub.example.com",
+    mqtt: {
+      endpoint: "mqtt://broker.example.com:1883",
+      username: "access",
+      password: "broker-secret",
+      topic_prefix: "hubs/hub-1/client-1",
+      tls: false,
+    },
+  });
+  const transport = new HiveMindMqttTransport(identity);
+
+  await assert.rejects(
+    () => transport.connect(),
+    /without TLS/,
+    "connected to a cleartext MQTT broker; every message and the broker password would go out in the clear",
+  );
 });

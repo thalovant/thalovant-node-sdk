@@ -34,6 +34,15 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
     if (!credentials) {
       throw new ThalovantConnectionError("The identity does not include MQTT broker credentials.");
     }
+    // TLS is the only confidentiality on this path. The identity crypto key
+    // that once sealed MQTT payloads separately is gone with v3, so a broker
+    // hop without TLS would put every message, and the broker password with
+    // them, on the wire in the clear.
+    if (!credentials.tls && !/^(mqtts|ssl|wss):$/.test(new URL(credentials.endpoint).protocol)) {
+      throw new ThalovantConnectionError(
+        "Refusing to connect to an MQTT broker without TLS. Use an mqtts:// endpoint, or set tls: true on the identity's mqtt block.",
+      );
+    }
     const options: IClientOptions = {
       username: credentials.username,
       password: credentials.password,
