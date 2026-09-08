@@ -18,6 +18,8 @@ import test from "node:test";
 import { bytesToHex } from "../src/bytes.js";
 import { derivePsk, derivePskAsync, pskPasswordVerifier } from "../src/noise.js";
 import { loadCachedPsk, NOISE_PSK_FILENAME, saveCachedPsk } from "../src/noise-store.js";
+import { ThalovantIdentity } from "../src/identity.js";
+import { HiveMindWSSTransport } from "../src/transport.js";
 
 const NODE_ID = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEF\n-----END PUBLIC KEY-----";
 
@@ -88,6 +90,36 @@ test("a corrupt cache is discarded rather than failing the connection", async ()
     // and it recovers: a fresh save replaces the damaged file
     await saveCachedPsk(dir, NODE_ID, derivePsk("hunter2", NODE_ID), pskPasswordVerifier("hunter2"));
     assert.ok(await loadCachedPsk(dir, NODE_ID, pskPasswordVerifier("hunter2")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("changing the password on a live transport re-derives instead of reusing the old PSK", async () => {
+  // The in-memory cache is the one a reconnect hits first, so keying it on the
+  // node id alone would hand back the previous password's PSK -- and the hub
+  // would refuse it exactly as it refuses a wrong password.
+  const dir = await mkdtemp(join(tmpdir(), "thalovant-psk-"));
+  try {
+    const endpoint = "ws://127.0.0.1:5678";
+    const identity = new ThalovantIdentity({
+      access_key: "aaaabbbbccccddddeeeeffff00001111",
+      password: "first-password",
+      site_id: "psk-cache-test",
+      default_master: endpoint,
+      data_plane_endpoints: { wss: endpoint },
+    });
+    const transport = new HiveMindWSSTransport(identity, { noiseStateDir: dir }) as unknown as {
+      pskFor(nodeId: string): Promise<Uint8Array>;
+    };
+
+    const first = await transport.pskFor(NODE_ID);
+    assert.equal(bytesToHex(first), bytesToHex(derivePsk("first-password", NODE_ID)));
+
+    (identity as unknown as { password: string }).password = "second-password";
+    const second = await transport.pskFor(NODE_ID);
+    assert.equal(bytesToHex(second), bytesToHex(derivePsk("second-password", NODE_ID)));
+    assert.notEqual(bytesToHex(first), bytesToHex(second));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
