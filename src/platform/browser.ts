@@ -189,6 +189,7 @@ export async function openExternalUrl(url: string): Promise<boolean> {
 
 export const NOISE_KEY_FILENAME = "noise_key";
 export const NOISE_PINS_FILENAME = "noise_pins.json";
+export const NOISE_PSK_FILENAME = "noise_psks.json";
 
 /**
  * Browsers have no config directory, so the Noise state is namespaced under a
