@@ -21,7 +21,7 @@ import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { gcm } from "@noble/ciphers/aes.js";
 import { x25519 } from "@noble/curves/ed25519.js";
 
-import { concatBytes, utf8Encode } from "./bytes.js";
+import { bytesToHex, concatBytes, utf8Encode } from "./bytes.js";
 import { ThalovantConnectionError } from "./errors.js";
 
 /** HiveMind protocol version that switches the handshake to Noise. */
@@ -92,6 +92,58 @@ export function derivePsk(password: string, nodeId: string): Uint8Array {
     p: PSK_LANES,
     dkLen: PSK_LENGTH,
   });
+}
+
+/**
+ * The same derivation, run in WebAssembly.
+ *
+ * argon2id at 64 MiB is deliberately CPU-hard, and the pure-JS implementation
+ * pays that cost about 4.5x over: measured at the parameters above, 598ms in
+ * JS against 134ms in WASM on the same machine, and ~2.9s against ~650ms on a
+ * throttled container. That is per *connection*, so a process opening many
+ * sessions -- a load fixture, a gateway, a reconnect storm -- spends most of
+ * its connect time here.
+ *
+ * The output is byte-identical to `derivePsk`; `noise-psk.test.ts` asserts it
+ * across several inputs, because a mismatch would not fail loudly. It would
+ * produce a different key and the handshake would fail exactly as it does on a
+ * wrong password.
+ *
+ * WASM is unavailable in some hardened browser contexts, so a failure here
+ * falls back to the JS path rather than refusing to connect.
+ */
+export async function derivePskAsync(password: string, nodeId: string): Promise<Uint8Array> {
+  const salt = sha256(utf8Encode(nodeId));
+  try {
+    const { argon2id: argon2idWasm } = await import("hash-wasm");
+    const derived = await argon2idWasm({
+      password: utf8Encode(password),
+      salt,
+      iterations: PSK_TIME_COST,
+      memorySize: PSK_MEMORY_KIB,
+      parallelism: PSK_LANES,
+      hashLength: PSK_LENGTH,
+      outputType: "binary",
+    });
+    return new Uint8Array(derived);
+  } catch {
+    return derivePsk(password, nodeId);
+  }
+}
+
+/**
+ * A cheap fingerprint of the password, so a cached PSK can be discarded when
+ * the password behind it is rotated.
+ *
+ * It never leaves the machine that derived it and sits beside the client's
+ * Noise static key, under the same owner-only permissions. The identity file
+ * on the same host already carries the password itself in cleartext, so this
+ * adds no exposure that was not already present -- and storing the *verifier*
+ * rather than the password keeps the cache file from becoming a second copy of
+ * it.
+ */
+export function pskPasswordVerifier(password: string): string {
+  return bytesToHex(sha256(utf8Encode(`thalovant-psk-verifier:${password}`)));
 }
 
 /** The full Noise protocol name for a pattern and suite selection. */

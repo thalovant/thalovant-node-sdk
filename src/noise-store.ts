@@ -12,13 +12,14 @@ import { ThalovantConnectionError, ThalovantIdentityError } from "./errors.js";
 import {
   NOISE_KEY_FILENAME,
   NOISE_PINS_FILENAME,
+  NOISE_PSK_FILENAME,
   noiseStateDir,
   randomBytes,
   readNoiseState,
   writeNoiseState,
 } from "./platform/node.js";
 
-export { NOISE_KEY_FILENAME, NOISE_PINS_FILENAME, noiseStateDir };
+export { NOISE_KEY_FILENAME, NOISE_PINS_FILENAME, NOISE_PSK_FILENAME, noiseStateDir };
 
 const KEY_LENGTH = 32;
 
@@ -151,5 +152,74 @@ export async function pinHubKey(
         "The hub's Noise static key changed. If the hub was not reinstalled or replaced, another machine may be answering at this address. If it was, drop the stale pin with forgetNoisePin and reconnect to trust the new key.",
       );
     }
+  });
+}
+
+/**
+ * Cached password-to-PSK derivations, keyed by hub node id.
+ *
+ * The derivation is argon2id at 64 MiB and depends only on the password and
+ * the hub's node id, both constant for the life of the pairing -- so it is the
+ * same answer every time, and recomputing it on every connection is pure cost.
+ * The in-memory cache on the transport only helps one client object; this
+ * survives reconnects, new clients in the same process, and process restarts.
+ *
+ * Each entry carries a verifier of the password it came from. A rotated
+ * password no longer matches, so the stale PSK is ignored and re-derived
+ * instead of being offered to the hub, which would fail the handshake in a way
+ * that looks exactly like a wrong password.
+ */
+interface CachedPskEntry {
+  psk: string;
+  verifier: string;
+}
+
+async function readPskCache(directory: string): Promise<Record<string, CachedPskEntry>> {
+  const raw = await readNoiseState(directory, NOISE_PSK_FILENAME);
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Record<string, CachedPskEntry>;
+  } catch {
+    // A corrupt cache is not worth failing a connection over: it is derivable
+    // state, so drop it and pay the derivation once.
+    return {};
+  }
+}
+
+/** The cached PSK for a hub, or undefined when absent or derived from another password. */
+export async function loadCachedPsk(
+  directory: string | undefined,
+  nodeId: string,
+  verifier: string,
+): Promise<Uint8Array | undefined> {
+  if (!nodeId.trim()) return undefined;
+  const entry = (await readPskCache(directory ?? noiseStateDir()))[nodeId];
+  if (!entry || typeof entry.psk !== "string" || entry.verifier !== verifier) return undefined;
+  const trimmed = entry.psk.trim();
+  if (trimmed.length !== KEY_LENGTH * 2) return undefined;
+  try {
+    return hexToBytes(trimmed);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Record a derived PSK so the next connection to this hub skips argon2id. */
+export async function saveCachedPsk(
+  directory: string | undefined,
+  nodeId: string,
+  psk: Uint8Array,
+  verifier: string,
+): Promise<void> {
+  if (!nodeId.trim() || psk.length !== KEY_LENGTH) return;
+  await withPinLock(async () => {
+    const dir = directory ?? noiseStateDir();
+    const cache = await readPskCache(dir);
+    const encoded = bytesToHex(psk);
+    if (cache[nodeId]?.psk === encoded && cache[nodeId]?.verifier === verifier) return;
+    cache[nodeId] = { psk: encoded, verifier };
+    await writeNoiseState(dir, NOISE_PSK_FILENAME, `${JSON.stringify(cache, null, 2)}\n`);
   });
 }

@@ -208,6 +208,11 @@ export async function readNoiseState(directory: string, filename: string): Promi
   if (filename === NOISE_KEY_FILENAME) {
     return readSecretFile(path, "Noise key file");
   }
+  if (filename === NOISE_PSK_FILENAME) {
+    // Derived pre-shared keys are key material too, so they get the same
+    // owner-only enforcement rather than the permissive pins path.
+    return readSecretFile(path, "Noise PSK cache");
+  }
   try {
     return await readFile(path, "utf8");
   } catch {
@@ -240,6 +245,7 @@ export async function writeNoiseState(directory: string, filename: string, conte
 
 export const NOISE_KEY_FILENAME = "noise_key";
 export const NOISE_PINS_FILENAME = "noise_pins.json";
+export const NOISE_PSK_FILENAME = "noise_psks.json";
 
 export function noiseStateDir(): string {
   return dirname(defaultConfigPath("config.yaml"));
