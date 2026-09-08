@@ -131,20 +131,7 @@ export async function derivePskAsync(password: string, nodeId: string): Promise<
   }
 }
 
-/**
- * A cheap fingerprint of the password, so a cached PSK can be discarded when
- * the password behind it is rotated.
- *
- * It never leaves the machine that derived it and sits beside the client's
- * Noise static key, under the same owner-only permissions. The identity file
- * on the same host already carries the password itself in cleartext, so this
- * adds no exposure that was not already present -- and storing the *verifier*
- * rather than the password keeps the cache file from becoming a second copy of
- * it.
- */
-export function pskPasswordVerifier(password: string): string {
-  return bytesToHex(sha256(utf8Encode(`thalovant-psk-verifier:${password}`)));
-}
+
 
 /** The full Noise protocol name for a pattern and suite selection. */
 export function noiseProtocolName(pattern: string, suite: string): string {

@@ -156,7 +156,7 @@ export async function pinHubKey(
 }
 
 /**
- * Cached password-to-PSK derivations, keyed by hub node id.
+ * Cached pre-shared keys, keyed by hub node id.
  *
  * The derivation is argon2id at 64 MiB and depends only on the password and
  * the hub's node id, both constant for the life of the pairing -- so it is the
@@ -164,43 +164,35 @@ export async function pinHubKey(
  * The in-memory cache on the transport only helps one client object; this
  * survives reconnects, new clients in the same process, and process restarts.
  *
- * Each entry carries a verifier of the password it came from. A rotated
- * password no longer matches, so the stale PSK is ignored and re-derived
- * instead of being offered to the hub, which would fail the handshake in a way
- * that looks exactly like a wrong password.
+ * Only the key is stored. A fingerprint of the password would make rotation
+ * cheap to detect, but it would also put a fast hash of the password in the
+ * same file as the key it protects -- and a fast hash is exactly the offline
+ * oracle argon2id exists to deny. A password rotated elsewhere is noticed when
+ * the hub rejects the stale key, and `forgetCachedPsk` drops it.
  */
-interface CachedPskEntry {
-  psk: string;
-  verifier: string;
-}
-
-async function readPskCache(directory: string): Promise<Record<string, CachedPskEntry>> {
+async function readPskCache(directory: string): Promise<Record<string, string>> {
   const raw = await readNoiseState(directory, NOISE_PSK_FILENAME);
   if (!raw) return {};
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as Record<string, CachedPskEntry>;
+    return parsed as Record<string, string>;
   } catch {
-    // A corrupt cache is not worth failing a connection over: it is derivable
-    // state, so drop it and pay the derivation once.
+    // A corrupt cache is derivable state, not a reason to fail a connection.
     return {};
   }
 }
 
-/** The cached PSK for a hub, or undefined when absent or derived from another password. */
+/** The cached PSK for a hub, or undefined when there is none. */
 export async function loadCachedPsk(
   directory: string | undefined,
   nodeId: string,
-  verifier: string,
 ): Promise<Uint8Array | undefined> {
   if (!nodeId.trim()) return undefined;
-  const entry = (await readPskCache(directory ?? noiseStateDir()))[nodeId];
-  if (!entry || typeof entry.psk !== "string" || entry.verifier !== verifier) return undefined;
-  const trimmed = entry.psk.trim();
-  if (trimmed.length !== KEY_LENGTH * 2) return undefined;
+  const encoded = (await readPskCache(directory ?? noiseStateDir()))[nodeId];
+  if (typeof encoded !== "string" || encoded.trim().length !== KEY_LENGTH * 2) return undefined;
   try {
-    return hexToBytes(trimmed);
+    return hexToBytes(encoded.trim());
   } catch {
     return undefined;
   }
@@ -211,15 +203,33 @@ export async function saveCachedPsk(
   directory: string | undefined,
   nodeId: string,
   psk: Uint8Array,
-  verifier: string,
 ): Promise<void> {
   if (!nodeId.trim() || psk.length !== KEY_LENGTH) return;
   await withPinLock(async () => {
     const dir = directory ?? noiseStateDir();
     const cache = await readPskCache(dir);
     const encoded = bytesToHex(psk);
-    if (cache[nodeId]?.psk === encoded && cache[nodeId]?.verifier === verifier) return;
-    cache[nodeId] = { psk: encoded, verifier };
+    if (cache[nodeId] === encoded) return;
+    cache[nodeId] = encoded;
+    await writeNoiseState(dir, NOISE_PSK_FILENAME, `${JSON.stringify(cache, null, 2)}\n`);
+  });
+}
+
+/**
+ * Drop a stored PSK.
+ *
+ * The handshake calls this when the hub rejects the key we offered, which is
+ * how a password rotated elsewhere is noticed: the next attempt derives again.
+ */
+export async function forgetCachedPsk(
+  directory: string | undefined,
+  nodeId: string,
+): Promise<void> {
+  await withPinLock(async () => {
+    const dir = directory ?? noiseStateDir();
+    const cache = await readPskCache(dir);
+    if (!(nodeId in cache)) return;
+    delete cache[nodeId];
     await writeNoiseState(dir, NOISE_PSK_FILENAME, `${JSON.stringify(cache, null, 2)}\n`);
   });
 }

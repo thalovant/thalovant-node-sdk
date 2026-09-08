@@ -6,13 +6,13 @@ import {
   canonicalJson,
   derivePskAsync,
   NOISE_PATTERN_KK,
-  pskPasswordVerifier,
   NoiseHandshake,
   NoiseSession,
   noiseProtocolName,
   selectNoiseOptions,
 } from "./noise.js";
 import {
+  forgetCachedPsk,
   forgetNoisePin,
   loadCachedPsk,
   loadNoisePin,
@@ -372,10 +372,11 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
    * and the result is fixed for a (password, node id) pair, so a reconnect to
    * the same hub reuses it.
    */
-  // Keyed on the verifier as well as the node id: a caller that swaps
-  // `identity.password` and reconnects on this same transport would
-  // otherwise be handed the PSK for the old one and fail the handshake.
-  private cachedPsk?: { nodeId: string; verifier: string; psk: Uint8Array };
+  // Keyed on the password as well as the node id: a caller that swaps
+  // `identity.password` and reconnects on this same transport would otherwise
+  // be handed the PSK for the old one and fail the handshake. The password is
+  // already in memory on the identity and is never written beside the key.
+  private cachedPsk?: { nodeId: string; password: string; psk: Uint8Array };
 
   /**
    * Serializes sends. Encrypting a message advances the cipher state nonce
@@ -625,6 +626,11 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
       if (handshake.pattern === NOISE_PATTERN_KK) {
         await forgetNoisePin(this.noiseStateDir, this.nodeId).catch(() => undefined);
       }
+      // The PSK is the other thing this message authenticates, so a rejection
+      // may mean the stored key came from a password that has since been
+      // rotated. Drop it; the next attempt derives from the current one.
+      this.cachedPsk = undefined;
+      await forgetCachedPsk(this.noiseStateDir, this.nodeId).catch(() => undefined);
       throw error;
     }
 
@@ -664,24 +670,30 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
   /** Derive, or reuse, the pre-shared key for a hub. */
   private async pskFor(nodeId: string): Promise<Uint8Array> {
     const password = this.identity.password ?? "";
-    const verifier = pskPasswordVerifier(password);
-    if (this.cachedPsk?.nodeId === nodeId && this.cachedPsk.verifier === verifier) {
+    const derivedHereForThisHub = this.cachedPsk?.nodeId === nodeId;
+    if (derivedHereForThisHub && this.cachedPsk?.password === password) {
       return this.cachedPsk.psk;
     }
 
     // On disk first: the derivation is argon2id at 64 MiB and its answer never
     // changes for a given password and hub, so a reconnect or a restart should
     // not pay for it again.
-    const stored = await loadCachedPsk(this.noiseStateDir, nodeId, verifier);
+    //
+    // Unless this transport already derived for this hub under a different
+    // password -- then the stored key belongs to that one, and reading it back
+    // would only return something known to be stale.
+    const stored = derivedHereForThisHub
+      ? undefined
+      : await loadCachedPsk(this.noiseStateDir, nodeId);
     if (stored) {
-      this.cachedPsk = { nodeId, verifier, psk: stored };
+      this.cachedPsk = { nodeId, password, psk: stored };
       return stored;
     }
 
     const psk = await derivePskAsync(password, nodeId);
-    this.cachedPsk = { nodeId, verifier, psk };
+    this.cachedPsk = { nodeId, password, psk };
     // Persisting is an optimisation, never a reason to fail the connection.
-    await saveCachedPsk(this.noiseStateDir, nodeId, psk, verifier).catch(() => undefined);
+    await saveCachedPsk(this.noiseStateDir, nodeId, psk).catch(() => undefined);
     return psk;
   }
 
