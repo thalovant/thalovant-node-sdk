@@ -467,6 +467,10 @@ export class ThalovantClient {
   ): Promise<ThalovantReply> {
     const prompt = text.trim();
     if (!prompt) throw new Error("query() requires a non-empty text prompt.");
+    const timeoutMs = options.timeoutMs ?? 12000;
+    const timeoutError = () => new ThalovantTimeoutError(`Hub did not finish the query within ${timeoutMs}ms.`);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw timeoutError();
+    const deadline = performance.now() + timeoutMs;
     const lang = options.lang ?? "en-us";
     const requestId = options.requestId ?? newRequestId();
     const queryId = options.queryId ?? requestId;
@@ -480,7 +484,16 @@ export class ThalovantClient {
     const fragments: string[] = [];
     const events: ThalovantEvent[] = [];
     let failureEvent: ThalovantEvent | undefined;
-    await this.connect();
+    let softFailureEvent: ThalovantEvent | undefined;
+    try {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw timeoutError();
+      await this.connect(remaining);
+    } catch (error) {
+      if (error instanceof ThalovantConnectionError && error.cause instanceof ThalovantTimeoutError) throw timeoutError();
+      throw error;
+    }
+    if (performance.now() >= deadline) throw timeoutError();
     if (!this.transport.sendHiveMessage) {
       throw new ThalovantRuntimeError("This transport does not support HiveMind query frames.");
     }
@@ -492,10 +505,18 @@ export class ThalovantClient {
       finishQuery = resolve;
       failQuery = reject;
     });
+    let terminal = false;
     const timer = setTimeout(() => {
-      failQuery(new ThalovantTimeoutError(`Hub did not finish the query within ${options.timeoutMs ?? 12000}ms.`));
-    }, options.timeoutMs ?? 12000);
+      terminal = true;
+      failQuery(timeoutError());
+    }, Math.max(1, deadline - performance.now()));
     const listener = (raw: Event): void => {
+      if (terminal) return;
+      if (performance.now() >= deadline) {
+        terminal = true;
+        failQuery(timeoutError());
+        return;
+      }
       const message = (raw as CustomEvent<HiveMessage>).detail;
       if (String(message.metadata?.query_id ?? message.metadata?.queryId ?? "") !== queryId) return;
       const payload = busPayloadFromHivePayload(message.payload);
@@ -503,6 +524,7 @@ export class ThalovantClient {
       const event = eventFromBusPayload(payload, payload);
       if (event.name === "hive.query.complete") {
         events.push(event);
+        terminal = true;
         finishQuery();
         return;
       }
@@ -512,14 +534,21 @@ export class ThalovantClient {
         if (normalized && fragments.at(-1) !== normalized) {
           fragments.push(normalized);
         }
+        if (normalized) softFailureEvent = undefined;
+        return;
+      }
+      if (event.name === EVENT_INTENT_FAILURE || event.name === EVENT_INTENT_UNMATCHED) {
+        if (fragments.length === 0) softFailureEvent = event;
         return;
       }
       if (event.isFailure) {
         failureEvent = event;
+        terminal = true;
         finishQuery();
       }
     };
     this.transport.addEventListener("query", listener);
+    this.transport.addEventListener("cascade", listener);
     try {
       const inner: HiveMessage = {
         msg_type: "bus",
@@ -535,7 +564,7 @@ export class ThalovantClient {
         target_pubkey: null,
         source_peer: null,
       };
-      await sendHiveMessage({
+      const sending = sendHiveMessage({
         msg_type: "query",
         payload: inner as unknown as Record<string, unknown>,
         metadata: {
@@ -547,11 +576,18 @@ export class ThalovantClient {
         target_pubkey: null,
         source_peer: null,
       });
+      // A transport write may outlive the query deadline. Observe both paths
+      // immediately so the caller expires without an unhandled timer failure.
+      // A terminal reply already delivered synchronously takes precedence over
+      // a write failure reported afterwards; both promises remain observed.
+      await Promise.race([done, sending]);
       await done;
+      clearTimeout(timer);
       const replySettleMs = options.replySettleMs ?? this.replySettleMs;
-      if (replySettleMs > 0) {
-        await sleep(replySettleMs);
+      if (replySettleMs > 0 && !failureEvent) {
+        await sleep(Math.min(replySettleMs, Math.max(0, deadline - performance.now())));
       }
+      failureEvent ??= softFailureEvent;
       if (failureEvent && fragments.length === 0) {
         throw new ThalovantRuntimeError(failureEvent.text || `Hub reported ${failureEvent.name}.`);
       }
@@ -575,8 +611,10 @@ export class ThalovantClient {
         },
       };
     } finally {
+      terminal = true;
       clearTimeout(timer);
       this.transport.removeEventListener("query", listener);
+      this.transport.removeEventListener("cascade", listener);
     }
   }
 

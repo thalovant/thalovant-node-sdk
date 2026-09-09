@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.7
+
+- Give routed queries one deadline across connect, send, response and optional settling. Keep intent misses provisional until completion or recovery; freeze completed and hard-failed queries, retain failed partial replies, and observe late sends without accepting later events.
+
+- Validate browser-login URLs and open them without a Windows command shell, preventing verification URLs from being interpreted as commands.
+
+- Reject control-plane redirects so 307/308 responses cannot forward password-login bodies to another origin. Require HTTPS for credentials except explicit loopback HTTP used in local development, and reject credentials embedded in API URLs.
+- Verify redirect rejection against real HTTP servers for bearer and password requests, including zero requests received at the redirect target.
+
 ## 0.3.6
 
 - Enforce one caller deadline through queued connection work, transport setup and authenticated readiness. Timed-out cleanup cannot hold the caller indefinitely, and replacement sessions wait for the retired connect and cleanup to finish. Closing cancels active and queued attempts, uses a bounded caller deadline, and exposes `waitForClosed()` to observe cleanup retained after timeout.

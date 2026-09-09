@@ -371,6 +371,17 @@ export class ThalovantControlPlane {
         throw new ThalovantApiError("Thalovant API device authorization response was incomplete.");
       }
     }
+    for (const value of [verificationUri, grant.verification_uri_complete]) {
+      if (value === undefined || value === null) continue;
+      try {
+        const authority = typeof value === "string" ? value.match(/^https?:\/\/([^/?#]*)/i)?.[1] : undefined;
+        if (!authority || authority.includes("@") || /[\s\u0000-\u0020\u007f-\u009f]/u.test(String(value))) throw new Error("unsafe URL");
+        const parsed = typeof value === "string" ? new URL(value) : undefined;
+        if (!parsed || !["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("unsafe URL");
+      } catch {
+        throw new ThalovantApiError("Device verification URLs must use HTTP or HTTPS without embedded credentials.");
+      }
+    }
     const rawInterval = grant.interval;
     const intervalMs =
       typeof rawInterval === "number" && Number.isFinite(rawInterval) && rawInterval >= 0
@@ -1009,11 +1020,34 @@ export class ThalovantControlPlane {
       if (!this.accessToken) throw new ThalovantApiError("Missing Thalovant API access token.");
       headers.authorization = `Bearer ${this.accessToken}`;
     }
-    return fetch(new URL(path.replace(/^\/+/, ""), this.apiUrl), {
-      method,
-      headers,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-    });
+    let url: URL;
+    try {
+      url = new URL(path.replace(/^\/+/, ""), this.apiUrl);
+    } catch {
+      throw new ThalovantApiError("The configured control-plane API URL is invalid.");
+    }
+    if (url.username || url.password) {
+      throw new ThalovantApiError("Control-plane URLs must not include embedded credentials.");
+    }
+    const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    // Explicit loopback HTTP remains available for local development. Login
+    // bodies and bearer-authenticated requests require TLS everywhere else.
+    if ((options.body || headers.authorization) && url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+      throw new ThalovantApiError("Credential-bearing control-plane requests require HTTPS (except explicit loopback HTTP).");
+    }
+    try {
+      return await fetch(url, {
+        method,
+        headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        // 307/308 preserve password-login bodies even when fetch strips bearer
+        // headers on a cross-origin redirect. Never follow API redirects.
+        redirect: "error",
+      });
+    } catch {
+      // Network error causes can include URLs, queries or credentials.
+      throw new ThalovantApiError("Could not reach the Thalovant API, or the endpoint redirected the request.");
+    }
   }
 }
 

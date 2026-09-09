@@ -1,0 +1,104 @@
+import assert from "node:assert/strict";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import test from "node:test";
+import { ThalovantApiError, ThalovantControlPlane } from "../src/index.js";
+
+async function server(handler: (request: IncomingMessage, response: ServerResponse) => void) {
+  const http = createServer(handler);
+  await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
+  return { url: `http://127.0.0.1:${(http.address() as AddressInfo).port}`, close: () => new Promise<void>((resolve, reject) => http.close(error => error ? reject(error) : resolve())) };
+}
+
+for (const status of [301, 302, 303, 307, 308]) {
+  for (const auth of ["bearer", "password"] as const) {
+    test(`control-plane ${auth} refuses ${status} redirect without contacting its target`, async () => {
+      let received = 0;
+      const target = await server((_request, response) => { received += 1; response.end("{}"); });
+      const requests: { authorization?: string; body: string }[] = [];
+      const origin = await server((request, response) => {
+        const chunks: Buffer[] = [];
+        request.on("data", chunk => chunks.push(Buffer.from(chunk)));
+        request.on("end", () => {
+          requests.push({ authorization: request.headers.authorization, body: Buffer.concat(chunks).toString() });
+          response.writeHead(status, { Location: target.url + "/credentials" });
+          response.end();
+        });
+      });
+      try {
+        const api = new ThalovantControlPlane(origin.url, { accessToken: auth === "bearer" ? "synthetic-token" : undefined });
+        await assert.rejects(auth === "bearer" ? api.listHubs() : api.login("synthetic@example.invalid", "synthetic-password"), ThalovantApiError);
+        assert.equal(requests.length, 1);
+        if (auth === "bearer") assert.equal(requests[0].authorization, "Bearer synthetic-token");
+        else assert.equal(JSON.parse(requests[0].body).password, "synthetic-password");
+        assert.equal(received, 0, "redirect target must receive neither body nor headers");
+      } finally {
+        await origin.close();
+        await target.close();
+      }
+    });
+  }
+}
+
+test("credential-bearing non-TLS origins are rejected before fetch; explicit loopback and HTTPS work", async () => {
+  const original = globalThis.fetch;
+  const calls: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), init });
+    return new Response(JSON.stringify({ access_token: "synthetic-token", hubs: [] }), { headers: { "content-type": "application/json" } });
+  };
+  try {
+    for (const url of ["http://example.invalid", "http://localhost.example.invalid", "ftp://127.0.0.1", "https://user:synthetic-password@example.invalid", "https://user:synthetic-password@"] ) {
+      await assert.rejects(new ThalovantControlPlane(url, { accessToken: "synthetic-token" }).listHubs(), ThalovantApiError);
+      await assert.rejects(new ThalovantControlPlane(url).login("synthetic@example.invalid", "synthetic-password"), ThalovantApiError);
+    }
+    assert.equal(calls.length, 0);
+    for (const url of ["https://custom.example.invalid", "http://localhost", "http://127.0.0.1", "http://[::1]"]) {
+      await new ThalovantControlPlane(url, { accessToken: "synthetic-token" }).listHubs();
+      await new ThalovantControlPlane(url).login("synthetic@example.invalid", "synthetic-password");
+    }
+    assert.equal(calls.length, 8);
+    assert.ok(calls.every(call => call.init?.redirect === "error"));
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("device verification URLs are validated before prompts, browser callbacks or polling", async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const field of ["verification_uri", "verification_uri_complete"]) {
+      for (const target of ["file:///tmp/payload", "javascript:alert(1)", "--execute", "https://user:secret@example.invalid", "https://[", "not a URL", "https://@example.invalid", "https://example.invalid/with space", "https://example.invalid/line\nfeed", "https://example.invalid/tab\there"]) {
+        for (const openBrowser of [false, true]) {
+          let requests = 0;
+          globalThis.fetch = async input => {
+            requests += 1;
+            assert.match(String(input), /\/v1\/auth\/device\/authorize$/);
+            return new Response(JSON.stringify({ device_code: "synthetic-code", user_code: "synthetic-code", verification_uri: "https://example.invalid/activate", verification_uri_complete: "https://example.invalid/activate?code=synthetic", [field]: target }));
+          };
+          await assert.rejects(new ThalovantControlPlane().loginWithBrowser({
+            openBrowser, prompt: () => assert.fail("unsafe URL reached prompt"), openUrl: () => assert.fail("unsafe URL reached browser"),
+          }), /verification URLs/);
+          assert.equal(requests, 1);
+        }
+      }
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("control-plane fetch errors expose a sanitized SDK exception without their raw cause", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new TypeError("https://example.invalid?authorization=synthetic-do-not-log"); };
+  try {
+    await assert.rejects(new ThalovantControlPlane(undefined, { accessToken: "synthetic-token" }).listHubs(), error => {
+      assert.ok(error instanceof ThalovantApiError);
+      assert.equal(error.cause, undefined);
+      assert.ok(!String(error.stack).includes("synthetic-do-not-log"));
+      return true;
+    });
+  } finally {
+    globalThis.fetch = original;
+  }
+});

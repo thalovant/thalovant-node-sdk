@@ -815,3 +815,13 @@ it before resending. Per-plan limits are listed in the dashboard and at
 npm install
 npm test
 ```
+
+Control-plane requests reject redirects. Credential-bearing requests require HTTPS;
+explicit `http://localhost`, `http://127.0.0.1` and `http://[::1]` endpoints remain
+available for local development. API URLs must not contain embedded credentials.
+
+Routed `query()` uses one deadline across connect, send, response and optional
+settling. Intent misses may recover through later speech before completion.
+Completion, policy denial and query-timeout events end collection; later events
+are ignored. A hard failure after speech returns that partial reply with
+`ok: false`; a hard failure before any speech raises a runtime error.
