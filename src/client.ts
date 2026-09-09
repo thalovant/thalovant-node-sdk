@@ -59,6 +59,7 @@ export class ThalovantClient {
   // Retain timed-out work until both its connect and cleanup settle. A later
   // call may time out waiting here, but may never race an abandoned session.
   private lifecycle: Promise<void> = Promise.resolve();
+  private closing: Promise<void> = Promise.resolve();
   private lifecycleGeneration = 0;
   private cancelConnect?: () => void;
 
@@ -172,13 +173,29 @@ export class ThalovantClient {
     return this.connectionInfo();
   }
 
-  async close(): Promise<void> {
+  /** Cancel pending connects and close within a caller budget (default 6000ms). */
+  async close(timeoutMs?: number): Promise<void> {
     this.connected = false;
     this.lifecycleGeneration += 1;
     this.cancelConnect?.();
     const closing = this.lifecycle.then(() => this.transport.disconnect());
+    this.closing = closing;
     this.lifecycle = closing.catch(() => undefined);
-    await closing;
+    const budget = normalizeConnectTimeout(timeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new ThalovantConnectionError(`Hub close did not complete within ${budget}ms.`)), budget);
+    });
+    try {
+      await Promise.race([closing, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** Observe the actual most recent close, including cleanup retained after timeout. */
+  waitForClosed(): Promise<void> {
+    return this.closing;
   }
 
   healthcheck(): TransportHealth {

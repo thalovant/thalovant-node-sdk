@@ -502,8 +502,10 @@ the connector.
 budget covers waiting for an earlier attempt, transport setup and readiness.
 Timeout rejects promptly even if cleanup is slow; the client retains ownership
 until both the retired connect and cleanup finish, so a replacement cannot
-reuse or be closed by that session. `close()` cancels active/queued connects and
-waits for their cleanup.
+reuse or be closed by that session. `close(timeoutMs)` cancels active/queued
+connects and waits within its own budget (default 6000ms). If it times out,
+`waitForClosed()` observes the actual retained cleanup; a caller must await that
+before handing the identity to a different client instance.
 
 The MQTT transport shares its remaining budget across broker connection,
 subscription, admission, Noise authentication, and online presence. A stalled

@@ -127,3 +127,42 @@ test("late connect completion after cleanup is retired before replacement", asyn
     await sdk.close();
   }
 });
+
+
+test("close deadline retains actual cleanup and cannot retire a replacement", async () => {
+  const transport = new HeldTransport();
+  const sdk = client(transport);
+  try {
+    await assert.rejects(sdk.connect(20), ThalovantConnectionError);
+    const started = performance.now();
+    await assert.rejects(sdk.close(20), /close did not complete/);
+    assert.ok(performance.now() - started < 250);
+    let retired = false;
+    const actualClose = sdk.waitForClosed().then(() => { retired = true; });
+    await assert.rejects(sdk.connect(20), ThalovantConnectionError);
+    assert.equal(retired, false);
+    assert.equal(transport.connects, 1);
+    transport.connectGate.resolve();
+    await sleep(5);
+    assert.equal(retired, false);
+    transport.cleanupGate.resolve();
+    await actualClose;
+    assert.equal(transport.ready, false);
+    await sdk.connect(200);
+    assert.equal(transport.connects, 2);
+    assert.equal(transport.ready, true);
+  } finally {
+    transport.connectGate.resolve();
+    transport.cleanupGate.resolve();
+    await sdk.close();
+  }
+});
+
+test("waitForClosed preserves a cleanup error after bounded close rejects", async () => {
+  class FailedCleanup extends HeldTransport {
+    override async disconnect() { throw new Error("synthetic cleanup failure"); }
+  }
+  const sdk = client(new FailedCleanup());
+  await assert.rejects(sdk.close(100), /synthetic cleanup failure/);
+  await assert.rejects(sdk.waitForClosed(), /synthetic cleanup failure/);
+});
