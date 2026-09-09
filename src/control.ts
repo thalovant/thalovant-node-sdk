@@ -1030,14 +1030,19 @@ export class ThalovantControlPlane {
     if ((options.body || headers.authorization) && url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
       throw new ThalovantApiError("Credential-bearing control-plane requests require HTTPS (except explicit loopback HTTP).");
     }
-    return fetch(url, {
-      method,
-      headers,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      // 307/308 preserve password-login bodies even when fetch strips bearer
-      // headers on a cross-origin redirect. Never follow API redirects.
-      redirect: "error",
-    });
+    try {
+      return await fetch(url, {
+        method,
+        headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        // 307/308 preserve password-login bodies even when fetch strips bearer
+        // headers on a cross-origin redirect. Never follow API redirects.
+        redirect: "error",
+      });
+    } catch {
+      // Network error causes can include URLs, queries or credentials.
+      throw new ThalovantApiError("Could not reach the Thalovant API, or the endpoint redirected the request.");
+    }
   }
 }
 

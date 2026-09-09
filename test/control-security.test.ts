@@ -27,7 +27,7 @@ for (const status of [301, 302, 303, 307, 308]) {
       });
       try {
         const api = new ThalovantControlPlane(origin.url, { accessToken: auth === "bearer" ? "synthetic-token" : undefined });
-        await assert.rejects(auth === "bearer" ? api.listHubs() : api.login("synthetic@example.invalid", "synthetic-password"));
+        await assert.rejects(auth === "bearer" ? api.listHubs() : api.login("synthetic@example.invalid", "synthetic-password"), ThalovantApiError);
         assert.equal(requests.length, 1);
         if (auth === "bearer") assert.equal(requests[0].authorization, "Bearer synthetic-token");
         else assert.equal(JSON.parse(requests[0].body).password, "synthetic-password");
@@ -83,6 +83,21 @@ test("device verification URLs are validated before prompts, browser callbacks o
         }
       }
     }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("control-plane fetch errors expose a sanitized SDK exception without their raw cause", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new TypeError("https://example.invalid?authorization=synthetic-do-not-log"); };
+  try {
+    await assert.rejects(new ThalovantControlPlane(undefined, { accessToken: "synthetic-token" }).listHubs(), error => {
+      assert.ok(error instanceof ThalovantApiError);
+      assert.equal(error.cause, undefined);
+      assert.ok(!String(error.stack).includes("synthetic-do-not-log"));
+      return true;
+    });
   } finally {
     globalThis.fetch = original;
   }

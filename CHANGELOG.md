@@ -2,7 +2,7 @@
 
 ## 0.3.7
 
-- Bound routed-query writes by their response deadline, remove listeners on expiry, and observe late send failures.
+- Give routed queries one deadline across connect, send, response and optional settling. Keep intent misses provisional until completion or recovery; freeze completed and hard-failed queries, retain failed partial replies, and observe late sends without accepting later events.
 
 - Validate browser-login URLs and open them without a Windows command shell, preventing verification URLs from being interpreted as commands.
 
