@@ -14,6 +14,8 @@ export const EVENT_QUERY_TIMEOUT = "hive.query.timeout";
  * The hub runtime's intent manifest (OVOS-INTENT-4 section 10) and the
  * engines' own manifests. See `./intents.js`.
  */
+export const EVENT_FALLBACK_LIST = "ovos.skills.fallback.list";
+export const EVENT_FALLBACK_LIST_RESPONSE = "ovos.skills.fallback.list.response";
 export const EVENT_INTENT_LIST = "ovos.intent.list";
 export const EVENT_INTENT_LIST_RESPONSE = "ovos.intent.list.response";
 export const EVENT_INTENT_DESCRIBE = "ovos.intent.describe";

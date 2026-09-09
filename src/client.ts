@@ -56,6 +56,11 @@ export class ThalovantClient {
   private readonly replySettleMs: number;
   private readonly emptyReplyWaitMs: number;
   private connected = false;
+  // Retain timed-out work until both its connect and cleanup settle. A later
+  // call may time out waiting here, but may never race an abandoned session.
+  private lifecycle: Promise<void> = Promise.resolve();
+  private lifecycleGeneration = 0;
+  private cancelConnect?: () => void;
 
   constructor(
     identity: ThalovantIdentity,
@@ -94,12 +99,72 @@ export class ThalovantClient {
     return new ThalovantClient(ThalovantIdentity.fromEnv(), options);
   }
 
+  /** Connect and reach authenticated readiness within one caller deadline. */
   async connect(timeoutMs?: number): Promise<void> {
     if (this.connected && this.transport.healthcheck().connected && this.transport.healthcheck().handshakeComplete) return;
-    this.connected = false;
-    const effectiveTimeoutMs = normalizeConnectTimeout(timeoutMs);
-    await withConnectTimeout(this.transport, effectiveTimeoutMs);
-    this.connected = true;
+    const budget = normalizeConnectTimeout(timeoutMs);
+    const deadline = performance.now() + budget;
+    const generation = this.lifecycleGeneration;
+    let expired = false;
+    let started = false;
+    let transportCompleted = false;
+    let cleanup: Promise<void> | undefined;
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const result = new Promise<void>((accept, fail) => { resolve = accept; reject = fail; });
+    const stop = (error: unknown): void => {
+      if (expired) return;
+      expired = true;
+      if (started) {
+        this.connected = false;
+        cleanup = Promise.resolve().then(() => this.transport.disconnect()).catch(() => undefined);
+      }
+      reject(error);
+    };
+    const cancel = (): void => stop(new ThalovantConnectionError("Hub connection was closed before it became ready."));
+    const timer = setTimeout(() => stop(new ThalovantConnectionError(`Hub connection did not complete within ${budget}ms.`)), budget);
+    const operation = this.lifecycle.then(async () => {
+      try {
+        if (expired) return;
+        if (generation !== this.lifecycleGeneration) { cancel(); return; }
+        if (performance.now() >= deadline) {
+          stop(new ThalovantConnectionError(`Hub connection did not complete within ${budget}ms.`));
+          return;
+        }
+        const health = this.transport.healthcheck();
+        if (this.connected && health.connected && health.handshakeComplete) { resolve(); return; }
+        started = true;
+        this.connected = false;
+        this.cancelConnect = cancel;
+        await this.transport.connect(Math.max(1, deadline - performance.now()));
+        transportCompleted = true;
+        while (!expired) {
+          if (performance.now() >= deadline) {
+            stop(new ThalovantConnectionError(`Hub connection did not complete within ${budget}ms.`));
+            return;
+          }
+          const ready = this.transport.healthcheck();
+          if (ready.connected && ready.handshakeComplete) {
+            this.connected = true;
+            resolve();
+            return;
+          }
+          await sleep(Math.min(20, Math.max(1, deadline - performance.now())));
+        }
+      } catch (error) {
+        stop(error);
+      } finally {
+        clearTimeout(timer);
+        if (this.cancelConnect === cancel) this.cancelConnect = undefined;
+        await cleanup;
+        if (expired && transportCompleted) {
+          // Retire a custom transport that completed after its first cleanup.
+          await Promise.resolve().then(() => this.transport.disconnect()).catch(() => undefined);
+        }
+      }
+    });
+    this.lifecycle = operation.catch(() => undefined);
+    return result;
   }
 
   async connectWithInfo(timeoutMs?: number): Promise<TransportConnectionInfo> {
@@ -108,8 +173,12 @@ export class ThalovantClient {
   }
 
   async close(): Promise<void> {
-    await this.transport.disconnect();
     this.connected = false;
+    this.lifecycleGeneration += 1;
+    this.cancelConnect?.();
+    const closing = this.lifecycle.then(() => this.transport.disconnect());
+    this.lifecycle = closing.catch(() => undefined);
+    await closing;
   }
 
   healthcheck(): TransportHealth {
@@ -503,10 +572,11 @@ export class ThalovantClient {
    * included. `languages` defaults to `en-us`.
    *
    * `ovos.intent.describe` is needed only when the sentences are wanted, which
-   * is the default; `{ describe: false }` lists with `ovos.intent.list` alone.
+   * is the default; `{ describe: false }` skips descriptions. The optional
+   * fallback-skill probe adds at most 1500ms and preserves unknown versus empty.
    *
    * Rejects with `ThalovantPolicyDeniedError` when the hub refuses a query.
-   * The engines' manifests are the fallback only when the hub refuses
+   * The engines' manifests are the fallback when the hub refuses or ignores
    * `ovos.intent.list` and `fallback` is on (the default), and yield intent
    * names with `source` set to `engine-manifests`; a refused
    * `ovos.intent.describe` rejects either way. A hub that answers the listing
@@ -517,7 +587,7 @@ export class ThalovantClient {
     languages?: Iterable<string>,
     options: { timeoutMs?: number; describe?: boolean; fallback?: boolean } = {},
   ): Promise<HubIntentInventory> {
-    const chosen = languages ? [...languages] : [];
+    const chosen = typeof languages === "string" ? (languages.trim() ? [languages] : []) : languages ? [...languages] : [];
     return intentQueries.intentInventory(this, chosen.length > 0 ? chosen : ["en-us"], options);
   }
 
@@ -564,27 +634,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizeConnectTimeout(timeoutMs?: number): number {
   return typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 6000;
-}
-
-async function withConnectTimeout(transport: HiveMindRuntimeTransport, timeoutMs: number): Promise<void> {
-  let timer: NodeJS.Timeout | undefined;
-  let timedOut = false;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      reject(new ThalovantConnectionError(`Hub connection did not complete within ${timeoutMs}ms.`));
-    }, timeoutMs);
-  });
-  try {
-    await Promise.race([transport.connect(timeoutMs), timeout]);
-  } catch (error) {
-    if (timedOut) {
-      await transport.disconnect().catch(() => undefined);
-    }
-    throw error;
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 function sleep(ms: number): Promise<void> {
