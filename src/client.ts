@@ -460,6 +460,8 @@ export class ThalovantClient {
       // Retain/observe the transport's write even when collection expires.
       // Cancellation cannot retract an already published application request.
       void Promise.resolve().then(() => {
+        if (options.signal?.aborted) onAbort();
+        if (performance.now() >= deadline) complete();
         if (terminal) return;
         return this.transport.emitBus(EVENT_RECOGNIZER_LOOP_UTTERANCE, utterancePayload(prompt, lang), context);
       }).catch(fail);
