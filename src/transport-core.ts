@@ -124,6 +124,7 @@ export class HiveMindHttpTransport extends EventTarget {
 
   private connectionAttempt?: Promise<void>;
   private httpAdmitted = false;
+  private httpCleanup?: Promise<void>;
   private pendingRequests = new Set<AbortController>();
 
   protected connectOnce(work: () => Promise<void>): Promise<void> {
@@ -181,9 +182,16 @@ export class HiveMindHttpTransport extends EventTarget {
 
   private async connectHttp(timeoutMs: number): Promise<void> {
     if (this.connected && this.handshakeComplete) return;
+    const deadline = Date.now() + timeoutMs;
+    // A caller may start reconnect without awaiting disconnect. Finish that
+    // owned remote cleanup before admitting a replacement session.
+    if (this.httpCleanup) {
+      const previousEpoch = this.connectionEpoch;
+      await this.httpCleanup.catch(() => undefined);
+      this.assertConnection(previousEpoch);
+    }
     this.beginConnection();
     const epoch = this.connectionEpoch;
-    const deadline = Date.now() + timeoutMs;
     try {
       if (this.httpAdmitted) await this.cleanupHttpAdmission(deadline);
       this.assertConnection(epoch);
@@ -229,9 +237,17 @@ export class HiveMindHttpTransport extends EventTarget {
     }
   }
 
-  private async cleanupHttpAdmission(deadline?: number): Promise<void> {
-    await this.httpRequest("/disconnect", { method: "POST" }, deadline);
-    this.httpAdmitted = false;
+  private cleanupHttpAdmission(deadline?: number): Promise<void> {
+    if (this.httpCleanup) return this.httpCleanup;
+    const epoch = this.connectionEpoch;
+    const work = this.httpRequest("/disconnect", { method: "POST" }, deadline).then(() => {
+      this.assertConnection(epoch);
+      this.httpAdmitted = false;
+    });
+    this.httpCleanup = work;
+    const clear = () => { if (this.httpCleanup === work) this.httpCleanup = undefined; };
+    void work.then(clear, clear);
+    return work;
   }
 
   healthcheck(): TransportHealth {

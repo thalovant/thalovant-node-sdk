@@ -36,6 +36,7 @@ test("HTTP negotiates Noise, carries only encrypted bus frames, preserves cookie
   const received: string[] = [];
   let cookieRequests = 0;
   let admitted = false, rejectNextPoll = false, disconnects = 0, admissions = 0;
+  let holdDisconnect: Promise<void> | undefined;
   globalThis.fetch = async (input, init) => {
     const path = new URL(String(input)).pathname;
     const response = (body: unknown, headers?: HeadersInit) => new Response(JSON.stringify(body), { headers });
@@ -60,7 +61,10 @@ test("HTTP negotiates Noise, carries only encrypted bus frames, preserves cookie
       const messages = clear.splice(0); return response({ messages });
     }
     if (path === "/get_binary_messages") { const b64_messages = binary.splice(0); return response({ b64_messages }); }
-    if (path === "/disconnect") { admitted = false; disconnects++; return response({ status: "Disconnected" }); }
+    if (path === "/disconnect") {
+      if (holdDisconnect) await holdDisconnect;
+      admitted = false; disconnects++; return response({ status: "Disconnected" });
+    }
     assert.equal(path, "/send_message");
     const form = new URLSearchParams(String(init?.body));
     const message = form.get("message")!;
@@ -107,7 +111,23 @@ test("HTTP negotiates Noise, carries only encrypted bus frames, preserves cookie
   await transport.emitBus("test.after-poll-failure", {}, {});
   assert.equal(transport.healthcheck().handshakeComplete, true);
   await transport.disconnect();
-  assert.deepEqual(patterns, ["XXpsk2", "KKpsk0", "KKpsk0", "KKpsk0"]);
+  await transport.connect(20000);
+  let releaseCleanup!: () => void;
+  holdDisconnect = new Promise<void>(resolve => { releaseCleanup = resolve; });
+  const beforeOverlap = admissions;
+  const closing = transport.disconnect();
+  const reopening = transport.connect(20000);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(admissions, beforeOverlap, "replacement waits for the previous remote cleanup");
+  releaseCleanup();
+  await Promise.all([closing, reopening]);
+  holdDisconnect = undefined;
+  assert.equal(transport.healthcheck().handshakeComplete, true);
+  await transport.emitBus("test.after-overlapped-disconnect", {}, {});
+  const beforeFinalCleanup = disconnects;
+  await transport.disconnect();
+  assert.equal(disconnects, beforeFinalCleanup + 1, "replacement still owns its remote admission");
+  assert.deepEqual(patterns, ["XXpsk2", "KKpsk0", "KKpsk0", "KKpsk0", "KKpsk0", "KKpsk0"]);
   assert.ok(cookieRequests > 10);
 });
 
