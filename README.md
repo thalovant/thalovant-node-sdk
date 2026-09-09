@@ -418,7 +418,9 @@ both `0600`; in a browser they live under a `localStorage` namespace:
   different peer and the hub refuses it.
 - `noise_pins.json` — the hub static keys this client has pinned.
 
-Point both somewhere else with the `noiseStateDir` client option.
+Point both somewhere else with the `noiseStateDir` client option. The same
+option is accepted by `fromIdentityFile`, `fromConfig`, and `fromEnv`; keep that
+private directory across reconnects and process restarts.
 
 The first connection to a hub trusts the key it presents and records it. A
 later connection presenting a different key is **refused**, because the SDK

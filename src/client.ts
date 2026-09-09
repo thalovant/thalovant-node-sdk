@@ -82,15 +82,15 @@ export class ThalovantClient {
     this.emptyReplyWaitMs = options.emptyReplyWaitMs ?? 5000;
   }
 
-  static async fromIdentityFile(path: string, options: { protocol?: HubProtocol } = {}): Promise<ThalovantClient> {
+  static async fromIdentityFile(path: string, options: { protocol?: HubProtocol; noiseStateDir?: string } = {}): Promise<ThalovantClient> {
     return new ThalovantClient(await ThalovantIdentity.fromFile(path), options);
   }
 
-  static async fromConfig(options: { path?: string; profile?: string; protocol?: HubProtocol } = {}): Promise<ThalovantClient> {
-    return new ThalovantClient(await ThalovantIdentity.fromConfig(options), { protocol: options.protocol });
+  static async fromConfig(options: { path?: string; profile?: string; protocol?: HubProtocol; noiseStateDir?: string } = {}): Promise<ThalovantClient> {
+    return new ThalovantClient(await ThalovantIdentity.fromConfig(options), { protocol: options.protocol, noiseStateDir: options.noiseStateDir });
   }
 
-  static fromEnv(options: { protocol?: HubProtocol } = {}): ThalovantClient {
+  static fromEnv(options: { protocol?: HubProtocol; noiseStateDir?: string } = {}): ThalovantClient {
     return new ThalovantClient(ThalovantIdentity.fromEnv(), options);
   }
 

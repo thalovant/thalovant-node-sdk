@@ -122,6 +122,25 @@ export class HiveMindHttpTransport extends EventTarget {
   }>();
   private currentConnection: TransportConnectionInfo = { phase: "idle" };
 
+  private connectionAttempt?: Promise<void>;
+  private httpAdmitted = false;
+  private pendingRequests = new Set<AbortController>();
+
+  protected connectOnce(work: () => Promise<void>): Promise<void> {
+    if (this.connectionAttempt) return this.connectionAttempt;
+    const attempt = work();
+    this.connectionAttempt = attempt;
+    const clear = () => { if (this.connectionAttempt === attempt) this.connectionAttempt = undefined; };
+    attempt.then(clear, clear);
+    return attempt;
+  }
+
+  protected abandonConnectAttempt(): void { this.connectionAttempt = undefined; }
+
+  protected assertConnection(epoch: number): void {
+    if (epoch !== this.connectionEpoch) throw new ThalovantConnectionError("HiveMind connection changed during an operation.");
+  }
+
   constructor(identity: ThalovantIdentity, options: { userAgent?: string; pollIntervalMs?: number; sendTimeoutMs?: number; noiseStateDir?: string } = {}) {
     super();
     this.identity = identity;
@@ -157,36 +176,62 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   async connect(timeoutMs = 20000): Promise<void> {
+    return this.connectOnce(() => this.connectHttp(timeoutMs));
+  }
+
+  private async connectHttp(timeoutMs: number): Promise<void> {
     if (this.connected && this.handshakeComplete) return;
     this.beginConnection();
+    const epoch = this.connectionEpoch;
     const deadline = Date.now() + timeoutMs;
     try {
+      if (this.httpAdmitted) await this.cleanupHttpAdmission(deadline);
+      this.assertConnection(epoch);
+      // Track remote admission separately from Noise readiness: a failed poll or
+      // send does not remove the access-key session retained by the HTTP plugin.
       await this.httpRequest("/connect", { method: "POST" }, deadline);
+      this.assertConnection(epoch);
+      this.httpAdmitted = true;
       this.markTransportOpen();
       this.connected = true;
       while (!this.handshakeComplete && Date.now() < deadline) {
         await this.pollOnce(deadline);
+        this.assertConnection(epoch);
         if (!this.handshakeComplete) await sleep(50);
+        this.assertConnection(epoch);
       }
       if (!this.handshakeComplete) throw new ThalovantConnectionError("HiveMind HTTP Noise handshake timed out.");
       this.startPolling();
     } catch (cause) {
       const error = cause instanceof Error ? cause : new ThalovantConnectionError("HiveMind HTTP connection failed.");
-      await this.disconnect();
-      this.failConnection(error);
+      if (epoch === this.connectionEpoch) {
+        const cleanup = this.disconnect();
+        const cleanupEpoch = this.connectionEpoch;
+        await cleanup;
+        if (cleanupEpoch === this.connectionEpoch) this.failConnection(error);
+      }
       throw error;
     }
   }
 
   async disconnect(): Promise<void> {
     this.stopPolling();
-    const wasConnected = this.connected;
+    this.abandonConnectAttempt();
     this.clearNoiseState();
+    const epoch = this.connectionEpoch;
     this.connected = false;
     this.handshakeComplete = false;
-    if (wasConnected) await this.httpRequest("/disconnect", { method: "POST" }).catch(() => undefined);
-    this.cookies = "";
-    this.markClosed();
+    if (this.httpAdmitted) await this.cleanupHttpAdmission().catch(() => undefined);
+    if (epoch === this.connectionEpoch) {
+      // Keep replica affinity across reconnects: another replica may still
+      // own an older admission for this identity.
+      this.markClosed();
+    }
+  }
+
+  private async cleanupHttpAdmission(deadline?: number): Promise<void> {
+    await this.httpRequest("/disconnect", { method: "POST" }, deadline);
+    this.httpAdmitted = false;
   }
 
   healthcheck(): TransportHealth {
@@ -227,7 +272,7 @@ export class HiveMindHttpTransport extends EventTarget {
           this.stopPolling();
           this.rejectHandshake(error);
         }
-      }).finally(() => { this.polling = false; });
+      }).finally(() => { if (epoch === this.connectionEpoch) this.polling = false; });
     }, this.pollIntervalMs);
   }
 
@@ -239,6 +284,7 @@ export class HiveMindHttpTransport extends EventTarget {
   private async httpRequest(path: string, init: RequestInit = {}, deadline = Date.now() + this.sendTimeoutMs): Promise<Record<string, unknown>> {
     const epoch = this.connectionEpoch;
     const controller = new AbortController();
+    this.pendingRequests.add(controller);
     const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()));
     try {
       const headers = new Headers(init.headers);
@@ -246,6 +292,7 @@ export class HiveMindHttpTransport extends EventTarget {
       const response = await fetch(`${this.baseUrl}${path}?authorization=${encodeURIComponent(this.authorization)}`, {
         ...init, headers, signal: controller.signal, credentials: "include", redirect: "error",
       });
+      this.assertConnection(epoch);
       if (!response.ok) throw new ThalovantConnectionError(`HiveMind HTTP request failed (${response.status}).`);
       const cookieValues = response.headers?.getSetCookie?.() ?? [response.headers?.get("set-cookie") ?? ""];
       for (const value of cookieValues) {
@@ -253,9 +300,15 @@ export class HiveMindHttpTransport extends EventTarget {
         if (epoch === this.connectionEpoch && cookie.startsWith("hivemind_http_replica=")) this.cookies = cookie;
       }
       const body = await response.json() as Record<string, unknown>;
-      if (!body || typeof body !== "object" || body.error) throw new ThalovantRuntimeError("HiveMind HTTP rejected the request.");
+      this.assertConnection(epoch);
+      const alreadyDisconnected = path === "/disconnect" && body &&
+        (body.error === "Already Disconnected" || body.error === "Client is not connected");
+      if (!body || typeof body !== "object" || (body.error && !alreadyDisconnected)) throw new ThalovantRuntimeError("HiveMind HTTP rejected the request.");
+      if (path === "/connect" && body.status !== "Connected") throw new ThalovantConnectionError("Invalid HiveMind HTTP admission response.");
+      if (path === "/send_message" && !["message sent", "buffered"].includes(String(body.status))) throw new ThalovantConnectionError("Invalid HiveMind HTTP send response.");
+      if (path === "/disconnect" && body.status !== "Disconnected" && !alreadyDisconnected) throw new ThalovantConnectionError("Invalid HiveMind HTTP disconnect response.");
       return body;
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); this.pendingRequests.delete(controller); }
   }
 
   private async pollOnce(deadline?: number): Promise<void> {
@@ -264,12 +317,16 @@ export class HiveMindHttpTransport extends EventTarget {
     const body = await this.httpRequest("/get_messages", {}, deadline);
     if (epoch !== this.connectionEpoch) return;
     if (!Array.isArray(body.messages)) throw new ThalovantConnectionError("Invalid HiveMind HTTP message response.");
-    for (const raw of body.messages) await this.receiveRawMessage(raw);
+    for (const raw of body.messages) {
+      this.assertConnection(epoch);
+      await this.receiveRawMessage(raw);
+    }
     if (this.session) {
       const binary = await this.httpRequest("/get_binary_messages", {}, deadline);
       if (epoch !== this.connectionEpoch) return;
       if (!Array.isArray(binary.b64_messages)) throw new ThalovantConnectionError("Invalid HiveMind HTTP binary response.");
       for (const raw of binary.b64_messages) {
+        this.assertConnection(epoch);
         if (typeof raw !== "string") throw new ThalovantConnectionError("Invalid HiveMind HTTP Noise frame.");
         await this.receiveRawMessage(base64ToBytes(raw));
       }
@@ -285,8 +342,16 @@ export class HiveMindHttpTransport extends EventTarget {
     return received;
   }
 
-  protected clearNoiseState(): void {
+  protected clearNoiseState(reason = new ThalovantConnectionError("HiveMind connection was closed or replaced.")): void {
     this.connectionEpoch++;
+    this.polling = false;
+    for (const controller of this.pendingRequests) controller.abort();
+    this.pendingRequests.clear();
+    for (const waiter of this.handshakeWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(reason);
+    }
+    this.handshakeWaiters.clear();
     this.session = undefined;
     this.noiseHandshake = undefined;
     this.serverHello = undefined;
@@ -416,6 +481,7 @@ export class HiveMindHttpTransport extends EventTarget {
   private async continueNoiseHandshake(noiseParams: Record<string, unknown>): Promise<void> {
     const epoch = this.connectionEpoch;
     const handshake = this.noiseHandshake;
+    const nodeId = this.nodeId;
     if (!handshake) {
       throw new ThalovantConnectionError("The hub sent a Noise handshake message before its parameters.");
     }
@@ -428,7 +494,7 @@ export class HiveMindHttpTransport extends EventTarget {
       // may mean the stored key came from a password that has since been
       // rotated. Drop it; the next attempt derives from the current one.
       this.cachedPsk = undefined;
-      await forgetCachedPsk(this.noiseStateDir, this.nodeId).catch(() => undefined);
+      await forgetCachedPsk(this.noiseStateDir, nodeId).catch(() => undefined);
       throw error;
     }
 
@@ -444,9 +510,10 @@ export class HiveMindHttpTransport extends EventTarget {
       });
     }
 
+    this.assertConnection(epoch);
     const session = handshake.intoSession();
     if (session.remoteStaticKey) {
-      await pinHubKey(this.noiseStateDir, this.nodeId, session.remoteStaticKey);
+      await pinHubKey(this.noiseStateDir, nodeId, session.remoteStaticKey);
     }
     if (epoch !== this.connectionEpoch || !this.connected) return;
     this.session = session;
@@ -569,7 +636,7 @@ export class HiveMindHttpTransport extends EventTarget {
   protected failConnection(error: Error): void {
     this.connected = false;
     this.handshakeComplete = false;
-    this.clearNoiseState();
+    this.clearNoiseState(error);
     this.lastError = error;
     this.currentConnection = {
       ...this.currentConnection,
@@ -608,7 +675,12 @@ export class HiveMindHttpTransport extends EventTarget {
     const send = this.sendChain.then(async () => {
       if (epoch !== this.connectionEpoch || session !== this.session) throw new ThalovantConnectionError("Noise session changed before send.");
       try {
-        for (const frame of session.encryptMessage(serialized, true)) await this.sendNoiseFrame(frame);
+        for (const frame of session.encryptMessage(serialized, true)) {
+          this.assertConnection(epoch);
+          if (session !== this.session) throw new ThalovantConnectionError("Noise session changed during send.");
+          await this.sendNoiseFrame(frame);
+          this.assertConnection(epoch);
+        }
       } catch (error) {
         if (epoch === this.connectionEpoch) this.failConnection(error instanceof Error ? error : new Error("Noise send failed."));
         throw error;
@@ -643,19 +715,29 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
    *   top of the round trips, so the default is generous rather than tight.
    */
   override async connect(timeoutMs = 20000): Promise<void> {
+    return this.connectOnce(() => this.connectWss(timeoutMs));
+  }
+
+  private async connectWss(timeoutMs: number): Promise<void> {
     if (this.connected && this.handshakeComplete) return;
     if (!this.identity.password) {
       throw new ThalovantConnectionError(
         "The v3 Noise handshake derives its pre-shared key from the identity password, which is missing.",
       );
     }
+    const previous = this.socket;
+    this.socket = undefined;
+    previous?.terminate();
     this.beginConnection();
+    const epoch = this.connectionEpoch;
+    const deadline = Date.now() + timeoutMs;
     const socket = createPlatformWebSocket(this.endpoint);
     this.socket = socket;
     socket.onMessage(data => {
       if (socket !== this.socket) return;
+      const receivedEpoch = this.connectionEpoch;
       this.receiveRawMessage(data).catch((error: Error) => {
-        if (socket !== this.socket) return;
+        if (socket !== this.socket || receivedEpoch !== this.connectionEpoch) return;
         this.lastError = error;
         this.connected = false;
         this.rejectHandshake(error);
@@ -682,24 +764,29 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
     });
     try {
       await waitForSocketOpen(socket, timeoutMs);
+      this.assertConnection(epoch);
+      if (socket !== this.socket) throw new ThalovantConnectionError("HiveMind socket was replaced.");
       this.markTransportOpen({ socket: true });
       this.connected = true;
-      await this.waitForHandshake(timeoutMs, "HiveMind WSS handshake timed out.");
+      await this.waitForHandshake(Math.max(1, deadline - Date.now()), "HiveMind WSS handshake timed out.");
+      this.assertConnection(epoch);
     } catch (error) {
       socket.terminate();
-      this.connected = false;
-      if (error instanceof Error) {
-        this.failConnection(error);
+      if (socket === this.socket && epoch === this.connectionEpoch) {
+        this.connected = false;
+        if (error instanceof Error) this.failConnection(error);
       }
       throw error;
     }
   }
 
   override async disconnect(): Promise<void> {
+    this.abandonConnectAttempt();
     const socket = this.socket;
     this.socket = undefined;
-    if (socket?.isOpen) {
-      socket.close();
+    if (socket) {
+      if (socket.isOpen) socket.close();
+      else socket.terminate();
     }
     this.connected = false;
     this.handshakeComplete = false;

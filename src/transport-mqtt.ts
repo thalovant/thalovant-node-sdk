@@ -27,8 +27,17 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
   }
 
   override async connect(timeoutMs = 20000): Promise<void> {
+    return this.connectOnce(() => this.connectMqtt(timeoutMs));
+  }
+
+  private async connectMqtt(timeoutMs: number): Promise<void> {
     if (this.connected && this.handshakeComplete) return;
+    const previous = this.client;
+    this.client = undefined;
+    previous?.end(true);
     this.beginConnection();
+    const epoch = this.connectionEpoch;
+    const deadline = Date.now() + timeoutMs;
     const credentials = this.identity.mqtt;
     if (!credentials) {
       throw new ThalovantConnectionError("The identity does not include MQTT broker credentials.");
@@ -57,8 +66,9 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
     this.client = client;
     client.on("message", (topic, payload) => {
       if (client !== this.client || topic !== this.topics.outbound) return;
+      const receivedEpoch = this.connectionEpoch;
       this.receiveRawMessage(payload).catch((error: Error) => {
-        if (client !== this.client) return;
+        if (client !== this.client || receivedEpoch !== this.connectionEpoch) return;
         this.rejectHandshake(error);
         client.end(true);
       });
@@ -85,29 +95,34 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
 
     try {
       await waitForMqttConnect(client, timeoutMs);
-      await this.establishSession(client, timeoutMs);
+      this.assertConnection(epoch);
+      if (client !== this.client) throw new ThalovantConnectionError("MQTT client was replaced.");
+      await this.establishSession(client, Math.max(1, deadline - Date.now()));
+      this.assertConnection(epoch);
       establishedOnce = true;
     } catch (error) {
       client.end(true);
-      this.connected = false;
-      if (error instanceof Error) {
-        this.failConnection(error);
+      if (client === this.client && epoch === this.connectionEpoch) {
+        this.connected = false;
+        if (error instanceof Error) this.failConnection(error);
       }
       throw error;
     }
   }
 
   override async disconnect(): Promise<void> {
+    this.abandonConnectAttempt();
     const client = this.client;
     this.client = undefined;
+    this.connected = false;
+    this.handshakeComplete = false;
+    this.clearNoiseState();
+    const epoch = this.connectionEpoch;
     if (client) {
       await mqttPublish(client, this.topics.status, "offline", { qos: 1, retain: true }).catch(() => undefined);
       client.end(true);
     }
-    this.connected = false;
-    this.handshakeComplete = false;
-    this.clearNoiseState();
-    this.markClosed();
+    if (epoch === this.connectionEpoch) this.markClosed();
   }
 
   override healthcheck(): TransportHealth {
@@ -134,6 +149,8 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
     // again encrypted only after the shared Noise exchange completes.
     await this.sendCleartext(this.helloMessage());
     await this.waitForHandshake(timeoutMs, "HiveMind MQTT Noise handshake timed out.");
+    this.assertConnection(epoch);
+    if (client !== this.client) throw new ThalovantConnectionError("MQTT client was replaced.");
     await mqttPublish(client, this.topics.status, "online", { qos: 1, retain: true });
   }
 
