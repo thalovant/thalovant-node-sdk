@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.10
+
+- Add optional `AbortSignal` cancellation to `query` and conversation Query calls across connection admission, sending and reply collection. Cancellation remains `AbortError` after partial speech; queued callers leave the active connection owner intact.
+- Preserve the first accepted cancellation, completion or hard failure when an admitted write later throws or rejects. Keep that write observed until it retires, remove collector listeners and timers, and never replay a cancelled application request.
+- Apply the existing finite JavaScript timer-duration validation to Query and recheck its original deadline before publishing.
+
 ## 0.3.9
 
 - Return the first nonempty session ID from accepted runtime events in Ask and Query replies, falling back to the requested session when the hub omits it. Foreign and post-terminal events cannot supply reply metadata.

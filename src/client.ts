@@ -497,6 +497,7 @@ export class ThalovantClient {
     }
   }
 
+  /** Query with one connection/send/collection budget and optional cancellation. */
   async query(
     text: string,
     options: {
@@ -508,14 +509,15 @@ export class ThalovantClient {
       queryId?: string;
       /** Retained for compatibility; terminal Query replies return immediately. */
       replySettleMs?: number;
+      signal?: AbortSignal;
     } = {},
   ): Promise<ThalovantReply> {
     const prompt = text.trim();
     if (!prompt) throw new Error("query() requires a non-empty text prompt.");
-    const timeoutMs = options.timeoutMs ?? 12000;
+    const timeoutMs = requestTimeout(options.timeoutMs);
     const timeoutError = () => new ThalovantTimeoutError(`Hub did not finish the query within ${timeoutMs}ms.`);
-    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw timeoutError();
     const deadline = performance.now() + timeoutMs;
+    if (options.signal?.aborted) throw operationAbortedError();
     const lang = options.lang ?? "en-us";
     const requestId = options.requestId ?? newRequestId();
     const queryId = options.queryId ?? requestId;
@@ -533,11 +535,12 @@ export class ThalovantClient {
     try {
       const remaining = deadline - performance.now();
       if (remaining <= 0) throw timeoutError();
-      await this.connect(remaining);
+      await this.connect(remaining, options.signal);
     } catch (error) {
       if (error instanceof ThalovantConnectionError && error.cause instanceof ThalovantTimeoutError) throw timeoutError();
       throw error;
     }
+    if (options.signal?.aborted) throw operationAbortedError();
     if (performance.now() >= deadline) throw timeoutError();
     if (!this.transport.sendHiveMessage) {
       throw new ThalovantRuntimeError("This transport does not support HiveMind query frames.");
@@ -545,21 +548,20 @@ export class ThalovantClient {
     const sendHiveMessage = this.transport.sendHiveMessage.bind(this.transport);
 
     let finishQuery!: () => void;
-    let failQuery!: (error: Error) => void;
+    let failQuery!: (error: unknown) => void;
     const done = new Promise<void>((resolve, reject) => {
       finishQuery = resolve;
       failQuery = reject;
     });
     let terminal = false;
-    const timer = setTimeout(() => {
-      terminal = true;
-      failQuery(timeoutError());
-    }, Math.max(1, deadline - performance.now()));
+    const complete = (): void => { if (!terminal) { terminal = true; finishQuery(); } };
+    const fail = (error: unknown): void => { if (!terminal) { terminal = true; failQuery(error); } };
+    const onAbort = (): void => fail(operationAbortedError());
+    const timer = setTimeout(() => fail(timeoutError()), Math.max(1, deadline - performance.now()));
     const listener = (raw: Event): void => {
       if (terminal) return;
       if (performance.now() >= deadline) {
-        terminal = true;
-        failQuery(timeoutError());
+        fail(timeoutError());
         return;
       }
       const message = (raw as CustomEvent<HiveMessage>).detail;
@@ -569,8 +571,7 @@ export class ThalovantClient {
       const event = eventFromBusPayload(payload, payload);
       if (event.name === "hive.query.complete") {
         events.push(event);
-        terminal = true;
-        finishQuery();
+        complete();
         return;
       }
       events.push(event);
@@ -588,12 +589,12 @@ export class ThalovantClient {
       }
       if (event.isFailure) {
         failureEvent = event;
-        terminal = true;
-        finishQuery();
+        complete();
       }
     };
     this.transport.addEventListener("query", listener);
     this.transport.addEventListener("cascade", listener);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const inner: HiveMessage = {
         msg_type: "bus",
@@ -609,23 +610,24 @@ export class ThalovantClient {
         target_pubkey: null,
         source_peer: null,
       };
-      const sending = sendHiveMessage({
-        msg_type: "query",
-        payload: inner as unknown as Record<string, unknown>,
-        metadata: {
-          query_id: queryId,
-        },
-        route: [],
-        node: null,
-        target_site_id: null,
-        target_pubkey: null,
-        source_peer: null,
-      });
-      // A transport write may outlive the query deadline. Observe both paths
-      // immediately so the caller expires without an unhandled timer failure.
-      // A terminal reply already delivered synchronously takes precedence over
-      // a write failure reported afterwards; both promises remain observed.
-      await Promise.race([done, sending]);
+      // Keep an admitted write observed after caller cancellation or expiry.
+      // A terminal reply/cancellation wins over a later synchronous throw or
+      // rejected write; cancellation cannot retract or replay publication.
+      void Promise.resolve().then(() => {
+        if (options.signal?.aborted) onAbort();
+        if (performance.now() >= deadline) fail(timeoutError());
+        if (terminal) return;
+        return sendHiveMessage({
+          msg_type: "query",
+          payload: inner as unknown as Record<string, unknown>,
+          metadata: { query_id: queryId },
+          route: [],
+          node: null,
+          target_site_id: null,
+          target_pubkey: null,
+          source_peer: null,
+        });
+      }).catch(fail);
       await done;
       clearTimeout(timer);
       failureEvent ??= softFailureEvent;
@@ -654,6 +656,7 @@ export class ThalovantClient {
     } finally {
       terminal = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       this.transport.removeEventListener("query", listener);
       this.transport.removeEventListener("cascade", listener);
     }
@@ -869,7 +872,7 @@ export class ThalovantConversation {
     });
   }
 
-  query(text: string, options: { timeoutMs?: number; lang?: string; context?: EventContext; requestId?: string; queryId?: string } = {}): Promise<ThalovantReply> {
+  query(text: string, options: { timeoutMs?: number; lang?: string; context?: EventContext; requestId?: string; queryId?: string; signal?: AbortSignal } = {}): Promise<ThalovantReply> {
     return this.client.query(text, {
       ...options,
       lang: options.lang ?? this.lang,
