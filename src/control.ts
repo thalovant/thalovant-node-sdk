@@ -1009,10 +1009,23 @@ export class ThalovantControlPlane {
       if (!this.accessToken) throw new ThalovantApiError("Missing Thalovant API access token.");
       headers.authorization = `Bearer ${this.accessToken}`;
     }
-    return fetch(new URL(path.replace(/^\/+/, ""), this.apiUrl), {
+    const url = new URL(path.replace(/^\/+/, ""), this.apiUrl);
+    if (url.username || url.password) {
+      throw new ThalovantApiError("Control-plane URLs must not include embedded credentials.");
+    }
+    const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    // Explicit loopback HTTP remains available for local development. Login
+    // bodies and bearer-authenticated requests require TLS everywhere else.
+    if ((options.body || headers.authorization) && url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+      throw new ThalovantApiError("Credential-bearing control-plane requests require HTTPS (except explicit loopback HTTP).");
+    }
+    return fetch(url, {
       method,
       headers,
       body: options.body ? JSON.stringify(options.body) : undefined,
+      // 307/308 preserve password-login bodies even when fetch strips bearer
+      // headers on a cross-origin redirect. Never follow API redirects.
+      redirect: "error",
     });
   }
 }

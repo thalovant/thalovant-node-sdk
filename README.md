@@ -815,3 +815,7 @@ it before resending. Per-plan limits are listed in the dashboard and at
 npm install
 npm test
 ```
+
+Control-plane requests reject redirects. Credential-bearing requests require HTTPS;
+explicit `http://localhost`, `http://127.0.0.1` and `http://[::1]` endpoints remain
+available for local development. API URLs must not contain embedded credentials.
