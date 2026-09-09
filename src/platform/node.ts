@@ -163,12 +163,9 @@ export function envVar(name: string): string | undefined {
  * fall back to printing the URL.
  */
 export async function openExternalUrl(url: string): Promise<boolean> {
-  const [command, args]: [string, string[]] =
-    process.platform === "darwin"
-      ? ["open", [url]]
-      : process.platform === "win32"
-        ? ["cmd", ["/c", "start", "", url]]
-        : ["xdg-open", [url]];
+  const invocation = externalUrlCommand(url);
+  if (!invocation) return false;
+  const [command, args] = invocation;
   try {
     return await new Promise(resolve => {
       const child = spawn(command, args, { stdio: "ignore", detached: true });
@@ -181,6 +178,23 @@ export async function openExternalUrl(url: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Internal platform command construction; the URL is data, never shell code. */
+export function externalUrlCommand(url: string, platform: string = process.platform): [string, string[]] | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return undefined;
+  const target = parsed.href;
+  if (platform === "darwin") return ["open", ["--", target]];
+  // cmd /c start interprets URL metacharacters. The Windows URL handler accepts
+  // one URL argument directly; spawn performs native argument quoting.
+  if (platform === "win32") return ["rundll32.exe", ["url.dll,FileProtocolHandler", target]];
+  return ["xdg-open", [target]];
 }
 
 function capitalize(value: string): string {
