@@ -493,7 +493,16 @@ for (const protocol of ["wss", "https", "mqtt"] as const) {
 MQTT identities include a broker endpoint, username, password, TLS flag, and
 topic prefix. The broker credentials are scoped to that client and should be
 treated like a password. Public identities should use `mqtts://`; the SDK also
-honors an explicit `tls: true` flag from the identity.
+honors an explicit `tls: true` flag by upgrading `mqtt://` to `mqtts://` and
+`ws://` to `wss://`. The effective URL must use `mqtts:`, `ssl:`, or `wss:`;
+unsupported and plaintext schemes are refused before broker credentials reach
+the connector.
+
+`connect(timeoutMs)` gives MQTT one shared budget for broker connection,
+subscription, admission, Noise authentication, and online presence. A stalled
+step fails the attempt and closes its broker connection. HTTP connection failure
+cleanup also uses the original connect deadline; when cleanup times out, the
+transport retains ownership so a later close or reconnect can retry it.
 
 ## Using In The Browser
 

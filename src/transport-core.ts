@@ -187,7 +187,7 @@ export class HiveMindHttpTransport extends EventTarget {
     // owned remote cleanup before admitting a replacement session.
     if (this.httpCleanup) {
       const previousEpoch = this.connectionEpoch;
-      await this.httpCleanup.catch(() => undefined);
+      await withinDeadline(this.httpCleanup.catch(() => undefined), deadline);
       this.assertConnection(previousEpoch);
     }
     this.beginConnection();
@@ -213,7 +213,7 @@ export class HiveMindHttpTransport extends EventTarget {
     } catch (cause) {
       const error = cause instanceof Error ? cause : new ThalovantConnectionError("HiveMind HTTP connection failed.");
       if (epoch === this.connectionEpoch) {
-        const cleanup = this.disconnect();
+        const cleanup = this.disconnectHttp(deadline);
         const cleanupEpoch = this.connectionEpoch;
         await cleanup;
         if (cleanupEpoch === this.connectionEpoch) this.failConnection(error);
@@ -223,13 +223,18 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   async disconnect(): Promise<void> {
+    await this.disconnectHttp();
+  }
+
+  /** Keep failure cleanup inside its connect budget while retaining admission ownership. */
+  private async disconnectHttp(deadline?: number): Promise<void> {
     this.stopPolling();
     this.abandonConnectAttempt();
     this.clearNoiseState();
     const epoch = this.connectionEpoch;
     this.connected = false;
     this.handshakeComplete = false;
-    if (this.httpAdmitted) await this.cleanupHttpAdmission().catch(() => undefined);
+    if (this.httpAdmitted) await this.cleanupHttpAdmission(deadline).catch(() => undefined);
     if (epoch === this.connectionEpoch) {
       // Keep replica affinity across reconnects: another replica may still
       // own an older admission for this identity.
@@ -925,4 +930,15 @@ function decodeRawHiveMessage(raw: unknown): HiveMessage {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** Bound the wait without cancelling cleanup owned by an earlier connection. */
+function withinDeadline(work: Promise<void>, deadline: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ThalovantConnectionError("HiveMind HTTP connect timed out while waiting for disconnect.")), Math.max(1, deadline - Date.now()));
+    work.then(
+      () => { clearTimeout(timer); resolve(); },
+      error => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
