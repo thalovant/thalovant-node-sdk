@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getEventListeners } from "node:events";
 import { ThalovantClient } from "../src/client.js";
 import { ThalovantConnectionError, ThalovantTimeoutError } from "../src/errors.js";
 import { ThalovantIdentity } from "../src/identity.js";
@@ -32,6 +33,36 @@ class HeldTransport extends EventTarget {
 }
 function client(transport: HeldTransport) {
   return new ThalovantClient(new ThalovantIdentity({ key: "fixture", password: "fixture", host: "https://fixture.invalid", site: "fixture" }), { transport });
+}
+
+for (const lateFailure of [false, true]) {
+  test(`query deadline bounds a held write and observes its late ${lateFailure ? "failure" : "completion"}`, async () => {
+    const write = deferred();
+    class HeldWrite extends HeldTransport {
+      override async connect() { this.ready = true; }
+      override async disconnect() { this.ready = false; this.disconnects += 1; }
+      async sendHiveMessage() {
+        await write.promise;
+        if (lateFailure) throw new Error("synthetic late write failure");
+      }
+    }
+    const transport = new HeldWrite();
+    const sdk = client(transport);
+    try {
+      const started = performance.now();
+      await assert.rejects(sdk.query("synthetic query", { timeoutMs: 20 }), ThalovantTimeoutError);
+      assert.ok(performance.now() - started < 250);
+      assert.equal(getEventListeners(transport, "query").length, 0);
+      await sdk.close(100);
+      assert.equal(transport.disconnects, 1);
+      write.resolve();
+      await sleep(5);
+      assert.equal(getEventListeners(transport, "query").length, 0);
+    } finally {
+      write.resolve();
+      await sdk.close();
+    }
+  });
 }
 
 test("connect deadline does not await hung cleanup and replacement owns a separate budget", async () => {

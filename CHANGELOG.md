@@ -2,6 +2,8 @@
 
 ## 0.3.7
 
+- Bound routed-query writes by their response deadline, remove listeners on expiry, and observe late send failures.
+
 - Validate browser-login URLs and open them without a Windows command shell, preventing verification URLs from being interpreted as commands.
 
 - Reject control-plane redirects so 307/308 responses cannot forward password-login bodies to another origin. Require HTTPS for credentials except explicit loopback HTTP used in local development, and reject credentials embedded in API URLs.

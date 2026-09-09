@@ -535,7 +535,7 @@ export class ThalovantClient {
         target_pubkey: null,
         source_peer: null,
       };
-      await sendHiveMessage({
+      const sending = sendHiveMessage({
         msg_type: "query",
         payload: inner as unknown as Record<string, unknown>,
         metadata: {
@@ -547,6 +547,9 @@ export class ThalovantClient {
         target_pubkey: null,
         source_peer: null,
       });
+      // A transport write may outlive the query deadline. Observe both paths
+      // immediately so the caller expires without an unhandled timer failure.
+      await Promise.race([sending, done]);
       await done;
       const replySettleMs = options.replySettleMs ?? this.replySettleMs;
       if (replySettleMs > 0) {
