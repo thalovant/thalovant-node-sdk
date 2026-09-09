@@ -101,7 +101,8 @@ export class ThalovantClient {
   }
 
   /** Connect and reach authenticated readiness within one caller deadline. */
-  async connect(timeoutMs?: number): Promise<void> {
+  async connect(timeoutMs?: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw operationAbortedError();
     if (this.connected && this.transport.healthcheck().connected && this.transport.healthcheck().handshakeComplete) return;
     const budget = normalizeConnectTimeout(timeoutMs);
     const deadline = performance.now() + budget;
@@ -116,14 +117,18 @@ export class ThalovantClient {
     const stop = (error: unknown): void => {
       if (expired) return;
       expired = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       if (started) {
         this.connected = false;
         cleanup = Promise.resolve().then(() => this.transport.disconnect()).catch(() => undefined);
       }
       reject(error);
     };
+    const onAbort = (): void => stop(operationAbortedError());
     const cancel = (): void => stop(new ThalovantConnectionError("Hub connection was closed before it became ready."));
     const timer = setTimeout(() => stop(connectionTimeoutError(budget)), budget);
+    signal?.addEventListener("abort", onAbort, { once: true });
     const operation = this.lifecycle.then(async () => {
       try {
         if (expired) return;
@@ -156,6 +161,7 @@ export class ThalovantClient {
         stop(error);
       } finally {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         if (this.cancelConnect === cancel) this.cancelConnect = undefined;
         await cleanup;
         if (expired && transportCompleted) {
@@ -238,22 +244,60 @@ export class ThalovantClient {
     return new ThalovantSubscription(() => this.transport.removeEventListener("bus", listener));
   }
 
+  /** Wait within one total budget, including authenticated connection readiness. */
   async waitForEvent(
     eventName: string,
-    options: { timeoutMs?: number; context?: EventContext; sessionId?: string; requestId?: string; predicate?: EventPredicate } = {},
+    options: { timeoutMs?: number; context?: EventContext; sessionId?: string; requestId?: string; predicate?: EventPredicate; signal?: AbortSignal } = {},
   ): Promise<ThalovantEvent> {
-    await this.connect();
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        sub.close();
-        reject(new ThalovantTimeoutError(`Hub did not emit ${eventName} within ${options.timeoutMs ?? 12000}ms.`));
-      }, options.timeoutMs ?? 12000);
-      const sub = this.on(eventName, event => {
-        clearTimeout(timer);
-        sub.close();
-        resolve(event);
-      }, options);
-    });
+    const timeoutMs = requestTimeout(options.timeoutMs);
+    const deadline = performance.now() + timeoutMs;
+    if (options.signal?.aborted) throw operationAbortedError();
+    let terminal = false;
+    let sub: ThalovantSubscription | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let resolve!: (event: ThalovantEvent) => void;
+    let reject!: (error: unknown) => void;
+    const result = new Promise<ThalovantEvent>((accept, fail) => { resolve = accept; reject = fail; });
+    // A deadline can expire while the connection still owns cleanup.
+    void result.catch(() => undefined);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      sub?.close();
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+    const fail = (error: unknown): void => {
+      if (terminal) return;
+      terminal = true;
+      cleanup();
+      reject(error);
+    };
+    const timeoutError = () => new ThalovantTimeoutError(`Hub did not emit ${eventName} within ${timeoutMs}ms.`);
+    const onAbort = (): void => fail(operationAbortedError());
+    timer = setTimeout(() => fail(timeoutError()), timeoutMs);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    // Subscribe first: built-in transports publish only authenticated events,
+    // including an event arriving just before connect() resolves readiness.
+    sub = this.on(eventName, event => {
+      if (terminal) return;
+      terminal = true;
+      cleanup();
+      resolve(event);
+    }, { ...options, predicate: event => {
+      if (terminal) return false;
+      if (performance.now() >= deadline) { fail(timeoutError()); return false; }
+      try { return options.predicate?.(event) ?? true; }
+      catch (error) { fail(error); return false; }
+    } });
+    try {
+      await this.connect(Math.max(1, deadline - performance.now()), options.signal);
+      return await result;
+    } catch (error) {
+      if (error instanceof ThalovantConnectionError && error.cause instanceof ThalovantTimeoutError) throw timeoutError();
+      throw error;
+    } finally {
+      terminal = true;
+      cleanup();
+    }
   }
 
   async emit(eventType: string, data: Record<string, unknown> = {}, context: EventContext = {}): Promise<void> {
@@ -318,6 +362,7 @@ export class ThalovantClient {
     );
   }
 
+  /** Ask with a total connection/send/collection budget and optional cancellation. */
   async ask(
     text: string,
     options: {
@@ -328,113 +373,109 @@ export class ThalovantClient {
       requestId?: string;
       replySettleMs?: number;
       emptyReplyWaitMs?: number;
+      signal?: AbortSignal;
     } = {},
   ): Promise<ThalovantReply> {
     const prompt = text.trim();
     if (!prompt) throw new Error("ask() requires a non-empty text prompt.");
+    const timeoutMs = requestTimeout(options.timeoutMs);
+    const deadline = performance.now() + timeoutMs;
+    const replySettleMs = replyWindow(options.replySettleMs ?? this.replySettleMs);
+    const emptyReplyWaitMs = replyWindow(options.emptyReplyWaitMs ?? this.emptyReplyWaitMs);
+    if (options.signal?.aborted) throw operationAbortedError();
+    const timeoutError = () => new ThalovantTimeoutError(`Hub did not finish handling the utterance within ${timeoutMs}ms.`);
     const lang = options.lang ?? "en-us";
     const requestId = options.requestId ?? newRequestId();
     const sessionId = options.sessionId ?? newSessionId();
     const context = contextWithCorrelation(this.contextWithIdentityMetadata(options.context ?? {}), {
-      sessionId,
-      siteId: this.identity.siteId,
-      lang,
-      requestId,
+      sessionId, siteId: this.identity.siteId, lang, requestId,
     });
+    try {
+      await this.connect(Math.max(1, deadline - performance.now()), options.signal);
+    } catch (error) {
+      if (error instanceof ThalovantConnectionError && error.cause instanceof ThalovantTimeoutError) throw timeoutError();
+      throw error;
+    }
+    if (options.signal?.aborted) throw operationAbortedError();
+    if (performance.now() >= deadline) throw timeoutError();
     const fragments: string[] = [];
     const events: ThalovantEvent[] = [];
     let failureEvent: ThalovantEvent | undefined;
-    // An intent miss is a soft failure: it ends phase 1 but leaves failureEvent
-    // undefined so the empty-reply wait still runs and a fallback reply can win.
     let softFailureEvent: ThalovantEvent | undefined;
-    await this.connect();
-    let finishHandled!: () => void;
-    let failHandled!: (error: Error) => void;
-    let finishReply!: () => void;
-    const handled = new Promise<void>((resolve, reject) => {
-      finishHandled = resolve;
-      failHandled = reject;
-    });
-    const firstReply = new Promise<void>((resolve) => {
-      finishReply = resolve;
-    });
-    const handleReply = (event: ThalovantEvent): void => {
-      const normalized = event.text.trim().replace(/\s+/g, " ");
-      if (normalized && fragments.at(-1) !== normalized) {
-        fragments.push(normalized);
-        finishReply();
-      }
-      events.push(event);
+    let terminal = false;
+    let handled = false;
+    let phaseTimer: ReturnType<typeof setTimeout> | undefined;
+    let phase: "empty" | "settle" | undefined;
+    let finish!: () => void;
+    let reject!: (error: unknown) => void;
+    const done = new Promise<void>((accept, fail) => { finish = accept; reject = fail; });
+    const complete = (): void => { if (!terminal) { terminal = true; finish(); } };
+    const fail = (error: unknown): void => { if (!terminal) { terminal = true; reject(error); } };
+    const onAbort = (): void => fail(operationAbortedError());
+    const timer = setTimeout(complete, Math.max(1, deadline - performance.now()));
+    const startWindow = (kind: "empty" | "settle", duration: number): void => {
+      if (phase === kind) return;
+      phase = kind;
+      clearTimeout(phaseTimer);
+      phaseTimer = setTimeout(complete, Math.min(duration, Math.max(0, deadline - performance.now())));
     };
-    const timer = setTimeout(() => {
-      failHandled(new ThalovantTimeoutError(`Hub did not finish handling the utterance within ${options.timeoutMs ?? 12000}ms.`));
-    }, options.timeoutMs ?? 12000);
     const listenerContext = requestOnlyCorrelationContext(context, requestId);
-    const optionsWithCorrelation = {
-      context: listenerContext,
-      predicate: (event: ThalovantEvent) => eventMatchesRequiredCorrelation(event, listenerContext),
-    };
-    const handlers = [
-      this.on(EVENT_SPEAK, handleReply, optionsWithCorrelation),
-      this.on(EVENT_OVOS_UTTERANCE_SPEAK, handleReply, optionsWithCorrelation),
-      this.on(EVENT_UTTERANCE_HANDLED, event => {
-        events.push(event);
-        finishHandled();
-      }, optionsWithCorrelation),
-      // Legacy and current OVOS names for an intent miss. Soft failure: end
-      // phase 1 (a fallback may still answer during the empty-reply wait), but
-      // leave failureEvent unset so that wait runs and a reply can take over (#22).
-      this.on(EVENT_INTENT_FAILURE, event => {
-        softFailureEvent = event;
-        events.push(event);
-        finishHandled();
-      }, optionsWithCorrelation),
-      this.on(EVENT_INTENT_UNMATCHED, event => {
-        softFailureEvent = event;
-        events.push(event);
-        finishHandled();
-      }, optionsWithCorrelation),
-      this.on(EVENT_POLICY_DENIED, event => {
-        failureEvent = event;
-        events.push(event);
-        finishHandled();
-      }, optionsWithCorrelation),
-      this.on(EVENT_QUERY_TIMEOUT, event => {
-        failureEvent = event;
-        events.push(event);
-        finishHandled();
-      }, optionsWithCorrelation),
-    ];
-    try {
-      await Promise.race([
-        this.transport.emitBus(EVENT_RECOGNIZER_LOOP_UTTERANCE, utterancePayload(prompt, lang), context),
-        handled,
-      ]);
-      await Promise.race([handled, firstReply]);
-      clearTimeout(timer);
-      if (!failureEvent && fragments.length === 0) {
-        const emptyReplyWaitMs = options.emptyReplyWaitMs ?? this.emptyReplyWaitMs;
-        if (emptyReplyWaitMs > 0) {
-          await Promise.race([firstReply, sleep(emptyReplyWaitMs)]);
+    const listener = (raw: Event): void => {
+      if (terminal) return;
+      if (performance.now() >= deadline) { complete(); return; }
+      const detail = (raw as CustomEvent).detail;
+      const event = eventFromBusPayload(detail, detail);
+      if (!eventMatchesRequiredCorrelation(event, listenerContext)) return;
+      switch (event.name) {
+        case EVENT_SPEAK:
+        case EVENT_OVOS_UTTERANCE_SPEAK: {
+          const normalized = event.text.trim().replace(/\s+/g, " ");
+          if (normalized && fragments.at(-1) !== normalized) fragments.push(normalized);
+          events.push(event);
+          if (fragments.length) startWindow("settle", replySettleMs);
+          break;
         }
+        case EVENT_INTENT_FAILURE:
+        case EVENT_INTENT_UNMATCHED:
+          softFailureEvent = event;
+          events.push(event);
+          if (!fragments.length) startWindow("empty", emptyReplyWaitMs);
+          break;
+        case EVENT_UTTERANCE_HANDLED:
+          handled = true;
+          events.push(event);
+          if (!fragments.length) startWindow("empty", emptyReplyWaitMs);
+          break;
+        case EVENT_POLICY_DENIED:
+        case EVENT_QUERY_TIMEOUT:
+          failureEvent = event;
+          events.push(event);
+          complete();
+          break;
       }
-      const replySettleMs = options.replySettleMs ?? this.replySettleMs;
-      if (replySettleMs > 0) {
-        await sleep(replySettleMs);
-      }
-      // A soft intent-miss becomes the surfaced failure only if no reply (not
-      // even a fallback) arrived; a reply means a fallback recovered the turn.
+    };
+    this.transport.addEventListener("bus", listener);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      // Retain/observe the transport's write even when collection expires.
+      // Cancellation cannot retract an already published application request.
+      void Promise.resolve().then(() => {
+        if (terminal) return;
+        return this.transport.emitBus(EVENT_RECOGNIZER_LOOP_UTTERANCE, utterancePayload(prompt, lang), context);
+      }).catch(fail);
+      await done;
       const effectiveFailure = failureEvent ?? (fragments.length === 0 ? softFailureEvent : undefined);
-      if (!effectiveFailure && fragments.length === 0) {
-        throw new ThalovantTimeoutError(`Hub handled the utterance but did not emit a speak reply within ${options.emptyReplyWaitMs ?? this.emptyReplyWaitMs}ms.`);
-      }
       if (effectiveFailure && fragments.length === 0) {
         throw new ThalovantRuntimeError(effectiveFailure.text || `Hub reported ${effectiveFailure.name}.`);
       }
-      const text = fragments.join(" ");
+      if (fragments.length === 0) {
+        if (handled) throw new ThalovantTimeoutError(`Hub handled the utterance but did not emit a speak reply within ${timeoutMs}ms.`);
+        throw timeoutError();
+      }
+      const replyText = fragments.join(" ");
       return {
-        text,
-        displayText: stripSsml(text),
+        text: replyText,
+        displayText: stripSsml(replyText),
         utterances: fragments,
         handled: !effectiveFailure,
         ok: !effectiveFailure,
@@ -442,14 +483,17 @@ export class ThalovantClient {
         requestId,
         events,
         failureEvent: effectiveFailure,
-        displayItems(options: { maxTextChars?: number } = {}): ThalovantDisplayItem[] {
-          const items = events.flatMap(event => event.displayItems(options));
-          return items.length ? items : [{ kind: "text", text: stripSsml(text) }];
+        displayItems(queryOptions: { maxTextChars?: number } = {}): ThalovantDisplayItem[] {
+          const items = events.flatMap(event => event.displayItems(queryOptions));
+          return items.length ? items : [{ kind: "text", text: stripSsml(replyText) }];
         },
       };
     } finally {
+      terminal = true;
       clearTimeout(timer);
-      handlers.forEach(handler => handler.close());
+      clearTimeout(phaseTimer);
+      options.signal?.removeEventListener("abort", onAbort);
+      this.transport.removeEventListener("bus", listener);
     }
   }
 
@@ -687,6 +731,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function operationAbortedError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
+function requestTimeout(timeoutMs = 12000): number {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2147483647) {
+    throw new ThalovantTimeoutError("Request timeout must be a positive, finite timer duration.");
+  }
+  return timeoutMs;
+}
+
+function replyWindow(duration: number): number {
+  if (!Number.isFinite(duration) || duration < 0) throw new RangeError("Reply collection windows must be finite and nonnegative.");
+  return duration;
+}
+
 function connectionTimeoutError(timeoutMs: number): ThalovantConnectionError {
   // Keep the public connection error type, with a stable cause for query
   // deadlines. JS timers can fire before a monotonic-clock comparison rounds up.
@@ -803,7 +863,7 @@ export class ThalovantConversation {
     this.context = options.context ?? {};
   }
 
-  ask(text: string, options: { timeoutMs?: number; lang?: string; context?: EventContext; requestId?: string } = {}): Promise<ThalovantReply> {
+  ask(text: string, options: { timeoutMs?: number; lang?: string; context?: EventContext; requestId?: string; signal?: AbortSignal; replySettleMs?: number; emptyReplyWaitMs?: number } = {}): Promise<ThalovantReply> {
     return this.client.ask(text, {
       ...options,
       lang: options.lang ?? this.lang,

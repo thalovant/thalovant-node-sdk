@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.8
+
+- Apply one total deadline to Ask and event waits, including connection readiness, send waiting, delayed speech, and fragment settling. Preserve replies emitted just before readiness returns.
+- Freeze Ask results on policy denial or explicit query timeout, preserving earlier partial speech and ignoring later events or write failures.
+- Add optional `AbortSignal` cancellation to Ask, conversations, event waits, and `connect(timeoutMs, signal)`; queued cancellation leaves the active connection owner intact, and all collector timers/listeners are removed.
+
 ## 0.3.7
 
 - Give routed queries one deadline across connect, send, response and optional settling. Keep intent misses provisional until completion or recovery; freeze completed and hard-failed queries, retain failed partial replies, and observe late sends without accepting later events.
