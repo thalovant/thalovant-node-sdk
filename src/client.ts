@@ -577,7 +577,9 @@ export class ThalovantClient {
       });
       // A transport write may outlive the query deadline. Observe both paths
       // immediately so the caller expires without an unhandled timer failure.
-      await Promise.race([sending, done]);
+      // A terminal reply already delivered synchronously takes precedence over
+      // a write failure reported afterwards; both promises remain observed.
+      await Promise.race([done, sending]);
       await done;
       clearTimeout(timer);
       const replySettleMs = options.replySettleMs ?? this.replySettleMs;

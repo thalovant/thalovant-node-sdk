@@ -115,3 +115,22 @@ test("query caps settling inside its deadline and ignores all post-completion ev
     assert.deepEqual(reply.events.map(event => event.name), ["speak", "hive.query.complete"]);
   } finally { await sdk.close(); }
 });
+
+for (const terminal of ["hive.query.complete", "hive.policy.denied"]) {
+  test(`query preserves ${terminal} when the write rejects after that terminal frame`, async () => {
+    class LateWriteFailure extends QueryTransport {
+      override sendHiveMessage(): Promise<void> {
+        this.reply("speak", "accepted reply");
+        this.reply(terminal);
+        return Promise.reject(new Error("synthetic post-terminal write failure"));
+      }
+    }
+    const sdk = client(new LateWriteFailure());
+    try {
+      const reply = await sdk.query("query", { queryId: "fixture", timeoutMs: 200, replySettleMs: 0 });
+      assert.equal(reply.text, "accepted reply");
+      assert.equal(reply.ok, terminal === "hive.query.complete");
+      assert.deepEqual(reply.events.map(event => event.name), ["speak", terminal]);
+    } finally { await sdk.close(); }
+  });
+}
