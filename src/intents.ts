@@ -41,7 +41,7 @@ import {
   EVENT_PADATIOUS_MANIFEST_GET,
   EVENT_POLICY_DENIED,
 } from "./constants.js";
-import { ThalovantPolicyDeniedError, ThalovantRuntimeError, ThalovantTimeoutError } from "./errors.js";
+import { ThalovantConnectionError, ThalovantPolicyDeniedError, ThalovantRuntimeError, ThalovantTimeoutError } from "./errors.js";
 import { EventContext, newRequestId, ThalovantEvent } from "./events.js";
 
 /** The inventory was read from the runtime's intent manifest: sentences per language. */
@@ -358,7 +358,7 @@ export async function requestReply(
   try {
     await client.connect(timeoutMs);
   } catch (error) {
-    if (performance.now() >= deadline) throw timeoutError();
+    if ((error instanceof ThalovantConnectionError && error.cause instanceof ThalovantTimeoutError) || performance.now() >= deadline) throw timeoutError();
     throw error;
   }
   if (performance.now() >= deadline) throw timeoutError();

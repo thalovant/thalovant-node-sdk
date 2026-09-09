@@ -123,13 +123,13 @@ export class ThalovantClient {
       reject(error);
     };
     const cancel = (): void => stop(new ThalovantConnectionError("Hub connection was closed before it became ready."));
-    const timer = setTimeout(() => stop(new ThalovantConnectionError(`Hub connection did not complete within ${budget}ms.`)), budget);
+    const timer = setTimeout(() => stop(connectionTimeoutError(budget)), budget);
     const operation = this.lifecycle.then(async () => {
       try {
         if (expired) return;
         if (generation !== this.lifecycleGeneration) { cancel(); return; }
         if (performance.now() >= deadline) {
-          stop(new ThalovantConnectionError(`Hub connection did not complete within ${budget}ms.`));
+          stop(connectionTimeoutError(budget));
           return;
         }
         const health = this.transport.healthcheck();
@@ -141,7 +141,7 @@ export class ThalovantClient {
         transportCompleted = true;
         while (!expired) {
           if (performance.now() >= deadline) {
-            stop(new ThalovantConnectionError(`Hub connection did not complete within ${budget}ms.`));
+            stop(connectionTimeoutError(budget));
             return;
           }
           const ready = this.transport.healthcheck();
@@ -647,6 +647,14 @@ export class ThalovantClient {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function connectionTimeoutError(timeoutMs: number): ThalovantConnectionError {
+  // Keep the public connection error type, with a stable cause for query
+  // deadlines. JS timers can fire before a monotonic-clock comparison rounds up.
+  return new ThalovantConnectionError(`Hub connection did not complete within ${timeoutMs}ms.`, {
+    cause: new ThalovantTimeoutError("Hub connection deadline expired."),
+  });
 }
 
 function normalizeConnectTimeout(timeoutMs?: number): number {

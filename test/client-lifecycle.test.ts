@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ThalovantClient } from "../src/client.js";
-import { ThalovantConnectionError } from "../src/errors.js";
+import { ThalovantConnectionError, ThalovantTimeoutError } from "../src/errors.js";
 import { ThalovantIdentity } from "../src/identity.js";
 
 function deferred() {
@@ -39,7 +39,7 @@ test("connect deadline does not await hung cleanup and replacement owns a separa
   const sdk = client(transport);
   try {
     const started = performance.now();
-    await assert.rejects(sdk.connect(20), ThalovantConnectionError);
+    await assert.rejects(sdk.connect(20), error => error instanceof ThalovantConnectionError && error.cause instanceof ThalovantTimeoutError);
     assert.ok(performance.now() - started < 250, "held cleanup must not extend the connect deadline");
     assert.equal(transport.disconnects, 1);
     await assert.rejects(sdk.connect(20), ThalovantConnectionError);
