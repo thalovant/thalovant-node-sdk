@@ -374,6 +374,8 @@ export class ThalovantControlPlane {
     for (const value of [verificationUri, grant.verification_uri_complete]) {
       if (value === undefined || value === null) continue;
       try {
+        const authority = typeof value === "string" ? value.match(/^https?:\/\/([^/?#]*)/i)?.[1] : undefined;
+        if (!authority || authority.includes("@") || /[\s\u0000-\u0020\u007f-\u009f]/u.test(String(value))) throw new Error("unsafe URL");
         const parsed = typeof value === "string" ? new URL(value) : undefined;
         if (!parsed || !["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("unsafe URL");
       } catch {

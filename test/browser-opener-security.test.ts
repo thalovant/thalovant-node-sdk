@@ -3,7 +3,7 @@ import test from "node:test";
 import { externalUrlCommand, openExternalUrl } from "../src/platform/node.js";
 
 test("browser opener rejects non-web targets and embedded credentials before starting a process", async () => {
-  for (const target of ["file:///tmp/payload", "javascript:alert(1)", "--execute", "https://user:secret@example.invalid", "not a URL"]) {
+  for (const target of ["file:///tmp/payload", "javascript:alert(1)", "--execute", "https://user:secret@example.invalid", "not a URL", "https://@example.invalid", "https://example.invalid/with space", "https://example.invalid/line\nfeed", "https://example.invalid/tab\there"]) {
     for (const platform of ["win32", "darwin", "linux"]) assert.equal(externalUrlCommand(target, platform), undefined);
     assert.equal(await openExternalUrl(target), false);
   }

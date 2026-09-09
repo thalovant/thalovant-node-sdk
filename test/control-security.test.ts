@@ -68,7 +68,7 @@ test("device verification URLs are validated before prompts, browser callbacks o
   const original = globalThis.fetch;
   try {
     for (const field of ["verification_uri", "verification_uri_complete"]) {
-      for (const target of ["file:///tmp/payload", "javascript:alert(1)", "--execute", "https://user:secret@example.invalid", "https://[", "not a URL"]) {
+      for (const target of ["file:///tmp/payload", "javascript:alert(1)", "--execute", "https://user:secret@example.invalid", "https://[", "not a URL", "https://@example.invalid", "https://example.invalid/with space", "https://example.invalid/line\nfeed", "https://example.invalid/tab\there"]) {
         for (const openBrowser of [false, true]) {
           let requests = 0;
           globalThis.fetch = async input => {

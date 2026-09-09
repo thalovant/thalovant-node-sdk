@@ -182,6 +182,8 @@ export async function openExternalUrl(url: string): Promise<boolean> {
 
 /** Internal platform command construction; the URL is data, never shell code. */
 export function externalUrlCommand(url: string, platform: string = process.platform): [string, string[]] | undefined {
+  const authority = url.match(/^https?:\/\/([^/?#]*)/i)?.[1];
+  if (!authority || authority.includes("@") || /[\s\u0000-\u0020\u007f-\u009f]/u.test(url)) return undefined;
   let parsed: URL;
   try {
     parsed = new URL(url);
