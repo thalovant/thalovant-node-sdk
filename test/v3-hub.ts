@@ -27,6 +27,8 @@ export interface V3HubPeer {
   /** Frames the client sent after the session came up, decrypted. */
   readonly received: string[];
   readonly staticPublicKey: Uint8Array;
+  readonly clientStaticKey: string | undefined;
+  sendBus(payload: Record<string, unknown>): void;
 }
 
 type Send = (data: string | Uint8Array, binary: boolean) => void;
@@ -41,7 +43,7 @@ type Send = (data: string | Uint8Array, binary: boolean) => void;
 export function createV3HubPeer(
   password: string,
   send: Send,
-  options: { staticPrivateKey?: Uint8Array; nodeId?: string } = {},
+  options: { staticPrivateKey?: Uint8Array; nodeId?: string; pinnedClientKey?: Uint8Array } = {},
 ): V3HubPeer & { onMessage(data: string | Uint8Array): void; start(): void } {
   const nodeId = options.nodeId ?? V3_HUB_NODE_ID;
   const staticPrivateKey = options.staticPrivateKey ?? Uint8Array.from(randomBytes(32));
@@ -52,7 +54,7 @@ export function createV3HubPeer(
     max_protocol_version: 3,
     binarize: false,
     encodings: [],
-    noise: { patterns: ["XXpsk2"], suites: ["25519_ChaChaPoly_SHA256", "25519_AESGCM_SHA256"] },
+    noise: { patterns: options.pinnedClientKey ? ["KKpsk0", "XXpsk2"] : ["XXpsk2"], suites: ["25519_ChaChaPoly_SHA256", "25519_AESGCM_SHA256"] },
   };
 
   let handshake: NoiseHandshake | undefined;
@@ -61,6 +63,11 @@ export function createV3HubPeer(
   return {
     received,
     staticPublicKey: x25519PublicKey(staticPrivateKey),
+    get clientStaticKey() { return session?.remoteStaticKey; },
+    sendBus(payload): void {
+      if (!session) throw new Error("Responder Noise session is not ready");
+      for (const frame of session.encryptMessage(utf8Encode(JSON.stringify({ msg_type: "bus", payload })), true)) send(frame, true);
+    },
 
     start(): void {
       send(JSON.stringify({ msg_type: "hello", payload: helloPayload, metadata: {} }), false);
@@ -93,12 +100,13 @@ export function createV3HubPeer(
           derivePsk(password, nodeId),
           buildPrologue(helloPayload, handshakePayload, noiseProtocolName(pattern, suite)),
           staticPrivateKey,
-          undefined,
+          options.pinnedClientKey,
           false,
         );
         handshake.readMessage(hexBytes(noise.msg));
         const reply = handshake.writeMessage(utf8Encode(canonicalJson({ encoding: "JSON-HEX" })));
         send(JSON.stringify({ msg_type: "shake", payload: { noise: { msg: hexString(reply) } }, metadata: {} }), false);
+        if (handshake.isFinished) session = handshake.intoSession();
         return;
       }
 

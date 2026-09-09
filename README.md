@@ -397,7 +397,7 @@ Hubs may expose one or more public data-plane protocols:
 
 ### Transport Security
 
-`wss` connections perform the HiveMind **v3 Noise handshake**
+`wss`, `https`, and `mqtt` connections perform the HiveMind **v3 Noise handshake**
 (`Noise_XXpsk2_25519_ChaChaPoly_SHA256`, or `KKpsk0` once the hub's static key
 is pinned). It is the only key exchange a HiveMind-core 5.x hub accepts: there
 is no pre-shared `crypto_key` any more, no cleartext path, and a connection that
@@ -441,8 +441,23 @@ loses the static key, and a hub that pinned the old one will refuse the
 reconnect until an operator clears its pin. That is a browser storage limit,
 not something the SDK can work around.
 
-`https` and `mqtt` do not run a Noise handshake. They authenticate with the
-identity credentials and take their confidentiality from TLS.
+HTTPS preserves the hub's replica-affinity cookie and carries Noise ciphertext
+through the binary send and poll endpoints. MQTT sends an admission HELLO, then
+uses raw Noise ciphertext on the existing per-client topics. Broker reconnects
+perform a fresh Noise handshake before accepting application sends.
+
+Failed authentication never clears a server pin automatically. Retain
+`noiseStateDir` across reconnects and process restarts. `healthcheck()` reports
+`handshakeComplete: false` after connection loss or invalid ciphertext; a socket
+or HTTP 200 response alone does not make the client ready.
+
+```ts
+const client = new ThalovantClient(identity, {
+  protocol: "https", // or "wss"; "mqtt" is available in Node
+  noiseStateDir: "/path/to/private/persistent/sdk-state",
+});
+await client.connect();
+```
 
 Inspect what an identity supports:
 

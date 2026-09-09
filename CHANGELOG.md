@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.4
+
+- Fix HiveMind v3 Noise negotiation on HTTPS and MQTT. HTTPS now retains replica affinity and uses encrypted binary endpoints; MQTT carries raw Noise frames and reauthenticates after broker reconnects. Both require TLS and reject legacy offers.
+- Share persistent client keys and hub pins across runtime transports through `noiseStateDir`. Failed authentication preserves trusted server pins.
+- Reset ephemeral keys and readiness on disconnect, reject pre-authentication application traffic, and serialize encrypted sends and receives, including chunked messages.
+- Add HTTP and MQTT encrypted request/reply, XX-to-KK reconnect, concurrent chunking, rejected-offer, JSON-error, and tamper regressions.
+
 ## 0.3.0
 
 - **Breaking.** `wss` connections now perform the HiveMind v3 Noise handshake,

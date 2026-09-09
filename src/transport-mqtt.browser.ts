@@ -13,7 +13,7 @@ const MQTT_BROWSER_ERROR =
   'The mqtt transport is not available in browsers. Use the "wss" or "https" protocol instead.';
 
 export class HiveMindMqttTransport {
-  constructor(_identity: ThalovantIdentity, _options: { userAgent?: string; pollIntervalMs?: number } = {}) {
+  constructor(_identity: ThalovantIdentity, _options: { userAgent?: string; pollIntervalMs?: number; noiseStateDir?: string; sendTimeoutMs?: number } = {}) {
     throw new ThalovantUnsupportedProtocolError(MQTT_BROWSER_ERROR);
   }
 }
