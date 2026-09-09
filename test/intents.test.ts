@@ -778,3 +778,75 @@ test("describe never accepts a foreign request ID by matching its definition", a
   assert.equal(inventory.hasPhrases, true);
   assert.ok(inventory.intents.every(intent => !intent.phrasesFor("en-us").includes("foreign answer")));
 });
+
+
+test("explicitly failed fallback discovery is unknown even with an empty list", async () => {
+  class Failed extends FakeHubTransport {
+    override async emitBus(type: string, data: Record<string, unknown>, context: EventContext) {
+      if (type === EVENT_FALLBACK_LIST) {
+        this.deliver("ovos.skills.fallback.list.response", { ok: false, fallbacks: [] }, context);
+        return;
+      }
+      return super.emitBus(type, data, context);
+    }
+  }
+  const inventory = await client(new Failed()).intents(["en-us"]);
+  assert.equal(inventory.fallbacksKnown, false);
+  assert.equal(inventory.mayAnswer("ja-jp"), true);
+});
+
+test("optional probe deadline includes reconnect and retains retired connect ownership", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  class Reconnecting extends FakeHubTransport {
+    connects = 0;
+    override async connect() {
+      this.connects += 1;
+      if (this.connects === 2) await gate;
+      return super.connect();
+    }
+  }
+  const hub = new Reconnecting();
+  const sdk = client(hub);
+  await sdk.connect(200);
+  hub.connected = false;
+  try {
+    const started = performance.now();
+    assert.equal(await listFallbacks(sdk, { timeoutMs: 30 }), null);
+    assert.ok(performance.now() - started < 250);
+    await assert.rejects(sdk.connect(20));
+    assert.equal(hub.connects, 2, "retry must wait for the retired attempt");
+    assert.equal(emittedOf(hub, EVENT_FALLBACK_LIST).length, 0);
+    release();
+    await sdk.connect(200);
+    assert.equal(hub.connects, 3);
+  } finally {
+    release();
+    await sdk.close();
+  }
+});
+
+test("optional probe deadline includes a held send and removes its listeners", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  class HeldSend extends FakeHubTransport {
+    override async emitBus(type: string, data: Record<string, unknown>, context: EventContext) {
+      if (type === EVENT_FALLBACK_LIST) await gate;
+      return super.emitBus(type, data, context);
+    }
+  }
+  const hub = new HeldSend();
+  const sdk = client(hub);
+  try {
+    const started = performance.now();
+    assert.equal(await listFallbacks(sdk, { timeoutMs: 30 }), null);
+    assert.ok(performance.now() - started < 250);
+    release();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const inventory = await sdk.intents(["en-us"]);
+    assert.equal(inventory.fallbacksKnown, true);
+  } finally {
+    release();
+    await sdk.close();
+  }
+});

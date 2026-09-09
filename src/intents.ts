@@ -350,10 +350,18 @@ export async function requestReply(
   options: { lang?: string; timeoutMs?: number } = {},
 ): Promise<ThalovantEvent> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const deadline = performance.now() + timeoutMs;
+  const timeoutError = () => new ThalovantTimeoutError(`Hub did not answer ${queryType} within ${timeoutMs}ms.`);
   const requestId = newRequestId();
   const context: EventContext = { request_id: requestId };
   if (options.lang) context.lang = options.lang;
-  await client.connect();
+  try {
+    await client.connect(timeoutMs);
+  } catch (error) {
+    if (performance.now() >= deadline) throw timeoutError();
+    throw error;
+  }
+  if (performance.now() >= deadline) throw timeoutError();
   let keep!: (event: ThalovantEvent) => void;
   let fail!: (error: Error) => void;
   const answer = new Promise<ThalovantEvent>((resolve, reject) => {
@@ -364,8 +372,8 @@ export async function requestReply(
   // lands after the race has already lost from surfacing as unhandled.
   answer.catch(() => undefined);
   const timer = setTimeout(() => {
-    fail(new ThalovantTimeoutError(`Hub did not answer ${queryType} within ${timeoutMs}ms.`));
-  }, timeoutMs);
+    fail(timeoutError());
+  }, Math.max(1, deadline - performance.now()));
   const subscriptions = [
     client.on(EVENT_POLICY_DENIED, event => {
       if (deniedTypeOf(event) === queryType) fail(ThalovantPolicyDeniedError.fromEvent(event));
@@ -709,7 +717,7 @@ export async function listFallbacks(client: ThalovantClient, options: { timeoutM
     if (error instanceof ThalovantPolicyDeniedError || error instanceof ThalovantTimeoutError) return null;
     throw error;
   }
-  if (!Array.isArray(event.data.fallbacks)) return null;
+  if (event.data.ok === false || !Array.isArray(event.data.fallbacks)) return null;
   const found: HubFallback[] = [];
   for (const row of event.data.fallbacks) {
     if (!isRecord(row) || typeof row.skill_id !== "string" || row.skill_id.length === 0) continue;
