@@ -82,20 +82,21 @@ export class ThalovantClient {
     this.emptyReplyWaitMs = options.emptyReplyWaitMs ?? 5000;
   }
 
-  static async fromIdentityFile(path: string, options: { protocol?: HubProtocol } = {}): Promise<ThalovantClient> {
+  static async fromIdentityFile(path: string, options: { protocol?: HubProtocol; noiseStateDir?: string } = {}): Promise<ThalovantClient> {
     return new ThalovantClient(await ThalovantIdentity.fromFile(path), options);
   }
 
-  static async fromConfig(options: { path?: string; profile?: string; protocol?: HubProtocol } = {}): Promise<ThalovantClient> {
-    return new ThalovantClient(await ThalovantIdentity.fromConfig(options), { protocol: options.protocol });
+  static async fromConfig(options: { path?: string; profile?: string; protocol?: HubProtocol; noiseStateDir?: string } = {}): Promise<ThalovantClient> {
+    return new ThalovantClient(await ThalovantIdentity.fromConfig(options), { protocol: options.protocol, noiseStateDir: options.noiseStateDir });
   }
 
-  static fromEnv(options: { protocol?: HubProtocol } = {}): ThalovantClient {
+  static fromEnv(options: { protocol?: HubProtocol; noiseStateDir?: string } = {}): ThalovantClient {
     return new ThalovantClient(ThalovantIdentity.fromEnv(), options);
   }
 
   async connect(timeoutMs?: number): Promise<void> {
-    if (this.connected) return;
+    if (this.connected && this.transport.healthcheck().connected && this.transport.healthcheck().handshakeComplete) return;
+    this.connected = false;
     const effectiveTimeoutMs = normalizeConnectTimeout(timeoutMs);
     await withConnectTimeout(this.transport, effectiveTimeoutMs);
     this.connected = true;
@@ -662,7 +663,7 @@ function transportForProtocol(
   options: { noiseStateDir?: string } = {},
 ): HiveMindRuntimeTransport {
   if (protocol === "https") {
-    return new HiveMindHttpTransport(identity);
+    return new HiveMindHttpTransport(identity, { noiseStateDir: options.noiseStateDir });
   }
   if (protocol === "wss") {
     if (!identity.endpointFor("wss")) {
@@ -674,7 +675,7 @@ function transportForProtocol(
     if (!identity.mqtt) {
       throw new ThalovantUnsupportedProtocolError("MQTT is enabled, but the identity does not include MQTT broker credentials.");
     }
-    return new HiveMindMqttTransport(identity);
+    return new HiveMindMqttTransport(identity, { noiseStateDir: options.noiseStateDir });
   }
   throw new ThalovantUnsupportedProtocolError(`Unsupported protocol: ${protocol}`);
 }

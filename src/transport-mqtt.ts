@@ -10,7 +10,6 @@ import { ThalovantConnectionError } from "./errors.js";
 import { ThalovantIdentity } from "./identity.js";
 import { randomUUID } from "./platform/node.js";
 import { HiveMessage, HiveMindHttpTransport, TransportHealth } from "./transport-core.js";
-import { encodeHiveBinaryFrame } from "./wire.js";
 
 export interface MqttTopicSet {
   inbound: string;
@@ -22,22 +21,28 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
   readonly topics: MqttTopicSet;
   private client?: MqttClient;
 
-  constructor(identity: ThalovantIdentity, options: { userAgent?: string; pollIntervalMs?: number } = {}) {
+  constructor(identity: ThalovantIdentity, options: { userAgent?: string; pollIntervalMs?: number; noiseStateDir?: string; sendTimeoutMs?: number } = {}) {
     super(identity, options);
     this.topics = mqttTopicsForIdentity(identity);
   }
 
-  override async connect(timeoutMs = 6000): Promise<void> {
+  override async connect(timeoutMs = 20000): Promise<void> {
+    return this.connectOnce(() => this.connectMqtt(timeoutMs));
+  }
+
+  private async connectMqtt(timeoutMs: number): Promise<void> {
     if (this.connected && this.handshakeComplete) return;
+    const previous = this.client;
+    this.client = undefined;
+    previous?.end(true);
     this.beginConnection();
+    const epoch = this.connectionEpoch;
+    const deadline = Date.now() + timeoutMs;
     const credentials = this.identity.mqtt;
     if (!credentials) {
       throw new ThalovantConnectionError("The identity does not include MQTT broker credentials.");
     }
-    // TLS is the only confidentiality on this path. The identity crypto key
-    // that once sealed MQTT payloads separately is gone with v3, so a broker
-    // hop without TLS would put every message, and the broker password with
-    // them, on the wire in the clear.
+    // TLS authenticates the broker and protects its credentials; Noise protects hub traffic.
     if (!credentials.tls && !/^(mqtts|ssl|wss):$/.test(new URL(credentials.endpoint).protocol)) {
       throw new ThalovantConnectionError(
         "Refusing to connect to an MQTT broker without TLS. Use an mqtts:// endpoint, or set tls: true on the identity's mqtt block.",
@@ -46,7 +51,7 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
     const options: IClientOptions = {
       username: credentials.username,
       password: credentials.password,
-      clientId: `thalovant-${safeMqttClientId(this.identity.accessKey)}`,
+      clientId: `thalovant-${safeMqttClientId(randomUUID())}`,
       clean: true,
       keepalive: 60,
       reconnectPeriod: 1000,
@@ -57,49 +62,67 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
         retain: true,
       },
     };
-    const client = mqttConnect(mqttConnectionEndpoint(credentials), options);
+    const client = this.createMqttClient(mqttConnectionEndpoint(credentials), options);
     this.client = client;
-    client.on("message", (_topic, payload) => {
-      this.handleRawMessage(payload).catch((error: Error) => {
-        this.lastError = error;
-        this.connected = false;
+    client.on("message", (topic, payload) => {
+      if (client !== this.client || topic !== this.topics.outbound) return;
+      const receivedEpoch = this.connectionEpoch;
+      this.receiveRawMessage(payload).catch((error: Error) => {
+        if (client !== this.client || receivedEpoch !== this.connectionEpoch) return;
+        this.rejectHandshake(error);
+        client.end(true);
       });
     });
     client.on("close", () => {
-      this.connected = false;
+      if (client !== this.client) return;
+      this.rejectHandshake(new ThalovantConnectionError("HiveMind MQTT connection closed."));
     });
     client.on("error", error => {
-      this.lastError = error;
+      if (client === this.client) this.rejectHandshake(error);
+    });
+    let establishedOnce = false;
+    client.on("connect", () => {
+      if (!establishedOnce || client !== this.client) return;
+      this.beginConnection();
+      const epoch = this.connectionEpoch;
+      this.establishSession(client, timeoutMs).catch((error: Error) => {
+        if (client === this.client && epoch === this.connectionEpoch) {
+          this.rejectHandshake(error);
+          client.end(true);
+        }
+      });
     });
 
     try {
       await waitForMqttConnect(client, timeoutMs);
-      await mqttSubscribe(client, this.topics.outbound, credentials.qos);
-      await mqttPublish(client, this.topics.status, "online", { qos: 1, retain: true });
-      this.connected = true;
-      await this.sendHiveMessage(this.helloMessage());
-      this.markTransportOpen();
-      await this.waitForHandshake(timeoutMs, "HiveMind MQTT handshake timed out.");
+      this.assertConnection(epoch);
+      if (client !== this.client) throw new ThalovantConnectionError("MQTT client was replaced.");
+      await this.establishSession(client, Math.max(1, deadline - Date.now()));
+      this.assertConnection(epoch);
+      establishedOnce = true;
     } catch (error) {
       client.end(true);
-      this.connected = false;
-      if (error instanceof Error) {
-        this.failConnection(error);
+      if (client === this.client && epoch === this.connectionEpoch) {
+        this.connected = false;
+        if (error instanceof Error) this.failConnection(error);
       }
       throw error;
     }
   }
 
   override async disconnect(): Promise<void> {
+    this.abandonConnectAttempt();
     const client = this.client;
     this.client = undefined;
+    this.connected = false;
+    this.handshakeComplete = false;
+    this.clearNoiseState();
+    const epoch = this.connectionEpoch;
     if (client) {
       await mqttPublish(client, this.topics.status, "offline", { qos: 1, retain: true }).catch(() => undefined);
       client.end(true);
     }
-    this.connected = false;
-    this.handshakeComplete = false;
-    this.markClosed();
+    if (epoch === this.connectionEpoch) this.markClosed();
   }
 
   override healthcheck(): TransportHealth {
@@ -112,15 +135,38 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
     };
   }
 
-  override async sendHiveMessage(message: HiveMessage, encrypt = true): Promise<void> {
+  protected createMqttClient(endpoint: string, options: IClientOptions): MqttClient {
+    return mqttConnect(endpoint, options);
+  }
+
+  private async establishSession(client: MqttClient, timeoutMs: number): Promise<void> {
+    const epoch = this.connectionEpoch;
+    await mqttSubscribe(client, this.topics.outbound, this.identity.mqtt!.qos);
+    if (client !== this.client || epoch !== this.connectionEpoch) throw new ThalovantConnectionError("MQTT connection changed during subscription.");
+    this.markTransportOpen();
+    this.connected = true;
+    // A clear HELLO requests server admission; the application HELLO is sent
+    // again encrypted only after the shared Noise exchange completes.
+    await this.sendCleartext(this.helloMessage());
+    await this.waitForHandshake(timeoutMs, "HiveMind MQTT Noise handshake timed out.");
+    this.assertConnection(epoch);
+    if (client !== this.client) throw new ThalovantConnectionError("MQTT client was replaced.");
+    await mqttPublish(client, this.topics.status, "online", { qos: 1, retain: true });
+  }
+
+  protected override async sendCleartext(message: HiveMessage): Promise<void> {
     const client = this.client;
-    if (!client?.connected) {
-      throw new ThalovantConnectionError("HiveMind MQTT transport is not connected.");
-    }
-    let payload = encodeHiveBinaryFrame(message);
-    await mqttPublish(client, this.topics.inbound, toNodeBuffer(payload), {
-      qos: this.identity.mqtt?.qos ?? 1,
-      retain: false,
+    if (!client?.connected) throw new ThalovantConnectionError("HiveMind MQTT transport is not connected.");
+    await mqttPublish(client, this.topics.inbound, JSON.stringify(message), {
+      qos: this.identity.mqtt?.qos ?? 1, retain: false,
+    });
+  }
+
+  protected override async sendNoiseFrame(frame: Uint8Array): Promise<void> {
+    const client = this.client;
+    if (!client?.connected) throw new ThalovantConnectionError("HiveMind MQTT transport is not connected.");
+    await mqttPublish(client, this.topics.inbound, toNodeBuffer(frame), {
+      qos: this.identity.mqtt?.qos ?? 1, retain: false,
     });
   }
 
@@ -223,7 +269,9 @@ function waitForMqttConnect(client: MqttClient, timeoutMs: number): Promise<void
 
 function mqttSubscribe(client: MqttClient, topic: string, qos: number): Promise<void> {
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ThalovantConnectionError("MQTT subscription timed out.")), 10000);
     client.subscribe(topic, { qos: qos === 0 ? 0 : 1 }, error => {
+      clearTimeout(timer);
       if (error) reject(error);
       else resolve();
     });
@@ -232,7 +280,9 @@ function mqttSubscribe(client: MqttClient, topic: string, qos: number): Promise<
 
 function mqttPublish(client: MqttClient, topic: string, payload: string | Buffer, options: { qos: number; retain: boolean }): Promise<void> {
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ThalovantConnectionError("MQTT publish timed out.")), 10000);
     client.publish(topic, payload, { qos: options.qos === 0 ? 0 : 1, retain: options.retain }, error => {
+      clearTimeout(timer);
       if (error) reject(error);
       else resolve();
     });
