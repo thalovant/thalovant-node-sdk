@@ -180,6 +180,7 @@ export class HiveMindHttpTransport extends EventTarget {
     return this.connectOnce(() => this.connectHttp(timeoutMs));
   }
 
+  /** Clean up an owned admission before starting a fresh authenticated session. */
   private async connectHttp(timeoutMs: number): Promise<void> {
     if (this.connected && this.handshakeComplete) return;
     const deadline = Date.now() + timeoutMs;
@@ -222,6 +223,7 @@ export class HiveMindHttpTransport extends EventTarget {
     }
   }
 
+  /** Retire local state and retry any HTTP admission still owned by this client. */
   async disconnect(): Promise<void> {
     await this.disconnectHttp();
   }
@@ -242,6 +244,7 @@ export class HiveMindHttpTransport extends EventTarget {
     }
   }
 
+  /** Clear admission ownership only after the matching replica confirms cleanup. */
   private cleanupHttpAdmission(deadline?: number): Promise<void> {
     if (this.httpCleanup) return this.httpCleanup;
     const epoch = this.connectionEpoch;

@@ -7,6 +7,7 @@ import { ThalovantIdentity } from "../src/identity.js";
 import { HiveMindHttpTransport } from "../src/transport-core.js";
 import { HiveMindMqttTransport } from "../src/transport-mqtt.js";
 
+/** Synthetic identity for connector stubs; no test contacts these endpoints. */
 function identity(endpoint = "mqtts://broker.test", tls = true): ThalovantIdentity {
   return new ThalovantIdentity({
     access_key: "deadline-client", password: "deadline-fixture-password", site_id: "test", default_master: "https://hub.test",
@@ -14,24 +15,30 @@ function identity(endpoint = "mqtts://broker.test", tls = true): ThalovantIdenti
   });
 }
 
+/** Advance the fake deadline clock, then flush asynchronous continuations. */
 async function tick(t: TestContext, ms: number): Promise<void> {
   t.mock.timers.tick(ms);
   await setImmediate();
 }
 
+/** Withhold one broker acknowledgement while earlier steps consume the budget. */
 class DelayedBroker extends EventEmitter {
   connected = true;
   publishes: string[] = [];
+  /** Choose which session step remains pending until the transport times out. */
   constructor(readonly stall: "subscribe" | "admission" | "handshake" | "online") { super(); }
+  /** Delay SUBACK unless this is the deliberately stalled subscription. */
   subscribe(_topic: string, _options: unknown, callback: () => void): void {
     if (this.stall !== "subscribe") setTimeout(callback, 25);
   }
+  /** Record stage arrival and withhold the selected publish acknowledgement. */
   publish(topic: string, payload: string | Buffer, _options: unknown, callback: () => void): void {
     this.publishes.push(topic);
     if (topic.endsWith("/in") && this.stall === "admission") return;
     if (topic.endsWith("/status") && payload === "online" && this.stall === "online") return;
     setTimeout(callback, 25);
   }
+  /** Expose whether failure handling retired the broker connection. */
   end(): void { this.connected = false; }
 }
 
@@ -97,6 +104,7 @@ test("MQTT validates the effective URL before giving credentials to the connecto
   }
 });
 
+/** Model an unanswered request that ends only when its caller aborts it. */
 function hangingResponse(signal: AbortSignal | null | undefined): Promise<Response> {
   return new Promise((_resolve, reject) => {
     if (signal?.aborted) reject(signal.reason);
@@ -108,6 +116,7 @@ test("HTTP failed-handshake cleanup expires within the connect deadline and reta
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const calls: string[] = [];
   let hangCleanup = true;
+  let cleanupSignal: AbortSignal | null | undefined;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(input)).pathname;
     calls.push(path);
@@ -117,6 +126,7 @@ test("HTTP failed-handshake cleanup expires within the connect deadline and reta
       return Response.json({ messages: [JSON.stringify({ msg_type: "shake", payload: { max_protocol_version: 2 } })] });
     }
     assert.equal(path, "/disconnect");
+    cleanupSignal = init?.signal;
     if (hangCleanup) return hangingResponse(init?.signal);
     return Response.json({ status: "Disconnected" });
   });
@@ -126,6 +136,7 @@ test("HTTP failed-handshake cleanup expires within the connect deadline and reta
   await setImmediate();
   await tick(t, 50);
   assert.equal(calls.at(-1), "/disconnect");
+  assert.ok(cleanupSignal, "failed-connect cleanup must pass an abort signal");
   await tick(t, 50);
   assert.ok(outcome instanceof Error, "connect cleanup must reject by its deadline");
   await connecting;
