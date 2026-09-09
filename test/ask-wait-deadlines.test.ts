@@ -188,3 +188,27 @@ for (const timeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2147483648
     assert.equal(peer.ready, false); assert.equal(peer.sent, 0);
   });
 }
+
+
+test("ask reports the first accepted runtime session with requested fallback", async () => {
+  for (const assigned of [undefined, "assigned-by-hub"]) {
+    for (const hard of [false, true]) {
+      const peer = new Runtime(); const sdk = client(peer);
+      peer.script = async p => {
+        p.reply("speak", "foreign", { request_id: "other-request", session: { session_id: "foreign-session" } });
+        p.reply("speak", "first", { ...p.context, session: { session_id: "  " } });
+        p.reply("speak", "second", { ...p.context, session: assigned ? { session_id: assigned } : {} });
+        p.reply(hard ? "hive.policy.denied" : "ovos.utterance.handled", undefined, { ...p.context, session: {} });
+        if (hard) p.reply("speak", "late", { ...p.context, session: { session_id: "too-late" } });
+      };
+      try {
+        const reply = await sdk.ask("hello", { sessionId: "requested", requestId: "request", timeoutMs: 200 });
+        assert.equal(reply.sessionId, assigned ?? "requested");
+        assert.equal(reply.requestId, "request");
+        assert.equal(reply.text, "first second");
+        assert.equal(reply.ok, !hard);
+        assert.equal(getEventListeners(peer, "bus").length, 0);
+      } finally { await sdk.close(); }
+    }
+  }
+});

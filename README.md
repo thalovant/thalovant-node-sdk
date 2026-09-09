@@ -563,6 +563,12 @@ Browser caveats:
 
 Use a conversation when related turns should share one session.
 
+Ask and Query replies report the first nonempty session ID from accepted runtime
+events, falling back to the requested session when the hub omits it. The reply
+request ID remains the caller's correlation ID. Query stops at completion or a
+hard failure and returns immediately; its retained `replySettleMs` option has no
+effect after completion. Ask retains its bounded speech collection window.
+
 ```ts
 const client = await ThalovantClient.fromIdentityFile("_identity.json");
 try {
