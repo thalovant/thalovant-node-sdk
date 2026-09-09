@@ -371,6 +371,15 @@ export class ThalovantControlPlane {
         throw new ThalovantApiError("Thalovant API device authorization response was incomplete.");
       }
     }
+    for (const value of [verificationUri, grant.verification_uri_complete]) {
+      if (value === undefined || value === null) continue;
+      try {
+        const parsed = typeof value === "string" ? new URL(value) : undefined;
+        if (!parsed || !["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("unsafe URL");
+      } catch {
+        throw new ThalovantApiError("Device verification URLs must use HTTP or HTTPS without embedded credentials.");
+      }
+    }
     const rawInterval = grant.interval;
     const intervalMs =
       typeof rawInterval === "number" && Number.isFinite(rawInterval) && rawInterval >= 0

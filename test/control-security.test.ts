@@ -63,3 +63,27 @@ test("credential-bearing non-TLS origins are rejected before fetch; explicit loo
     globalThis.fetch = original;
   }
 });
+
+test("device verification URLs are validated before prompts, browser callbacks or polling", async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const field of ["verification_uri", "verification_uri_complete"]) {
+      for (const target of ["file:///tmp/payload", "javascript:alert(1)", "--execute", "https://user:secret@example.invalid", "https://[", "not a URL"]) {
+        for (const openBrowser of [false, true]) {
+          let requests = 0;
+          globalThis.fetch = async input => {
+            requests += 1;
+            assert.match(String(input), /\/v1\/auth\/device\/authorize$/);
+            return new Response(JSON.stringify({ device_code: "synthetic-code", user_code: "synthetic-code", verification_uri: "https://example.invalid/activate", verification_uri_complete: "https://example.invalid/activate?code=synthetic", [field]: target }));
+          };
+          await assert.rejects(new ThalovantControlPlane().loginWithBrowser({
+            openBrowser, prompt: () => assert.fail("unsafe URL reached prompt"), openUrl: () => assert.fail("unsafe URL reached browser"),
+          }), /verification URLs/);
+          assert.equal(requests, 1);
+        }
+      }
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
