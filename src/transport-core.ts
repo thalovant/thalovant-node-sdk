@@ -332,12 +332,13 @@ export class HiveMindHttpTransport extends EventTarget {
       }
       const body = await response.json() as Record<string, unknown>;
       this.assertConnection(epoch);
-      const alreadyDisconnected = path === "/disconnect" && body &&
+      // Only a complete known no-session acknowledgment confirms idempotent cleanup.
+      const alreadyDisconnected = path === "/disconnect" && body && Object.keys(body).length === 1 &&
         (body.error === "Already Disconnected" || body.error === "Client is not connected");
       if (!body || typeof body !== "object" || (body.error && !alreadyDisconnected)) throw new ThalovantRuntimeError("HiveMind HTTP rejected the request.");
       if (path === "/connect" && body.status !== "Connected") throw new ThalovantConnectionError("Invalid HiveMind HTTP admission response.");
       if (path === "/send_message" && !["message sent", "buffered"].includes(String(body.status))) throw new ThalovantConnectionError("Invalid HiveMind HTTP send response.");
-      if (path === "/disconnect" && body.status !== "Disconnected" && !alreadyDisconnected) throw new ThalovantConnectionError("Invalid HiveMind HTTP disconnect response.");
+      if (path === "/disconnect" && (body.ok === false || (body.status !== "Disconnected" && !alreadyDisconnected))) throw new ThalovantConnectionError("Invalid HiveMind HTTP disconnect response.");
       return body;
     } catch (error) {
       if (error instanceof ThalovantConnectionError || error instanceof ThalovantRuntimeError) throw error;

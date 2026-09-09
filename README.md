@@ -506,6 +506,10 @@ reuse or be closed by that session. `close(timeoutMs)` cancels active/queued
 connects and waits within its own budget (default 6000ms). If it times out,
 `waitForClosed()` observes the actual retained cleanup, including failure. Both
 methods reject if HTTP cleanup is refused or its acknowledgment is invalid.
+An acknowledgment containing `ok: false` is invalid even if its status says
+`Disconnected`. The exact one-field replies `{ "error": "Already Disconnected" }`
+and `{ "error": "Client is not connected" }` confirm idempotent cleanup; adding
+other fields to either reply leaves cleanup unconfirmed.
 Keep the client and retry `close()`; hand the identity to a different client
 only after cleanup succeeds. Connection diagnostics retain the cleanup failure.
 

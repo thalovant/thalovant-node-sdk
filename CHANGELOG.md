@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.12
+
+- Reject HTTP disconnect acknowledgments that also report `ok: false` or combine a known no-session error with extra fields. Keep admission ownership and replica affinity until cleanup is confirmed.
+- Preserve compatibility with the exact one-field `Already Disconnected` and `Client is not connected` replies. Add five failing-before Noise lifecycle regressions covering contradictory acknowledgments and safe cleanup retry.
+
 ## 0.3.11
 
 - Report HTTP disconnect refusals and invalid acknowledgments through `close()` and `waitForClosed()`. Retain the remote admission and replica affinity until cleanup succeeds, so a later close or reconnect can retry safely; failed cleanup remains visible in connection diagnostics.
