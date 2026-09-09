@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.5
+
+- Validate the effective MQTT URL before handing credentials to MQTT.js. An explicit TLS flag upgrades `ws://` to `wss://` as well as `mqtt://` to `mqtts://`; plaintext and unsupported schemes fail closed.
+- Use one MQTT connect deadline across broker connection, subscription, admission, Noise handshake writes, and online presence. Each broker reconnect gets a fresh deadline, and stale operations cannot replace the active deadline.
+- Keep HTTP connect failure cleanup and waits for an earlier disconnect inside the original connect budget, preserving admission ownership when cleanup needs a later retry.
+- Add deterministic regressions for stalled MQTT session steps, secure endpoint normalization, and bounded HTTP cleanup.
+
 ## 0.3.4
 
 - Fix HiveMind v3 Noise negotiation on HTTPS and MQTT. HTTPS now retains replica affinity and uses encrypted binary endpoints; MQTT carries raw Noise frames and reauthenticates after broker reconnects. Both require TLS and reject legacy offers.
