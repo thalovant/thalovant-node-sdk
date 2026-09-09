@@ -548,6 +548,7 @@ export class ThalovantClient {
       }
     };
     this.transport.addEventListener("query", listener);
+    this.transport.addEventListener("cascade", listener);
     try {
       const inner: HiveMessage = {
         msg_type: "bus",
@@ -613,6 +614,7 @@ export class ThalovantClient {
       terminal = true;
       clearTimeout(timer);
       this.transport.removeEventListener("query", listener);
+      this.transport.removeEventListener("cascade", listener);
     }
   }
 

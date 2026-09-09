@@ -8,6 +8,7 @@ import type { HiveMessage } from "../src/transport.js";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 class QueryTransport extends EventTarget {
+  channel: "query" | "cascade" = "query";
   ready = false;
   sent = 0;
   script: (transport: QueryTransport, message: HiveMessage) => Promise<void> = async () => {};
@@ -17,12 +18,25 @@ class QueryTransport extends EventTarget {
   async emitBus() {}
   async sendHiveMessage(message: HiveMessage) { this.sent += 1; await this.script(this, message); }
   reply(type: string, text?: string) {
-    this.dispatchEvent(new CustomEvent("query", { detail: { msg_type: "query", metadata: { query_id: "fixture" }, payload: { msg_type: "bus", payload: { type, data: text ? { utterance: text } : {}, context: {} } } } }));
+    this.dispatchEvent(new CustomEvent(this.channel, { detail: { msg_type: this.channel, metadata: { query_id: "fixture" }, payload: { msg_type: "bus", payload: { type, data: text ? { utterance: text } : {}, context: {} } } } }));
   }
 }
 function client(transport: QueryTransport) {
   return new ThalovantClient(new ThalovantIdentity({ key: "fixture", password: "fixture", host: "https://fixture.invalid", site: "fixture" }), { transport });
 }
+
+test("query consumes routed cascade replies and removes both listeners", async () => {
+  const transport = new QueryTransport();
+  transport.channel = "cascade";
+  transport.script = async peer => { peer.reply("speak", "cascade reply"); peer.reply("hive.query.complete"); };
+  const sdk = client(transport);
+  try {
+    const reply = await sdk.query("query", { queryId: "fixture", timeoutMs: 200, replySettleMs: 0 });
+    assert.equal(reply.text, "cascade reply");
+    assert.equal(reply.ok, true);
+    for (const kind of ["query", "cascade"]) assert.equal(getEventListeners(transport, kind).length, 0);
+  } finally { await sdk.close(); }
+});
 
 test("query deadline includes held connect and does not send after its expiry", async () => {
   let release!: () => void;
