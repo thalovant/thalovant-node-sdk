@@ -11,7 +11,8 @@ import { ThalovantIdentity } from "../src/identity.js";
 import { HiveMindHttpTransport } from "../src/transport-core.js";
 import { createV3HubPeer } from "./v3-hub.js";
 
-type Cleanup = "success" | "http-error" | "refusal" | "invalid-ack" | "network" | "invalid-json" | "already-disconnected" | "not-connected";
+type Cleanup = "success" | "http-error" | "refusal" | "invalid-ack" | "network" | "invalid-json" | "already-disconnected" | "not-connected"
+  | "success-false" | "already-disconnected-false" | "already-disconnected-connected" | "not-connected-false" | "not-connected-connected";
 const responseSecret = "synthetic-response-sentinel";
 
 function deferred() {
@@ -59,6 +60,11 @@ async function fixture(t: TestContext, rejectHandshake = false) {
       if (state.cleanup === "invalid-ack") return Response.json({ unrelated: responseSecret });
       if (state.cleanup === "network") throw new TypeError(`network failed: ${String(input)}`, { cause: new Error(responseSecret) });
       if (state.cleanup === "invalid-json") return new Response(`{"secret":"${responseSecret}"`);
+      if (state.cleanup === "success-false") return Response.json({ status: "Disconnected", ok: false });
+      if (state.cleanup === "already-disconnected-false") return Response.json({ error: "Already Disconnected", ok: false });
+      if (state.cleanup === "already-disconnected-connected") return Response.json({ error: "Already Disconnected", status: "Connected" });
+      if (state.cleanup === "not-connected-false") return Response.json({ error: "Client is not connected", ok: false });
+      if (state.cleanup === "not-connected-connected") return Response.json({ error: "Client is not connected", status: "Connected" });
       state.admitted = false;
       if (state.cleanup === "already-disconnected") return Response.json({ error: "Already Disconnected" });
       if (state.cleanup === "not-connected") return Response.json({ error: "Client is not connected" });
@@ -78,7 +84,7 @@ async function fixture(t: TestContext, rejectHandshake = false) {
   return { client, transport, state, cookies };
 }
 
-for (const failure of ["http-error", "refusal", "invalid-ack", "network", "invalid-json"] as const) {
+for (const failure of ["http-error", "refusal", "invalid-ack", "network", "invalid-json", "success-false", "already-disconnected-false", "already-disconnected-connected", "not-connected-false", "not-connected-connected"] as const) {
   test(`HTTP ${failure} cleanup rejects close and waitForClosed safely, retains affinity and can retry`, async t => {
     const { client, transport, state, cookies } = await fixture(t);
     await client.connect(20000);
