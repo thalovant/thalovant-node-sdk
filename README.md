@@ -504,14 +504,19 @@ Timeout rejects promptly even if cleanup is slow; the client retains ownership
 until both the retired connect and cleanup finish, so a replacement cannot
 reuse or be closed by that session. `close(timeoutMs)` cancels active/queued
 connects and waits within its own budget (default 6000ms). If it times out,
-`waitForClosed()` observes the actual retained cleanup; a caller must await that
-before handing the identity to a different client instance.
+`waitForClosed()` observes the actual retained cleanup, including failure. Both
+methods reject if HTTP cleanup is refused or its acknowledgment is invalid.
+Keep the client and retry `close()`; hand the identity to a different client
+only after cleanup succeeds. Connection diagnostics retain the cleanup failure.
 
 The MQTT transport shares its remaining budget across broker connection,
 subscription, admission, Noise authentication, and online presence. A stalled
 step fails the attempt and closes its broker connection. HTTP connection failure
 cleanup also uses the original connect deadline; when cleanup times out, the
-transport retains ownership so a later close or reconnect can retry it.
+transport retains ownership and replica affinity so a later close or reconnect
+can retry it. The original connection error remains the caller's failure even
+when that cleanup also fails. HTTP errors omit authorization URLs and raw
+response details.
 
 ## Using In The Browser
 

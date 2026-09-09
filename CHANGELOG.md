@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.11
+
+- Report HTTP disconnect refusals and invalid acknowledgments through `close()` and `waitForClosed()`. Retain the remote admission and replica affinity until cleanup succeeds, so a later close or reconnect can retry safely; failed cleanup remains visible in connection diagnostics.
+- Preserve the original connection failure when its cleanup also fails. Sanitize native HTTP network and JSON parsing errors without exposing authorization URLs, response previews or raw causes.
+
 ## 0.3.10
 
 - Add optional `AbortSignal` cancellation to `query` and conversation Query calls across connection admission, sending and reply collection. Cancellation remains `AbortError` after partial speech; queued callers leave the active connection owner intact.

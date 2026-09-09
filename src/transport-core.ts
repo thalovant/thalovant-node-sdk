@@ -216,7 +216,9 @@ export class HiveMindHttpTransport extends EventTarget {
       if (epoch === this.connectionEpoch) {
         const cleanup = this.disconnectHttp(deadline);
         const cleanupEpoch = this.connectionEpoch;
-        await cleanup;
+        // Report the connection failure that triggered retirement. Cleanup
+        // keeps its remote admission on failure and a later close can retry it.
+        await cleanup.catch(() => undefined);
         if (cleanupEpoch === this.connectionEpoch) this.failConnection(error);
       }
       throw error;
@@ -236,7 +238,12 @@ export class HiveMindHttpTransport extends EventTarget {
     const epoch = this.connectionEpoch;
     this.connected = false;
     this.handshakeComplete = false;
-    if (this.httpAdmitted) await this.cleanupHttpAdmission(deadline).catch(() => undefined);
+    try {
+      if (this.httpAdmitted) await this.cleanupHttpAdmission(deadline);
+    } catch (error) {
+      if (epoch === this.connectionEpoch) this.failConnection(error as Error);
+      throw error;
+    }
     if (epoch === this.connectionEpoch) {
       // Keep replica affinity across reconnects: another replica may still
       // own an older admission for this identity.
@@ -332,6 +339,11 @@ export class HiveMindHttpTransport extends EventTarget {
       if (path === "/send_message" && !["message sent", "buffered"].includes(String(body.status))) throw new ThalovantConnectionError("Invalid HiveMind HTTP send response.");
       if (path === "/disconnect" && body.status !== "Disconnected" && !alreadyDisconnected) throw new ThalovantConnectionError("Invalid HiveMind HTTP disconnect response.");
       return body;
+    } catch (error) {
+      if (error instanceof ThalovantConnectionError || error instanceof ThalovantRuntimeError) throw error;
+      // Native fetch/JSON errors may embed the authorization URL or a response
+      // preview. Keep those details out of public exceptions and diagnostics.
+      throw new ThalovantConnectionError("HiveMind HTTP request failed.");
     } finally { clearTimeout(timer); this.pendingRequests.delete(controller); }
   }
 
