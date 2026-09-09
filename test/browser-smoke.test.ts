@@ -59,6 +59,7 @@ interface SandboxRequest {
 function createSandbox(): Record<string, unknown> {
   const sandbox: Record<string, unknown> = {
     console,
+    performance,
     crypto: webcrypto,
     TextEncoder,
     TextDecoder,
@@ -240,7 +241,9 @@ test("browser bundle connects WSS through the global WebSocket and Web Crypto", 
   });
 
   const client = new sdk.ThalovantClient(identity, { protocol: "wss" });
-  const info = await client.connectWithInfo(1000);
+  // This smoke runs the expensive real Argon2 derivation in both realms;
+  // deadline failure behavior is covered separately with held operations.
+  const info = await client.connectWithInfo(5000);
   assert.equal(info.phase, "ready");
   assert.equal(sockets.length, 1);
   assert.ok(sockets[0].url.startsWith("wss://hub.example.com"));

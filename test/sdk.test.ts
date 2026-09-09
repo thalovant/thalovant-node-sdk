@@ -311,7 +311,8 @@ test("client forwards explicit connect timeouts to transports", async () => {
   const client = new ThalovantClient(identity, { transport });
   await client.connect(12345);
 
-  assert.deepEqual(calls, [12345]);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0]! > 12300 && calls[0]! <= 12345, "transport receives the remaining caller budget");
 });
 
 test("client enforces a hard connect timeout around transports", async () => {

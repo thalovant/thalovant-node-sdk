@@ -35,11 +35,13 @@ import {
   EVENT_INTENT_DESCRIBE_RESPONSE,
   EVENT_INTENT_LIST,
   EVENT_INTENT_LIST_RESPONSE,
+  EVENT_FALLBACK_LIST,
+  EVENT_FALLBACK_LIST_RESPONSE,
   EVENT_PADATIOUS_MANIFEST,
   EVENT_PADATIOUS_MANIFEST_GET,
   EVENT_POLICY_DENIED,
 } from "./constants.js";
-import { ThalovantPolicyDeniedError, ThalovantRuntimeError, ThalovantTimeoutError } from "./errors.js";
+import { ThalovantConnectionError, ThalovantPolicyDeniedError, ThalovantRuntimeError, ThalovantTimeoutError } from "./errors.js";
 import { EventContext, newRequestId, ThalovantEvent } from "./events.js";
 
 /** The inventory was read from the runtime's intent manifest: sentences per language. */
@@ -49,6 +51,8 @@ export const SOURCE_ENGINES = "engine-manifests";
 export type HubIntentSource = typeof SOURCE_MANIFEST | typeof SOURCE_ENGINES;
 
 const DEFAULT_TIMEOUT_MS = 5000;
+/** Unsupported optional fallback discovery must not consume a full query timeout. */
+export const FALLBACK_PROBE_TIMEOUT_MS = 1500;
 const ENGINE_BY_METHOD: Record<string, string> = { template: "padatious", keyword: "adapt" };
 
 /**
@@ -195,12 +199,21 @@ export class HubSkillIntents {
   }
 }
 
+/** One fallback skill, tried in ascending priority order by the runtime. */
+export class HubFallback {
+  constructor(readonly skillId: string, readonly priority: number) {}
+
+  asObject(): Record<string, unknown> {
+    return { skill_id: this.skillId, priority: this.priority };
+  }
+}
+
 /**
  * Everything a hub can be asked, grouped by skill.
  *
  * `source` says how it was read: `intent-manifest` carries sentences per
  * language; `engine-manifests` is the names-only fallback, and `denied` then
- * names the query the hub refused.
+ * names the query the hub refused or did not answer.
  */
 export class HubIntentInventory {
   /** The languages asked for. */
@@ -208,17 +221,24 @@ export class HubIntentInventory {
   readonly skills: readonly HubSkillIntents[];
   readonly source: HubIntentSource;
   readonly denied: readonly string[];
+  readonly fallbacks: readonly HubFallback[];
+  /** False means the optional probe was unsupported, denied or unanswered. */
+  readonly fallbacksKnown: boolean;
 
   constructor(options: {
     languages: readonly string[];
     skills: readonly HubSkillIntents[];
     source?: HubIntentSource;
     denied?: readonly string[];
+    fallbacks?: readonly HubFallback[];
+    fallbacksKnown?: boolean;
   }) {
     this.languages = [...options.languages];
     this.skills = [...options.skills];
     this.source = options.source ?? SOURCE_MANIFEST;
     this.denied = [...(options.denied ?? [])];
+    this.fallbacks = [...(options.fallbacks ?? [])];
+    this.fallbacksKnown = options.fallbacksKnown ?? false;
   }
 
   /** Every intent across skills. */
@@ -231,11 +251,19 @@ export class HubIntentInventory {
     return this.intents.some(intent => Object.values(intent.phrases).some(sentences => sentences.length > 0));
   }
 
+  /** Conservative answerability hint, never a guarantee that a request will succeed. */
+  mayAnswer(lang: string): boolean {
+    return this.intents.some(intent => intent.enabled && intent.phrasesFor(lang).length > 0)
+      || this.fallbacks.length > 0 || !this.fallbacksKnown;
+  }
+
   asObject(): Record<string, unknown> {
     return {
       languages: [...this.languages],
       source: this.source,
       denied: [...this.denied],
+      fallbacks: this.fallbacks.map(fallback => fallback.asObject()),
+      fallbacks_known: this.fallbacksKnown,
       skills: this.skills.map(skill => skill.asObject()),
     };
   }
@@ -322,10 +350,18 @@ export async function requestReply(
   options: { lang?: string; timeoutMs?: number } = {},
 ): Promise<ThalovantEvent> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const deadline = performance.now() + timeoutMs;
+  const timeoutError = () => new ThalovantTimeoutError(`Hub did not answer ${queryType} within ${timeoutMs}ms.`);
   const requestId = newRequestId();
   const context: EventContext = { request_id: requestId };
   if (options.lang) context.lang = options.lang;
-  await client.connect();
+  try {
+    await client.connect(timeoutMs);
+  } catch (error) {
+    if ((error instanceof ThalovantConnectionError && error.cause instanceof ThalovantTimeoutError) || performance.now() >= deadline) throw timeoutError();
+    throw error;
+  }
+  if (performance.now() >= deadline) throw timeoutError();
   let keep!: (event: ThalovantEvent) => void;
   let fail!: (error: Error) => void;
   const answer = new Promise<ThalovantEvent>((resolve, reject) => {
@@ -336,12 +372,12 @@ export async function requestReply(
   // lands after the race has already lost from surfacing as unhandled.
   answer.catch(() => undefined);
   const timer = setTimeout(() => {
-    fail(new ThalovantTimeoutError(`Hub did not answer ${queryType} within ${timeoutMs}ms.`));
-  }, timeoutMs);
+    fail(timeoutError());
+  }, Math.max(1, deadline - performance.now()));
   const subscriptions = [
     client.on(EVENT_POLICY_DENIED, event => {
       if (deniedTypeOf(event) === queryType) fail(ThalovantPolicyDeniedError.fromEvent(event));
-    }),
+    }, { requestId }),
     // A settled promise ignores later resolutions: the first reply wins.
     client.on(replyType, event => keep(event), { requestId }),
   ];
@@ -483,7 +519,7 @@ export async function describeMany(
   const keep = (event: ThalovantEvent): void => {
     const definitions = definitionsFromReply(event);
     let key = byRequest.get(event.requestId ?? "");
-    if (key === undefined && definitions.length > 0) {
+    if (key === undefined && !event.requestId && definitions.length > 0) {
       // No request id came back: the definition names what it describes.
       const first = definitions[0];
       for (const [candidate, target] of wanted) {
@@ -504,7 +540,7 @@ export async function describeMany(
   }, timeoutMs);
   const subscriptions = [
     client.on(EVENT_POLICY_DENIED, event => {
-      if (deniedTypeOf(event) === EVENT_INTENT_DESCRIBE) fail(ThalovantPolicyDeniedError.fromEvent(event));
+      if ((!event.requestId || byRequest.has(event.requestId)) && deniedTypeOf(event) === EVENT_INTENT_DESCRIBE) fail(ThalovantPolicyDeniedError.fromEvent(event));
     }),
     client.on(EVENT_INTENT_DESCRIBE_RESPONSE, keep),
   ];
@@ -597,7 +633,7 @@ function inventoryFromNames(names: Record<string, string[]>, languages: readonly
  *
  * Asks the intent manifest per language and, unless the runtime attached
  * definitions to the listing, describes every registration at once. When the
- * hub refuses `ovos.intent.list` and `fallback` is on, the engines' manifests
+ * hub refuses or does not answer `ovos.intent.list` and `fallback` is on, the engines' manifests
  * give the names and the result says so.
  *
  * @internal Use `ThalovantClient.intents()`.
@@ -624,9 +660,10 @@ export async function intentInventory(
       listed.set(lang, await listIntents(client, lang, { timeoutMs: options.timeoutMs, includeDefinitions: describe }));
     }
   } catch (error) {
-    if (!fallback || !(error instanceof ThalovantPolicyDeniedError) || error.deniedType !== EVENT_INTENT_LIST) throw error;
+    const refused = error instanceof ThalovantPolicyDeniedError && error.deniedType === EVENT_INTENT_LIST;
+    if (!fallback || (!refused && !(error instanceof ThalovantTimeoutError))) throw error;
     const names = await intentNames(client, asked[0], { timeoutMs: options.timeoutMs });
-    return inventoryFromNames(names, asked, error.deniedType);
+    return withFallbacks(client, inventoryFromNames(names, asked, EVENT_INTENT_LIST), options.timeoutMs);
   }
 
   const wanted: DescribeTarget[] = [];
@@ -668,5 +705,30 @@ export async function intentInventory(
     intents.push(new HubIntent(intent));
     bySkill.set(intent.skillId, intents);
   }
-  return new HubIntentInventory({ languages: asked, skills: skillsFrom(bySkill), source: SOURCE_MANIFEST });
+  return withFallbacks(client, new HubIntentInventory({ languages: asked, skills: skillsFrom(bySkill), source: SOURCE_MANIFEST }), options.timeoutMs);
+}
+
+/** @internal The optional runtime fallback catalogue; null means unknown. */
+export async function listFallbacks(client: ThalovantClient, options: { timeoutMs?: number } = {}): Promise<HubFallback[] | null> {
+  let event: ThalovantEvent;
+  try {
+    event = await requestReply(client, EVENT_FALLBACK_LIST, EVENT_FALLBACK_LIST_RESPONSE, {}, options);
+  } catch (error) {
+    if (error instanceof ThalovantPolicyDeniedError || error instanceof ThalovantTimeoutError) return null;
+    throw error;
+  }
+  if (event.data.ok === false || !Array.isArray(event.data.fallbacks)) return null;
+  const found: HubFallback[] = [];
+  for (const row of event.data.fallbacks) {
+    if (!isRecord(row) || typeof row.skill_id !== "string" || row.skill_id.length === 0) continue;
+    if (typeof row.priority === "number" && !Number.isFinite(row.priority)) continue;
+    const priority = typeof row.priority === "number" ? Math.trunc(row.priority) : typeof row.priority === "boolean" ? Number(row.priority) : 0;
+    found.push(new HubFallback(row.skill_id, priority));
+  }
+  return found.sort((a, b) => a.priority - b.priority || compare(a.skillId, b.skillId));
+}
+
+async function withFallbacks(client: ThalovantClient, inventory: HubIntentInventory, timeoutMs?: number): Promise<HubIntentInventory> {
+  const fallbacks = await listFallbacks(client, { timeoutMs: Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, FALLBACK_PROBE_TIMEOUT_MS) });
+  return new HubIntentInventory({ ...inventory, fallbacks: fallbacks ?? [], fallbacksKnown: fallbacks !== null });
 }

@@ -12,6 +12,7 @@ export * from "./identity.js";
 // through `ThalovantClient.intents()`, `listIntents()` and `describeIntent()`,
 // as the Python SDK keeps them in `thalovant.intents` rather than its root.
 export {
+  HubFallback,
   HubIntent,
   HubIntentInventory,
   HubSkillIntents,

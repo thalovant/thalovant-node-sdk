@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.6
+
+- Enforce one caller deadline through queued connection work, transport setup and authenticated readiness. Timed-out cleanup cannot hold the caller indefinitely, and replacement sessions wait for the retired connect and cleanup to finish. Closing cancels active and queued attempts, uses a bounded caller deadline, and exposes `waitForClosed()` to observe cleanup retained after timeout.
+- Align intent discovery with Python: a silent listing can use engine manifests; discover fallback skills with a bounded optional probe, preserve unknown versus known-empty support, and expose `HubFallback`, `fallbacksKnown` and `mayAnswer(lang)`. Bare language strings are one tag.
+- Ignore explicitly mismatched request IDs on policy denials and intent descriptions while retaining compatibility with replies that omit IDs.
+- Exercise Node 20, 22 and 24 in CI, including package checks, dependency audit, real Noise transport regressions and browser bundle smoke.
+
 ## 0.3.5
 
 - Validate the effective MQTT URL before handing credentials to MQTT.js. An explicit TLS flag upgrades `ws://` to `wss://` as well as `mqtt://` to `mqtts://`; plaintext and unsupported schemes fail closed.

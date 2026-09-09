@@ -13,13 +13,14 @@ import {
   EVENT_ADAPT_MANIFEST_GET,
   EVENT_INTENT_DESCRIBE,
   EVENT_INTENT_LIST,
+  EVENT_FALLBACK_LIST,
   EVENT_PADATIOUS_MANIFEST_GET,
   EVENT_POLICY_DENIED,
 } from "../src/constants.js";
 import { ThalovantPolicyDeniedError, ThalovantRuntimeError, ThalovantTimeoutError } from "../src/errors.js";
 import { EventContext, ThalovantEvent } from "../src/events.js";
 import { ThalovantIdentity } from "../src/identity.js";
-import { DESCRIBE_BATCH, describeMany, HubIntentInventory, sameLanguage, SOURCE_ENGINES, SOURCE_MANIFEST } from "../src/intents.js";
+import { DESCRIBE_BATCH, describeMany, HubFallback, HubIntent, HubSkillIntents, HubIntentInventory, listFallbacks, sameLanguage, SOURCE_ENGINES, SOURCE_MANIFEST } from "../src/intents.js";
 
 const WEATHER = "thalovant-skill-weather.thalovant";
 const SHADOW = "thalovant-skill-custos-shadow.thalovant";
@@ -47,6 +48,7 @@ interface Emitted {
 
 interface FakeHubOptions {
   registrations?: Registrations;
+  fallbacks?: unknown;
   refuse?: string[];
   silent?: string[];
   definitionsInList?: boolean;
@@ -60,6 +62,7 @@ interface FakeHubOptions {
 class FakeHubTransport extends EventTarget {
   readonly emitted: Emitted[] = [];
   readonly registrations: Registrations;
+  readonly fallbacks: unknown;
   readonly refuse: string[];
   readonly silent: string[];
   readonly definitionsInList: boolean;
@@ -76,6 +79,7 @@ class FakeHubTransport extends EventTarget {
   constructor(options: FakeHubOptions = {}) {
     super();
     this.registrations = options.registrations ?? REGISTRATIONS;
+    this.fallbacks = options.fallbacks === undefined ? [] : options.fallbacks;
     this.refuse = options.refuse ?? [];
     this.silent = options.silent ?? [];
     this.definitionsInList = options.definitionsInList ?? false;
@@ -124,7 +128,9 @@ class FakeHubTransport extends EventTarget {
     // The runtime folds the tag it is asked for; the fake keys registrations
     // by the folded form and answers with the standardised one.
     const lang = String(data.lang ?? "").toLowerCase().replaceAll("_", "-");
-    if (eventType === EVENT_INTENT_LIST) {
+    if (eventType === EVENT_FALLBACK_LIST) {
+      this.deliver("ovos.skills.fallback.list.response", { fallbacks: this.fallbacks }, context);
+    } else if (eventType === EVENT_INTENT_LIST) {
       const rows = (this.registrations[lang] ?? []).map(([skillId, intentName, samples]) => {
         const row: Record<string, unknown> = {
           skill_id: skillId,
@@ -297,10 +303,10 @@ test("a refused describe rejects at once", async () => {
   );
 });
 
-test("a silent hub times out on the listing", async () => {
+test("a silent listing rejects when engine fallback is disabled", async () => {
   const hub = new FakeHubTransport({ silent: [EVENT_INTENT_LIST] });
   await assert.rejects(
-    client(hub).intents(["en-us"], { timeoutMs: 200 }),
+    client(hub).intents(["en-us"], { timeoutMs: 200, fallback: false }),
     (error: unknown) => error instanceof ThalovantTimeoutError && /ovos\.intent\.list/.test(error.message),
   );
 });
@@ -465,7 +471,7 @@ test("the fallback keeps the first engine that names an intent", async () => {
 
   const hub = new BothEngines({ refuse: [EVENT_INTENT_LIST] });
   const inventory = await client(hub).intents(["en-us"]);
-  assert.deepEqual(hub.emitted.map(entry => entry.eventType).slice(1), [EVENT_ADAPT_MANIFEST_GET, EVENT_PADATIOUS_MANIFEST_GET]);
+  assert.deepEqual(hub.emitted.map(entry => entry.eventType).slice(1), [EVENT_ADAPT_MANIFEST_GET, EVENT_PADATIOUS_MANIFEST_GET, EVENT_FALLBACK_LIST]);
   const weather = inventory.intents.find(intent => intent.name === "current.weather");
   assert.equal(weather?.engine, "adapt");
   assert.equal(inventory.intents.find(intent => intent.name === "custos.incidents")?.engine, "padatious");
@@ -660,4 +666,187 @@ test("only string entries survive in the allowed list", () => {
   }));
 
   assert.deepEqual(error.allowed, ["speak", "recognizer_loop:utterance"]);
+});
+
+
+test("a silent listing uses engine manifests and records the unanswered query", async () => {
+  const hub = new FakeHubTransport({ silent: [EVENT_INTENT_LIST], fallbacks: [{ skill_id: "fallback.llm", priority: 50 }] });
+  const inventory = await client(hub).intents("en-us", { timeoutMs: 20 });
+  assert.equal(inventory.source, SOURCE_ENGINES);
+  assert.deepEqual(inventory.denied, [EVENT_INTENT_LIST]);
+  assert.equal(inventory.intents.length, 2);
+  assert.equal(inventory.fallbacksKnown, true);
+  assert.equal(inventory.mayAnswer("fr-fr"), true);
+  assert.equal(emittedOf(hub, EVENT_ADAPT_MANIFEST_GET).length, 1);
+  assert.equal(emittedOf(hub, EVENT_PADATIOUS_MANIFEST_GET).length, 1);
+});
+
+test("silence from the engine fallback still rejects", async () => {
+  const hub = new FakeHubTransport({ silent: [EVENT_INTENT_LIST, EVENT_ADAPT_MANIFEST_GET] });
+  await assert.rejects(client(hub).intents(["en-us"], { timeoutMs: 20 }), error =>
+    error instanceof ThalovantTimeoutError && /adapt/.test(error.message));
+});
+
+test("bare language strings form one language and an empty string defaults to English", async () => {
+  for (const lang of ["fr_FR", ""]) {
+    const hub = new FakeHubTransport();
+    const inventory = await client(hub).intents(lang);
+    assert.deepEqual(inventory.languages, [lang || "en-us"]);
+    assert.equal(emittedOf(hub, EVENT_INTENT_LIST).length, 1);
+  }
+});
+
+test("fallbacks are sorted, serialized, and allow languages without intent phrases", async () => {
+  const hub = new FakeHubTransport({ fallbacks: [
+    { skill_id: "fallback.z", priority: 50 }, { skill_id: "fallback.a", priority: 50 },
+    { skill_id: "fallback.first", priority: 1 },
+  ] });
+  const inventory = await client(hub).intents(["en-us"]);
+  assert.deepEqual(inventory.fallbacks.map(row => row.skillId), ["fallback.first", "fallback.a", "fallback.z"]);
+  assert.ok(inventory.fallbacks[0] instanceof HubFallback);
+  assert.equal(inventory.fallbacksKnown, true);
+  assert.equal(inventory.mayAnswer("ja-jp"), true);
+  assert.deepEqual(inventory.asObject().fallbacks, inventory.fallbacks.map(row => row.asObject()));
+  assert.equal(inventory.asObject().fallbacks_known, true);
+});
+
+test("known empty and unknown fallback sets keep distinct answerability semantics", async () => {
+  const empty = await client(new FakeHubTransport()).intents(["en-us"]);
+  assert.equal(empty.fallbacksKnown, true);
+  assert.equal(empty.mayAnswer("en_US"), true);
+  assert.equal(empty.mayAnswer("ja-jp"), false);
+  for (const options of [
+    { refuse: [EVENT_FALLBACK_LIST] }, { silent: [EVENT_FALLBACK_LIST] }, { fallbacks: null },
+  ]) {
+    const inventory = await client(new FakeHubTransport(options)).intents(["en-us"], { timeoutMs: 25 });
+    assert.equal(inventory.fallbacksKnown, false);
+    assert.deepEqual(inventory.fallbacks, []);
+    assert.equal(inventory.mayAnswer("ja-jp"), true);
+    assert.equal(inventory.asObject().fallbacks_known, false);
+  }
+});
+
+test("disabled intent phrases do not imply answerability", () => {
+  const inventory = new HubIntentInventory({ languages: ["en-us"], fallbacksKnown: true,
+    skills: [new HubSkillIntents("disabled", [new HubIntent({ skillId: "disabled", name: "test", engine: "padatious", enabled: false, phrases: { "en-us": ["hello"] } })])],
+  });
+  assert.equal(inventory.mayAnswer("en-us"), false);
+});
+
+test("malformed fallback rows cannot corrupt the inventory", async () => {
+  const hub = new FakeHubTransport({ fallbacks: [null, "bad", {}, { skill_id: "", priority: 1 },
+    { skill_id: 42, priority: 1 }, { skill_id: "nan", priority: NaN }, { skill_id: "inf", priority: Infinity },
+    { skill_id: "fraction", priority: -1.9 }, { skill_id: "default", priority: "bad" }, { skill_id: "large", priority: 1e30 },
+  ] });
+  assert.deepEqual((await listFallbacks(client(hub)))?.map(row => row.asObject()), [
+    { skill_id: "fraction", priority: -1 }, { skill_id: "default", priority: 0 }, { skill_id: "large", priority: 1e30 },
+  ]);
+});
+
+test("the unsupported optional probe uses its own small ceiling", async () => {
+  const hub = new FakeHubTransport({ silent: [EVENT_FALLBACK_LIST] });
+  const started = performance.now();
+  const inventory = await client(hub).intents(["en-us"], { timeoutMs: 10000 });
+  assert.equal(inventory.fallbacksKnown, false);
+  assert.ok(performance.now() - started < 4000, "optional probe must not wait the full 10 second query timeout");
+});
+
+
+test("another request's correlated policy denial does not fail inventory queries", async () => {
+  class Noisy extends FakeHubTransport {
+    override async emitBus(type: string, data: Record<string, unknown>, context: EventContext) {
+      this.deliver(EVENT_POLICY_DENIED, { denied_type: type }, { request_id: "another-request" });
+      return super.emitBus(type, data, context);
+    }
+  }
+  const inventory = await client(new Noisy({ sync: true })).intents(["en-us"], { timeoutMs: 100 });
+  assert.equal(inventory.source, SOURCE_MANIFEST);
+  assert.equal(inventory.hasPhrases, true);
+  assert.equal(inventory.fallbacksKnown, true);
+});
+
+test("describe never accepts a foreign request ID by matching its definition", async () => {
+  class Noisy extends FakeHubTransport {
+    override async emitBus(type: string, data: Record<string, unknown>, context: EventContext) {
+      if (type === EVENT_INTENT_DESCRIBE) this.deliver("ovos.intent.describe.response", {
+        ok: true, definitions: [{ method: "template", definition: { ...data, samples: ["foreign answer"] } }],
+      }, { request_id: "another-request" });
+      return super.emitBus(type, data, context);
+    }
+  }
+  const inventory = await client(new Noisy({ sync: true })).intents(["en-us"], { timeoutMs: 100 });
+  assert.equal(inventory.hasPhrases, true);
+  assert.ok(inventory.intents.every(intent => !intent.phrasesFor("en-us").includes("foreign answer")));
+});
+
+
+test("explicitly failed fallback discovery is unknown even with an empty list", async () => {
+  class Failed extends FakeHubTransport {
+    override async emitBus(type: string, data: Record<string, unknown>, context: EventContext) {
+      if (type === EVENT_FALLBACK_LIST) {
+        this.deliver("ovos.skills.fallback.list.response", { ok: false, fallbacks: [] }, context);
+        return;
+      }
+      return super.emitBus(type, data, context);
+    }
+  }
+  const inventory = await client(new Failed()).intents(["en-us"]);
+  assert.equal(inventory.fallbacksKnown, false);
+  assert.equal(inventory.mayAnswer("ja-jp"), true);
+});
+
+test("optional probe deadline includes reconnect and retains retired connect ownership", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  class Reconnecting extends FakeHubTransport {
+    connects = 0;
+    override async connect() {
+      this.connects += 1;
+      if (this.connects === 2) await gate;
+      return super.connect();
+    }
+  }
+  const hub = new Reconnecting();
+  const sdk = client(hub);
+  await sdk.connect(200);
+  hub.connected = false;
+  try {
+    const started = performance.now();
+    assert.equal(await listFallbacks(sdk, { timeoutMs: 30 }), null);
+    assert.ok(performance.now() - started < 250);
+    await assert.rejects(sdk.connect(20));
+    assert.equal(hub.connects, 2, "retry must wait for the retired attempt");
+    assert.equal(emittedOf(hub, EVENT_FALLBACK_LIST).length, 0);
+    release();
+    await sdk.connect(200);
+    assert.equal(hub.connects, 3);
+  } finally {
+    release();
+    await sdk.close();
+  }
+});
+
+test("optional probe deadline includes a held send and removes its listeners", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  class HeldSend extends FakeHubTransport {
+    override async emitBus(type: string, data: Record<string, unknown>, context: EventContext) {
+      if (type === EVENT_FALLBACK_LIST) await gate;
+      return super.emitBus(type, data, context);
+    }
+  }
+  const hub = new HeldSend();
+  const sdk = client(hub);
+  try {
+    const started = performance.now();
+    assert.equal(await listFallbacks(sdk, { timeoutMs: 30 }), null);
+    assert.ok(performance.now() - started < 250);
+    release();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const inventory = await sdk.intents(["en-us"]);
+    assert.equal(inventory.fallbacksKnown, true);
+  } finally {
+    release();
+    await sdk.close();
+  }
 });

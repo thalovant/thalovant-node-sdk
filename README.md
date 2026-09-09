@@ -498,7 +498,16 @@ honors an explicit `tls: true` flag by upgrading `mqtt://` to `mqtts://` and
 unsupported and plaintext schemes are refused before broker credentials reach
 the connector.
 
-`connect(timeoutMs)` gives MQTT one shared budget for broker connection,
+`connect(timeoutMs)` returns only after authenticated readiness. One caller
+budget covers waiting for an earlier attempt, transport setup and readiness.
+Timeout rejects promptly even if cleanup is slow; the client retains ownership
+until both the retired connect and cleanup finish, so a replacement cannot
+reuse or be closed by that session. `close(timeoutMs)` cancels active/queued
+connects and waits within its own budget (default 6000ms). If it times out,
+`waitForClosed()` observes the actual retained cleanup; a caller must await that
+before handing the identity to a different client instance.
+
+The MQTT transport shares its remaining budget across broker connection,
 subscription, admission, Noise authentication, and online presence. A stalled
 step fails the attempt and closes its broker connection. HTTP connection failure
 cleanup also uses the original connect deadline; when cleanup times out, the
@@ -684,15 +693,25 @@ language, `intent.phrasesFor(lang)`, and `intent.examples(lang, limit)`, which
 prefers whole sentences over ones with a slot. `inventory.asObject()` is
 JSON-ready. The hub's connection must be allowed to publish `ovos.intent.list`;
 `ovos.intent.describe` is needed only when the sentences are wanted, which is
-the default (`describe: true`), so `intents(langs, { describe: false })` lists
-with `ovos.intent.list` alone. A hub that refuses a query rejects with
-`ThalovantPolicyDeniedError` naming the type; only when the hub refuses
-`ovos.intent.list` and `fallback` is on (the default) does the SDK fall back to
+the default (`describe: true`); `intents(langs, { describe: false })` skips
+those descriptions. A hub that refuses a query rejects with
+`ThalovantPolicyDeniedError` naming the type. When the hub refuses or does not
+answer `ovos.intent.list` and `fallback` is on (the default), the SDK falls back to
 the engines' manifests, listing intent names only and marking the result
 `source: "engine-manifests"` with `denied: ["ovos.intent.list"]`. A refused
 `ovos.intent.describe` rejects either way, and a hub that answers the listing
 with `ok: false` rejects with `ThalovantRuntimeError` carrying the hub's
-`error`: a refused listing is not an empty hub.
+`error`: a refused listing is not an empty hub. With `fallback: false`, a silent
+listing still times out; silence from the engine queries also remains an error.
+The `denied` field records a refused or unanswered listing query.
+
+The optional `ovos.skills.fallback.list` probe adds at most 1500ms, or the smaller
+query timeout. `inventory.fallbacks` contains `HubFallback` rows sorted by
+priority and skill ID. `fallbacksKnown` distinguishes a confirmed empty list
+from unavailable, denied or unanswered discovery. `inventory.mayAnswer(lang)`
+is true for enabled intent phrases, any fallback skill, or unknown fallback
+support; it is a conservative hint, not a guarantee. JSON serialization uses
+`fallbacks` and `fallbacks_known`. A bare language string is accepted as one tag.
 
 `client.listIntents(lang)` and `client.describeIntent(skillId, intentName, lang)`
 expose the two underlying queries when you need the manifest rows or a
@@ -715,7 +734,7 @@ registration as the skill made it.
   may not publish. `deniedType` names it and `allowed` lists what the
   connection may send; allow the type in the dashboard's connection settings.
   `intents(...)` falls back to intent names when `ovos.intent.list` is the
-  refused type and `fallback` is on; a refused `ovos.intent.describe` rejects.
+  refused or unanswered type and `fallback` is on; a refused `ovos.intent.describe` rejects.
 - `HTTP 429` with `"code": "token_rate_limited"`: the API token exceeded its
   plan's per-minute request rate (60 requests per minute on the free plan).
   The response carries a `Retry-After` header and a matching
