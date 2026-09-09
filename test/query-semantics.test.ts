@@ -4,6 +4,7 @@ import { getEventListeners } from "node:events";
 import { ThalovantClient } from "../src/client.js";
 import { ThalovantRuntimeError, ThalovantTimeoutError } from "../src/errors.js";
 import { ThalovantIdentity } from "../src/identity.js";
+import type { EventContext } from "../src/events.js";
 import type { HiveMessage } from "../src/transport.js";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -17,8 +18,8 @@ class QueryTransport extends EventTarget {
   healthcheck() { return { connected: this.ready, handshakeComplete: this.ready, transportAlive: this.ready }; }
   async emitBus() {}
   async sendHiveMessage(message: HiveMessage) { this.sent += 1; await this.script(this, message); }
-  reply(type: string, text?: string) {
-    this.dispatchEvent(new CustomEvent(this.channel, { detail: { msg_type: this.channel, metadata: { query_id: "fixture" }, payload: { msg_type: "bus", payload: { type, data: text ? { utterance: text } : {}, context: {} } } } }));
+  reply(type: string, text?: string, context: EventContext = {}, queryId = "fixture") {
+    this.dispatchEvent(new CustomEvent(this.channel, { detail: { msg_type: this.channel, metadata: { query_id: queryId }, payload: { msg_type: "bus", payload: { type, data: text ? { utterance: text } : {}, context } } } }));
   }
 }
 function client(transport: QueryTransport) {
@@ -148,3 +149,41 @@ for (const terminal of ["hive.query.complete", "hive.policy.denied"]) {
     } finally { await sdk.close(); }
   });
 }
+
+
+test("query reports the first accepted runtime session with requested fallback", async () => {
+  for (const assigned of [undefined, "assigned-by-hub"]) {
+    for (const hard of [false, true]) {
+      const peer = new QueryTransport(); const sdk = client(peer);
+      peer.script = async p => {
+        p.reply("speak", "foreign", { session: { session_id: "foreign-session" } }, "other-query");
+        p.reply("speak", "first", { session: { session_id: "  " } });
+        p.reply("speak", "second", assigned ? { session: { session_id: assigned } } : {});
+        p.reply(hard ? "hive.policy.denied" : "hive.query.complete");
+        p.reply("speak", "late", { session: { session_id: "too-late" } });
+      };
+      try {
+        const reply = await sdk.query("hello", { queryId: "fixture", sessionId: "requested", requestId: "request", timeoutMs: 200, replySettleMs: 0 });
+        assert.equal(reply.sessionId, assigned ?? "requested");
+        assert.equal(reply.requestId, "request");
+        assert.equal(reply.text, "first second");
+        assert.equal(reply.ok, !hard);
+        for (const channel of ["query", "cascade"]) assert.equal(getEventListeners(peer, channel).length, 0);
+      } finally { await sdk.close(); }
+    }
+  }
+});
+
+test("query completion returns immediately instead of sleeping through an unused settle window", async () => {
+  const peer = new QueryTransport(); const sdk = client(peer);
+  peer.script = async p => { p.reply("speak", "finished"); p.reply("hive.query.complete"); };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const reply = await Promise.race([
+      sdk.query("hello", { queryId: "fixture", timeoutMs: 2500, replySettleMs: 2000 }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("completed query waited for an unused settle window")), 500); }),
+    ]);
+    assert.equal(reply.text, "finished");
+    for (const channel of ["query", "cascade"]) assert.equal(getEventListeners(peer, channel).length, 0);
+  } finally { clearTimeout(timer); await sdk.close(); }
+});

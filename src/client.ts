@@ -479,7 +479,7 @@ export class ThalovantClient {
         utterances: fragments,
         handled: !effectiveFailure,
         ok: !effectiveFailure,
-        sessionId: context.session?.session_id,
+        sessionId: events.map(event => event.sessionId).find(id => id !== undefined && id.trim().length > 0) ?? context.session?.session_id,
         requestId,
         events,
         failureEvent: effectiveFailure,
@@ -506,6 +506,7 @@ export class ThalovantClient {
       sessionId?: string;
       requestId?: string;
       queryId?: string;
+      /** Retained for compatibility; terminal Query replies return immediately. */
       replySettleMs?: number;
     } = {},
   ): Promise<ThalovantReply> {
@@ -627,10 +628,6 @@ export class ThalovantClient {
       await Promise.race([done, sending]);
       await done;
       clearTimeout(timer);
-      const replySettleMs = options.replySettleMs ?? this.replySettleMs;
-      if (replySettleMs > 0 && !failureEvent) {
-        await sleep(Math.min(replySettleMs, Math.max(0, deadline - performance.now())));
-      }
       failureEvent ??= softFailureEvent;
       if (failureEvent && fragments.length === 0) {
         throw new ThalovantRuntimeError(failureEvent.text || `Hub reported ${failureEvent.name}.`);
@@ -645,7 +642,7 @@ export class ThalovantClient {
         utterances: fragments,
         handled: !failureEvent,
         ok: !failureEvent,
-        sessionId: context.session?.session_id,
+        sessionId: events.map(event => event.sessionId).find(id => id !== undefined && id.trim().length > 0) ?? context.session?.session_id,
         requestId,
         events,
         failureEvent,

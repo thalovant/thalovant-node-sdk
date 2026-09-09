@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.9
+
+- Return the first nonempty session ID from accepted runtime events in Ask and Query replies, falling back to the requested session when the hub omits it. Foreign and post-terminal events cannot supply reply metadata.
+- Return completed Query replies immediately; its retained `replySettleMs` option no longer adds a delay after collection has already stopped. Ask keeps its bounded speech collection window.
+
 ## 0.3.8
 
 - Apply one total deadline to Ask and event waits, including connection readiness, send waiting, delayed speech, and fragment settling. Preserve replies emitted just before readiness returns.
