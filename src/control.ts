@@ -1020,7 +1020,12 @@ export class ThalovantControlPlane {
       if (!this.accessToken) throw new ThalovantApiError("Missing Thalovant API access token.");
       headers.authorization = `Bearer ${this.accessToken}`;
     }
-    const url = new URL(path.replace(/^\/+/, ""), this.apiUrl);
+    let url: URL;
+    try {
+      url = new URL(path.replace(/^\/+/, ""), this.apiUrl);
+    } catch {
+      throw new ThalovantApiError("The configured control-plane API URL is invalid.");
+    }
     if (url.username || url.password) {
       throw new ThalovantApiError("Control-plane URLs must not include embedded credentials.");
     }

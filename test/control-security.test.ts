@@ -48,7 +48,7 @@ test("credential-bearing non-TLS origins are rejected before fetch; explicit loo
     return new Response(JSON.stringify({ access_token: "synthetic-token", hubs: [] }), { headers: { "content-type": "application/json" } });
   };
   try {
-    for (const url of ["http://example.invalid", "http://localhost.example.invalid", "ftp://127.0.0.1", "https://user:synthetic-password@example.invalid"]) {
+    for (const url of ["http://example.invalid", "http://localhost.example.invalid", "ftp://127.0.0.1", "https://user:synthetic-password@example.invalid", "https://user:synthetic-password@"] ) {
       await assert.rejects(new ThalovantControlPlane(url, { accessToken: "synthetic-token" }).listHubs(), ThalovantApiError);
       await assert.rejects(new ThalovantControlPlane(url).login("synthetic@example.invalid", "synthetic-password"), ThalovantApiError);
     }
