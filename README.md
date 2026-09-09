@@ -587,22 +587,35 @@ Use `query(...)` for the direct HiveMind query path when the hub supports it.
 It keeps replies scoped to the originating query id and avoids broad bus fanout.
 Use `ask(...)` when you need the older utterance/event flow.
 
-`ask` and `waitForEvent` use a twelve-second default total `timeoutMs` budget,
-including authenticated connection readiness. Ask includes sending and all reply
-collection in that budget. `emptyReplyWaitMs` (five seconds by default) allows
+`ask`, `query` and `waitForEvent` use a twelve-second default total `timeoutMs` budget,
+including authenticated connection readiness. Ask and Query include sending and
+reply collection in that budget. `emptyReplyWaitMs` (five seconds by default) allows
 speech after a soft intent miss; `replySettleMs` (250 ms) collects adjacent
 fragments after the first speech. Both windows are capped by the remaining total
 budget. A policy denial or explicit query timeout is terminal: earlier speech
 remains a failed partial reply, and later speech cannot change the result.
 
-Pass an `AbortSignal` as `options.signal` to Ask or event waits, including
-conversation Ask calls. Cancellation rejects with `AbortError` and removes the
+Pass an `AbortSignal` as `options.signal` to `ask`, `query` or `waitForEvent`, including
+conversation Ask and Query calls. Cancellation rejects with `AbortError`, even
+after partial speech, and removes the
 collector's timers and listeners. It does not close an already authenticated
 shared connection. `connect(timeoutMs, signal)` also supports cancellation: an
 aborted queued caller leaves the active connection owner intact, while an
 aborted initiating caller retains ownership of its connection cleanup. Once a
 transport write has started, cancelling collection cannot retract that request;
 the transport still owns and observes the write, and the SDK never replays it.
+An accepted Query completion or hard failure remains terminal if cancellation or
+a write error arrives afterwards. Query ignores all later events.
+
+```ts
+const controller = new AbortController();
+const pending = client.conversation().query("What time is it?", {
+  timeoutMs: 12_000,
+  signal: controller.signal,
+});
+// Call controller.abort() when the user cancels this request.
+const reply = await pending;
+```
 
 Event waits subscribe before connecting so an authenticated early event is
 retained. `on(name, handler, options)` remains a callback subscription; close it

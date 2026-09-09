@@ -94,6 +94,43 @@ test("ask observes a stalled send while enforcing its caller budget", async () =
   finally { release(); await sdk.close(); }
 });
 
+test("ask cancellation during subscription setup prevents publication", async () => {
+  const controller = new AbortController();
+  class CancelledAtSubscription extends Runtime {
+    override addEventListener(type: string, callback: EventListenerOrEventListenerObject | null, options?: AddEventListenerOptions | boolean) {
+      super.addEventListener(type, callback, options);
+      if (type === "bus") controller.abort();
+    }
+  }
+  const peer = new CancelledAtSubscription(); const sdk = client(peer);
+  try {
+    await assert.rejects(bounded(sdk.ask("hello", { timeoutMs: 1000, signal: controller.signal })), { name: "AbortError" });
+    assert.equal(peer.sent, 0); assert.equal(peer.closed, 0);
+    assert.equal(getEventListeners(peer, "bus").length, 0);
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+  } finally { await sdk.close(); }
+});
+
+test("ask rechecks its original deadline before deferred publication", async () => {
+  class DelayedPublication extends Runtime {
+    override addEventListener(type: string, callback: EventListenerOrEventListenerObject | null, options?: AddEventListenerOptions | boolean) {
+      super.addEventListener(type, callback, options);
+      if (type === "bus") queueMicrotask(() => {
+        // Expire the budget while keeping its timer callback queued, so the
+        // publication boundary itself must notice the elapsed deadline.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+      });
+    }
+  }
+  const peer = new DelayedPublication(); const sdk = client(peer);
+  await sdk.connect();
+  try {
+    await assert.rejects(bounded(sdk.ask("hello", { timeoutMs: 10 })), ThalovantTimeoutError);
+    assert.equal(peer.sent, 0); assert.equal(peer.closed, 0);
+    assert.equal(getEventListeners(peer, "bus").length, 0);
+  } finally { await sdk.close(); }
+});
+
 for (const method of ["ask", "waitForEvent"] as const) {
   test(`${method} aborts a queued readiness caller without closing its owner`, async () => {
     let release!: () => void;
