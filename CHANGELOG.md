@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.15
+
+- Add hub-scoped skill management on the control plane: `listHubSkills`, `installHubSkill`, `updateHubSkill`, and `removeHubSkill` address one hub by id over `GET`/`POST /v1/hubs/{hub_id}/skills` and `PATCH`/`DELETE /v1/hubs/{hub_id}/skills/{skill}`. Listing resolves with a typed `HubSkillList` envelope (`hub_id`, `runtime_group_id`, `observed_at`, `source`, runtime phase and message, `data` rows with the requested, installed, observed, and latest versions, `update_available`, `active`, and a `state` of `pending`, `installed`, `failed`, `removing`, `drifted`, `quarantined`, or `unmanaged`). The writes resolve with a typed `HubSkillOperation` from the API's HTTP 202 (`operation_id`, `hub_id`, `runtime_group_id`, `skill`, `version`, `previous_version`, `state`); installing at another version performs an update. `wait: true` polls the operation every two seconds until it converges (`installed` or `removed`), rejects with `ThalovantApiError` carrying the operation's error when it fails, and with `ThalovantTimeoutError` after `timeoutMs` (default 120000). Listing needs `hubs:inspect`; the writes need `hubs:write` and a paid plan.
+- Keep the RFC 7807 problem `code` of a failed control-plane request in the `ThalovantApiError` message, appended after the detail (for example `HTTP 409: Skill version already installed. (skill_version_already_installed)`), so callers can branch on `skill_version_already_installed` or `hub_without_runtime_group` without parsing prose.
+- Export `HubSkill`, `HubSkillList`, `HubSkillState`, `HubSkillOperation`, `HubSkillOperationState`, `HubSkillInstallOptions`, `HubSkillUpdateOptions`, and `HubSkillWaitOptions`. Route paths and result types live in one block in `control.ts`.
 ## 0.3.14
 
 - Require an actual usable definition before suppressing a describe timeout within or across batches. Empty or unknown-intent replies followed by silence now report the timeout; fully answered empty responses remain successful. Correlation and partial recovery with actual definitions are unchanged.

@@ -301,6 +301,57 @@ empty `data` list with the observation's provenance in `source`
 `ovos-runtime-operator-pending` for an inventory refresh the operator has not
 answered). `getHubRuntimeCapabilities` is the one that answers HTTP 409 instead.
 
+## Skills On One Hub
+
+A hub can also carry skills of its own, next to whatever its runtime group
+provides, and it can start with none at all. The four hub-skill calls address
+**one hub by id** (the authenticated hub routes do not take slugs) and every
+change applies live on that hub, typically within about fifteen seconds and
+without restarting it.
+
+```ts
+const listing = await api.listHubSkills(hub.id as string);
+console.log(listing.source, listing.observed_at);
+for (const skill of listing.data) {
+  console.log(skill.skill, skill.installed_version, skill.state, skill.update_available);
+}
+
+// Accepted at once: HTTP 202 with an operation_id, state "installing".
+const accepted = await api.installHubSkill(hub.id as string, "skill-weather");
+console.log(accepted.operation_id, accepted.state, accepted.previous_version);
+
+// Or poll the operation until it converges (default timeoutMs 120000).
+const done = await api.installHubSkill(hub.id as string, "skill-weather", { version: "1.2.0", wait: true });
+console.log(done.state); // "installed"
+
+await api.updateHubSkill(hub.id as string, "skill-weather", { version: "latest", wait: true });
+await api.removeHubSkill(hub.id as string, "skill-weather", { wait: true }); // state "removed"
+```
+
+`listHubSkills` resolves with a typed `HubSkillList`: the envelope says where
+the reading came from (`hub_id`, `runtime_group_id`, `observed_at`, `source`,
+the runtime's phase and message) and `data` holds one `HubSkill` row per
+skill (`skill`, `title`, `version`, `installed_version`, `observed_version`,
+`latest_version`, `update_available`, `active`, `state`, the runtime's last
+error, and more). A row's `state` is `pending`, `installed`, `failed`,
+`removing`, `drifted`, `quarantined`, or `unmanaged`; a change in progress
+shows as `pending`.
+
+The writes resolve with a typed `HubSkillOperation` (`operation_id`,
+`hub_id`, `runtime_group_id`, `skill`, `version`, `previous_version`,
+`state`). Installing a skill the hub already carries at another version
+performs an update. With `wait: true` a `failed` or `timed_out` operation
+rejects with `ThalovantApiError` carrying the operation's error message, and
+running past `timeoutMs` rejects with `ThalovantTimeoutError`. The API
+answers HTTP 409 `skill_version_already_installed` for the same version,
+HTTP 404 `hub_without_runtime_group` when the hub has no runtime group yet
+(a plain 404 for an unknown hub or a skill that is not installed), and HTTP
+422 for an unresolvable `"latest"` or an invalid version; the problem `code`
+is appended to the error message, for example
+`HTTP 409: Skill version already installed. (skill_version_already_installed)`.
+Listing needs `hubs:inspect` (`hubs:read` implies it); the writes need
+`hubs:write` and a paid plan. Hub-restricted tokens are honoured.
+
 ## Workspace Analytics
 
 Authenticated accounts can read the same overview used by the dashboard:
@@ -853,6 +904,10 @@ it before resending. Per-plan limits are listed in the dashboard and at
 - `controlPlane.deleteRuntimeGroup(runtimeGroupId)`
 - `controlPlane.installRuntimeGroupSkill(runtimeGroupId, skillId, options)` with optional `marketplaceSkillId`, `sourceType`, `sourceRef`, `versionPin`, and `active`
 - `controlPlane.uninstallRuntimeGroupSkill(runtimeGroupId, skillId)`
+- `controlPlane.listHubSkills(hubId)`
+- `controlPlane.installHubSkill(hubId, skill, options)` with optional `version`, `wait`, and `timeoutMs`
+- `controlPlane.updateHubSkill(hubId, skill, { version, wait, timeoutMs })` — `version` required
+- `controlPlane.removeHubSkill(hubId, skill, options)` with optional `wait` and `timeoutMs`
 - `controlPlane.listMarketplaceSkills(options)` with optional `ownerId`, `includeInactive`, and `forceRefresh`
 - `controlPlane.listRuntimeGroupMarketplace(runtimeGroupId, options)` with optional `refreshInventory`
 - `controlPlane.listRuntimeGroupInventory(runtimeGroupId, options)` with optional `refresh`

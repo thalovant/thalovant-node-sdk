@@ -256,6 +256,182 @@ export interface RuntimeGroupInventoryOptions {
   refresh?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Hub-scoped skills.
+//
+// The API contract for these routes is still being finalized. Every path,
+// field name, and state value the SDK depends on lives in this block so that a
+// change on the server side is a change in one place here.
+// ---------------------------------------------------------------------------
+
+/** Milliseconds between two operation reads while waiting for a hub skill change. */
+export const DEFAULT_HUB_SKILL_POLL_INTERVAL_MS = 2_000;
+/** Default ceiling, in milliseconds, for `wait: true` on the hub skill commands. */
+export const DEFAULT_HUB_SKILL_WAIT_TIMEOUT_MS = 120_000;
+
+/** Operation statuses after which the API will not move an operation again. */
+const TERMINAL_OPERATION_STATUSES: ReadonlySet<string> = new Set(["ready", "failed", "timed_out"]);
+
+function hubSkillsPath(hubId: string): string {
+  return `/v1/hubs/${encodeURIComponent(hubId)}/skills`;
+}
+
+function hubSkillPath(hubId: string, skill: string): string {
+  return `${hubSkillsPath(hubId)}/${encodeURIComponent(skill)}`;
+}
+
+/**
+ * State of one skill as the hub reports it. A change in progress shows as
+ * `pending`; `drifted` means the running version differs from the requested
+ * one, `quarantined` that the runtime disabled the skill after repeated
+ * failures, and `unmanaged` that it runs on the hub but is not managed through
+ * this route.
+ */
+export type HubSkillState = "pending" | "installed" | "failed" | "removing" | "drifted" | "quarantined" | "unmanaged";
+
+/**
+ * State of an accepted hub skill command. `installing`, `updating`, and
+ * `removing` are what the API answers at acceptance; `installed` and
+ * `removed` are where a waited-for command converges.
+ */
+export type HubSkillOperationState = "installing" | "updating" | "removing" | "installed" | "removed" | "failed";
+
+/** One row of `GET /v1/hubs/{hub_id}/skills`. Absent strings are `null`. */
+export interface HubSkill {
+  skill: string;
+  title: string | null;
+  marketplace_skill_id: string | null;
+  package_name: string | null;
+  source_type: string | null;
+  install_source: string | null;
+  /** The requested version (`"latest"` or an exact `x.y.z`). */
+  version: string | null;
+  version_pin: string | null;
+  installed_version: string | null;
+  observed_version: string | null;
+  previous_version: string | null;
+  latest_version: string | null;
+  available_version: string | null;
+  update_available: boolean;
+  changelog: string | null;
+  active: boolean;
+  state: HubSkillState;
+  operator_phase: string | null;
+  operator_message: string | null;
+  operator_last_error: string | null;
+  last_transition_at: string | null;
+}
+
+/** The `GET /v1/hubs/{hub_id}/skills` envelope: one hub's skills plus where the reading came from. */
+export interface HubSkillList {
+  hub_id: string;
+  runtime_group_id: string | null;
+  observed_at: string | null;
+  source: string | null;
+  operator_phase: string | null;
+  operator_message: string | null;
+  data: HubSkill[];
+}
+
+/**
+ * An accepted hub skill command, plus where it converged when waited for.
+ *
+ * `operation` is the last {@link OperationResource} read while waiting, and
+ * `undefined` when the call returned at acceptance.
+ */
+export interface HubSkillOperation {
+  operation_id: string;
+  hub_id: string | null;
+  runtime_group_id: string | null;
+  skill: string;
+  /** The requested version; `null` for a removal. */
+  version: string | null;
+  /** The version the hub carried before this change, when it carried one. */
+  previous_version: string | null;
+  state: HubSkillOperationState;
+  operation?: OperationResource;
+}
+
+/** Wait options shared by the hub skill commands. */
+export interface HubSkillWaitOptions {
+  /** Poll the accepted operation until it converges. Default `false`. */
+  wait?: boolean;
+  /** Overall deadline for `wait`, in milliseconds. Default 120000. */
+  timeoutMs?: number;
+  /** Poll interval in milliseconds. Default 2000. Intended for tests. */
+  pollIntervalMs?: number;
+  /** Injectable sleep so tests can drive the loop without real waiting. */
+  sleep?: (ms: number) => Promise<void> | void;
+  /** Injectable monotonic clock (milliseconds) paired with `sleep`. */
+  now?: () => number;
+}
+
+/** Options for `installHubSkill`. */
+export interface HubSkillInstallOptions extends HubSkillWaitOptions {
+  /** `"latest"` (the default) or an exact `x.y.z`. */
+  version?: string;
+}
+
+/** Options for `updateHubSkill`. */
+export interface HubSkillUpdateOptions extends HubSkillWaitOptions {
+  /** `"latest"` or an exact `x.y.z`. Required. */
+  version: string;
+}
+
+function hubSkillListFromRecord(payload: JsonRecord): HubSkillList {
+  const rows = payload.data;
+  if (!Array.isArray(rows)) {
+    throw new ThalovantApiError("Thalovant API returned an unexpected hub skill listing shape.");
+  }
+  return {
+    hub_id: requiredString(payload, "hub_id"),
+    runtime_group_id: optionalString(payload.runtime_group_id),
+    observed_at: optionalString(payload.observed_at),
+    source: optionalString(payload.source),
+    operator_phase: optionalString(payload.operator_phase),
+    operator_message: optionalString(payload.operator_message),
+    data: rows.filter(isRecord).map(hubSkillFromRecord),
+  };
+}
+
+function hubSkillFromRecord(value: JsonRecord): HubSkill {
+  return {
+    skill: requiredString(value, "skill"),
+    title: optionalString(value.title),
+    marketplace_skill_id: optionalString(value.marketplace_skill_id),
+    package_name: optionalString(value.package_name),
+    source_type: optionalString(value.source_type),
+    install_source: optionalString(value.install_source),
+    version: optionalString(value.version),
+    version_pin: optionalString(value.version_pin),
+    installed_version: optionalString(value.installed_version),
+    observed_version: optionalString(value.observed_version),
+    previous_version: optionalString(value.previous_version),
+    latest_version: optionalString(value.latest_version),
+    available_version: optionalString(value.available_version),
+    update_available: value.update_available === true,
+    changelog: optionalString(value.changelog),
+    active: value.active !== false,
+    state: requiredString(value, "state") as HubSkillState,
+    operator_phase: optionalString(value.operator_phase),
+    operator_message: optionalString(value.operator_message),
+    operator_last_error: optionalString(value.operator_last_error),
+    last_transition_at: optionalString(value.last_transition_at),
+  };
+}
+
+function hubSkillOperationFromRecord(value: JsonRecord): HubSkillOperation {
+  return {
+    operation_id: requiredString(value, "operation_id"),
+    hub_id: optionalString(value.hub_id),
+    runtime_group_id: optionalString(value.runtime_group_id),
+    skill: requiredString(value, "skill"),
+    version: optionalString(value.version),
+    previous_version: optionalString(value.previous_version),
+    state: requiredString(value, "state") as HubSkillOperationState,
+  };
+}
+
 /** Payload returned by `POST /v1/auth/device/authorize`. */
 export interface DeviceAuthorizationGrant {
   device_code: string;
@@ -881,6 +1057,138 @@ export class ThalovantControlPlane {
     );
   }
 
+  /**
+   * List the skills one hub carries, with their install state.
+   *
+   * Where `listRuntimeGroupInventory` describes a whole runtime group, this
+   * describes **one hub**. The {@link HubSkillList} envelope says where the
+   * reading came from (`source`, `observed_at`, the runtime's phase and
+   * message); each {@link HubSkill} row carries the requested `version`, the
+   * `installed_version` and `observed_version`, the catalog's `latest_version`
+   * with `update_available`, and the `state` (`pending`, `installed`,
+   * `failed`, `removing`, `drifted`, `quarantined`, `unmanaged`) with the
+   * runtime's last error for a failed change. A hub can carry no skills at
+   * all; that is an empty `data`, not an error.
+   *
+   * `hubId` is the hub's id. The authenticated hub routes do not accept slugs.
+   * Hub-restricted tokens are honoured.
+   *
+   * Requires a token with the `hubs:inspect` scope (`hubs:read` implies it).
+   */
+  async listHubSkills(hubId: string): Promise<HubSkillList> {
+    return hubSkillListFromRecord(await this.request("GET", hubSkillsPath(hubId)));
+  }
+
+  /**
+   * Install a skill on one hub.
+   *
+   * The API accepts the change with HTTP 202 and applies it live on the hub,
+   * typically within about fifteen seconds and without restarting it.
+   * `version` is `"latest"` (the default) or an exact `x.y.z`.
+   *
+   * By default this resolves as soon as the change is accepted, with
+   * `state: "installing"` and the `operation_id` to poll through
+   * `getOperation`. With `wait: true` it polls that operation for you, every
+   * {@link DEFAULT_HUB_SKILL_POLL_INTERVAL_MS}, and resolves with
+   * `state: "installed"` once the operation is `ready`; a `failed` or
+   * `timed_out` operation rejects with `ThalovantApiError` carrying the
+   * operation's error message, and `timeoutMs` (default 120000) without
+   * convergence rejects with `ThalovantTimeoutError`.
+   *
+   * Installing a skill the hub already carries at another version performs
+   * an update. The API answers HTTP 409 `skill_version_already_installed`
+   * for the same version, HTTP 404 `hub_without_runtime_group` when the hub
+   * has no runtime group yet, and HTTP 422 for an unresolvable `"latest"` or
+   * an invalid version; the problem `code` is appended to the error message.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope; the scope
+   * is checked first, so a free-plan API token sees HTTP 403, never 402.
+   * Hub-restricted tokens are honoured.
+   */
+  async installHubSkill(hubId: string, skill: string, options: HubSkillInstallOptions = {}): Promise<HubSkillOperation> {
+    const accepted = hubSkillOperationFromRecord(
+      await this.request("POST", hubSkillsPath(hubId), {
+        body: { skill, version: options.version ?? "latest" },
+      }),
+    );
+    if (!options.wait) return accepted;
+    return this.waitForHubSkillOperation(accepted, "installed", options);
+  }
+
+  /**
+   * Move one hub's skill to another version.
+   *
+   * `version` is required: `"latest"` or an exact `x.y.z`. The API accepts
+   * with HTTP 202 and `state: "updating"`; `wait` and `timeoutMs` behave
+   * exactly as in `installHubSkill`, converging on `state: "installed"`.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  async updateHubSkill(hubId: string, skill: string, options: HubSkillUpdateOptions): Promise<HubSkillOperation> {
+    if (typeof options?.version !== "string" || !options.version.trim()) {
+      throw new ThalovantApiError("updateHubSkill requires a version.");
+    }
+    const accepted = hubSkillOperationFromRecord(
+      await this.request("PATCH", hubSkillPath(hubId, skill), { body: { version: options.version } }),
+    );
+    if (!options.wait) return accepted;
+    return this.waitForHubSkillOperation(accepted, "installed", options);
+  }
+
+  /**
+   * Remove a skill from one hub.
+   *
+   * The API accepts with HTTP 202 and `state: "removing"`; `wait` and
+   * `timeoutMs` behave exactly as in `installHubSkill`, converging on
+   * `state: "removed"`. The hub keeps running throughout.
+   *
+   * Requires a paid plan and a token with the `hubs:write` scope.
+   */
+  async removeHubSkill(hubId: string, skill: string, options: HubSkillWaitOptions = {}): Promise<HubSkillOperation> {
+    const accepted = hubSkillOperationFromRecord(await this.request("DELETE", hubSkillPath(hubId, skill)));
+    if (!options.wait) return accepted;
+    return this.waitForHubSkillOperation(accepted, "removed", options);
+  }
+
+  /**
+   * Poll an accepted hub skill command until its operation is terminal.
+   *
+   * `ready` converges to `converged`; `failed` and `timed_out` reject with
+   * `ThalovantApiError`; anything else keeps polling until `timeoutMs` has
+   * elapsed, then `ThalovantTimeoutError`.
+   */
+  private async waitForHubSkillOperation(
+    accepted: HubSkillOperation,
+    converged: HubSkillOperationState,
+    options: HubSkillWaitOptions,
+  ): Promise<HubSkillOperation> {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_HUB_SKILL_WAIT_TIMEOUT_MS;
+    const intervalMs = options.pollIntervalMs ?? DEFAULT_HUB_SKILL_POLL_INTERVAL_MS;
+    const sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+    const now = options.now ?? (() => Date.now());
+    const deadline = now() + timeoutMs;
+    while (true) {
+      const operation = await this.getOperation(accepted.operation_id);
+      if (operation.status === "ready") {
+        return { ...accepted, state: converged, operation };
+      }
+      if (TERMINAL_OPERATION_STATUSES.has(operation.status)) {
+        const detail =
+          operation.error_message ||
+          operation.error_code ||
+          `operation ${operation.id} ended with status ${operation.status}`;
+        throw new ThalovantApiError(`Hub skill change for ${accepted.skill} failed: ${detail}`);
+      }
+      const remaining = deadline - now();
+      if (remaining <= 0) {
+        throw new ThalovantTimeoutError(
+          `Timed out after ${timeoutMs}ms waiting for the hub skill change (${accepted.skill}, operation ${accepted.operation_id}) to converge.`,
+        );
+      }
+      await sleep(Math.min(intervalMs, remaining));
+    }
+  }
+
   createClient(payload: JsonRecord, options: { idempotencyKey?: string } = {}): Promise<JsonRecord> {
     return this.request("POST", "/v1/clients", {
       body: payload,
@@ -1118,6 +1426,10 @@ function renameKey(values: JsonRecord, from: string, to: string): void {
   }
 }
 
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
 function requiredString(values: JsonRecord, key: string): string {
   const value = values[key];
   if (typeof value !== "string" || !value) {
@@ -1172,6 +1484,7 @@ function apiErrorMessage(status: number, bodyText: string, redactSecrets?: Reado
 
 function apiErrorDetail(bodyText: string): string {
   let detail: string | undefined;
+  let code: string | undefined;
   let isJsonBody = false;
   try {
     const parsed: unknown = JSON.parse(bodyText);
@@ -1181,6 +1494,9 @@ function apiErrorDetail(bodyText: string): string {
         detail = detailString(parsed[key]);
         if (detail) break;
       }
+      if (typeof parsed.code === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(parsed.code)) {
+        code = parsed.code;
+      }
     }
   } catch {
     // Not JSON; fall through to the bounded plain-text snippet.
@@ -1189,9 +1505,13 @@ function apiErrorDetail(bodyText: string): string {
   // than quoted: unknown JSON shapes are exactly where echoed secrets hide.
   const source = detail ?? (isJsonBody ? "" : bodyText);
   const compact = source.replace(/\s+/g, " ").trim();
-  return compact.length > MAX_ERROR_DETAIL_LENGTH
+  const bounded = compact.length > MAX_ERROR_DETAIL_LENGTH
     ? `${compact.slice(0, MAX_ERROR_DETAIL_LENGTH)}…`
     : compact;
+  // RFC 7807 problem bodies carry a machine-readable `code` at the root
+  // (for example `skill_version_already_installed`); keep it, once, so a
+  // caller can branch on it without parsing the prose.
+  return code && code !== bounded ? (bounded ? `${bounded} (${code})` : `(${code})`) : bounded;
 }
 
 /** First short human-readable string in a JSON error detail value. */
