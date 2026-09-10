@@ -249,3 +249,41 @@ test("ask reports the first accepted runtime session with requested fallback", a
     }
   }
 });
+
+
+test("overlapping Ask collectors reject the same request ID before publication", async () => {
+  const peer = new Runtime();
+  const sdk = client(peer);
+  let sent!: () => void;
+  const published = new Promise<void>(resolve => { sent = resolve; });
+  peer.script = async () => { sent(); };
+  const first = sdk.ask("first", { requestId: "duplicate", timeoutMs: 2000 });
+  try {
+    await published;
+    await assert.rejects(sdk.ask("cancelled duplicate", { requestId: "duplicate", signal: AbortSignal.abort() }), { name: "AbortError" });
+    await assert.rejects(sdk.ask("second", { requestId: "duplicate", timeoutMs: 50 }), /already active/);
+    assert.equal(peer.sent, 1);
+    peer.reply("speak", "first-only");
+    assert.equal((await first).text, "first-only");
+  } finally {
+    peer.reply("hive.policy.denied");
+    await first.catch(() => undefined);
+    await sdk.close();
+  }
+});
+
+
+test("Ask ID reservation retires after cancellation and successful collection", async () => {
+  const peer = new Runtime(); const sdk = client(peer);
+  const controller = new AbortController();
+  let sent!: () => void;
+  const published = new Promise<void>(resolve => { sent = resolve; });
+  peer.script = async () => { sent(); };
+  const first = sdk.ask("cancel", { requestId: "reused", timeoutMs: 2000, signal: controller.signal });
+  try {
+    await published; controller.abort();
+    await assert.rejects(first, { name: "AbortError" });
+    peer.script = async p => { p.reply("speak", "next"); };
+    for (let index = 0; index < 2; index++) assert.equal((await sdk.ask("next", { requestId: "reused" })).text, "next");
+  } finally { controller.abort(); await first.catch(() => undefined); await sdk.close(); }
+});

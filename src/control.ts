@@ -709,11 +709,12 @@ export class ThalovantControlPlane {
   }
 
   /**
-   * Merge runtime configuration into a runtime group.
+   * Replace a runtime group's configuration.
    *
-   * The API merges `config` into the stored configuration rather than replacing
-   * it, and marks the group pending so the runtime operator reconciles the
-   * change. `personas` is replaced only when provided.
+   * Read the complete config and preserve required fields before calling. The
+   * API replaces it (apart from its protected control section) and provides no
+   * revision/conditional-write token, so callers must serialize updates.
+   * `personas` is replaced only when provided.
    *
    * Requires a paid plan and a token with the `hubs:write` scope.
    */
@@ -1204,7 +1205,10 @@ function detailString(value: unknown): string | undefined {
     return undefined;
   }
   if (isRecord(value)) {
-    return detailString(value.msg ?? value.message ?? value.detail);
+    for (const candidate of [value.msg, value.message, value.detail]) {
+      const nested = detailString(candidate);
+      if (nested) return nested;
+    }
   }
   return undefined;
 }

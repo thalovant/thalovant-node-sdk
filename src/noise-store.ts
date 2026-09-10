@@ -17,6 +17,7 @@ import {
   randomBytes,
   readNoiseState,
   writeNoiseState,
+  withNoiseStateLock,
 } from "./platform/node.js";
 
 export { NOISE_KEY_FILENAME, NOISE_PINS_FILENAME, NOISE_PSK_FILENAME, noiseStateDir };
@@ -26,13 +27,14 @@ const KEY_LENGTH = 32;
 /**
  * Serializes the read-modify-write of the pin file, so two connections pinning
  * different hubs at once cannot lose one another's entry. This is the
- * in-process half; the atomic rename in `writeNoiseState` covers a second
- * process racing the same file.
+ * in-process half; the platform transaction lock covers Node processes sharing
+ * a directory. Atomic rename alone does not prevent lost read/modify/writes.
  */
 let pinChain: Promise<unknown> = Promise.resolve();
 
-function withPinLock<T>(work: () => Promise<T>): Promise<T> {
-  const result = pinChain.then(work, work);
+function withPinLock<T>(directory: string | undefined, work: () => Promise<T>): Promise<T> {
+  const locked = () => withNoiseStateLock(directory ?? noiseStateDir(), work);
+  const result = pinChain.then(locked, locked);
   pinChain = result.catch(() => undefined);
   return result;
 }
@@ -45,17 +47,17 @@ function withPinLock<T>(work: () => Promise<T>): Promise<T> {
  * regenerates it looks like a different peer and is refused.
  */
 export async function loadOrCreateNoiseKey(directory?: string): Promise<Uint8Array> {
-  return withPinLock(async () => loadOrCreateNoiseKeyLocked(directory));
+  return withPinLock(directory, async () => loadOrCreateNoiseKeyLocked(directory));
 }
 
 async function loadOrCreateNoiseKeyLocked(directory?: string): Promise<Uint8Array> {
   const dir = directory ?? noiseStateDir();
   const stored = await readNoiseState(dir, NOISE_KEY_FILENAME);
-  if (stored) {
+  if (stored !== undefined) {
     const trimmed = stored.trim();
-    if (trimmed.length !== KEY_LENGTH * 2) {
+    if (!/^[0-9a-fA-F]{64}$/.test(trimmed)) {
       throw new ThalovantIdentityError(
-        `The stored Noise key is not a ${KEY_LENGTH}-byte hex key. Remove ${NOISE_KEY_FILENAME} to generate a new one; a hub that pinned the old key will need \`hivemind-core reset-noise-pin\`.`,
+        `The stored Noise key is not a ${KEY_LENGTH}-byte hex key. Restore a verified copy of ${NOISE_KEY_FILENAME}, or verify an intentional identity replacement before explicit recovery.`,
       );
     }
     return hexToBytes(trimmed);
@@ -67,14 +69,17 @@ async function loadOrCreateNoiseKeyLocked(directory?: string): Promise<Uint8Arra
 
 async function readPins(directory: string): Promise<Record<string, string>> {
   const raw = await readNoiseState(directory, NOISE_PINS_FILENAME);
-  if (!raw) return {};
+  if (raw === undefined) return Object.create(null) as Record<string, string>;
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as Record<string, string>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid pin map");
+    if (Object.values(parsed).some(pin => typeof pin !== "string" || !/^[0-9a-fA-F]{64}$/.test(pin))) {
+      throw new Error("Invalid pin value");
+    }
+    return Object.assign(Object.create(null) as Record<string, string>, parsed);
   } catch {
     throw new ThalovantIdentityError(
-      `The stored Noise pins are not a JSON object of node id to key. Remove ${NOISE_PINS_FILENAME} to start over.`,
+      `The stored Noise pins are not a JSON object of node id to key. Restore a verified copy of ${NOISE_PINS_FILENAME}, or verify the expected hub keys before explicit recovery.`,
     );
   }
 }
@@ -92,7 +97,8 @@ export async function loadNoisePin(directory: string | undefined, nodeId: string
 /** Record the hub static key for a node id on first contact. */
 export async function saveNoisePin(directory: string | undefined, nodeId: string, publicKey: string): Promise<void> {
   if (!nodeId.trim() || !publicKey.trim()) return;
-  await withPinLock(() => saveNoisePinLocked(directory, nodeId, publicKey));
+  validateNoisePin(publicKey);
+  await withPinLock(directory, () => saveNoisePinLocked(directory, nodeId, publicKey));
 }
 
 async function saveNoisePinLocked(
@@ -114,7 +120,7 @@ async function saveNoisePinLocked(
  * matching on its own is a failure to investigate, not one to clear.
  */
 export async function forgetNoisePin(directory: string | undefined, nodeId: string): Promise<void> {
-  await withPinLock(async () => {
+  await withPinLock(directory, async () => {
     const dir = directory ?? noiseStateDir();
     const pins = await readPins(dir);
     if (!(nodeId in pins)) return;
@@ -137,10 +143,11 @@ export async function pinHubKey(
   remoteStaticKey: string,
 ): Promise<void> {
   if (!remoteStaticKey) return;
+  validateNoisePin(remoteStaticKey);
   // Read and write inside one critical section. Checking for a pin and then
   // writing it as separate steps is the race itself: two connections could
   // both see no pin and the later one would overwrite the earlier decision.
-  await withPinLock(async () => {
+  await withPinLock(directory, async () => {
     const pins = await readPins(directory ?? noiseStateDir());
     const pinned = pins[nodeId];
     if (!pinned) {
@@ -153,6 +160,12 @@ export async function pinHubKey(
       );
     }
   });
+}
+
+function validateNoisePin(publicKey: string): void {
+  if (!/^[0-9a-fA-F]{64}$/.test(publicKey)) {
+    throw new ThalovantIdentityError("A Noise pin must be a 32-byte hexadecimal public key.");
+  }
 }
 
 /**
@@ -205,7 +218,7 @@ export async function saveCachedPsk(
   psk: Uint8Array,
 ): Promise<void> {
   if (!nodeId.trim() || psk.length !== KEY_LENGTH) return;
-  await withPinLock(async () => {
+  await withPinLock(directory, async () => {
     const dir = directory ?? noiseStateDir();
     const cache = await readPskCache(dir);
     const encoded = bytesToHex(psk);
@@ -225,7 +238,7 @@ export async function forgetCachedPsk(
   directory: string | undefined,
   nodeId: string,
 ): Promise<void> {
-  await withPinLock(async () => {
+  await withPinLock(directory, async () => {
     const dir = directory ?? noiseStateDir();
     const cache = await readPskCache(dir);
     if (!(nodeId in cache)) return;

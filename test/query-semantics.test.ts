@@ -187,3 +187,42 @@ test("query completion returns immediately instead of sleeping through an unused
     for (const channel of ["query", "cascade"]) assert.equal(getEventListeners(peer, channel).length, 0);
   } finally { clearTimeout(timer); await sdk.close(); }
 });
+
+
+test("overlapping Query collectors reject the same query ID even with different request IDs", async () => {
+  const transport = new QueryTransport();
+  const sdk = client(transport);
+  let sent!: () => void;
+  const published = new Promise<void>(resolve => { sent = resolve; });
+  transport.script = async () => { sent(); };
+  const first = sdk.query("first", { queryId: "fixture", requestId: "first-request", timeoutMs: 2000 });
+  try {
+    await published;
+    await assert.rejects(sdk.query("cancelled duplicate", { queryId: "fixture", signal: AbortSignal.abort() }), { name: "AbortError" });
+    await assert.rejects(sdk.query("second", { queryId: "fixture", requestId: "second-request", timeoutMs: 50 }), /already active/);
+    assert.equal(transport.sent, 1);
+    transport.reply("speak", "first-only");
+    transport.reply("hive.query.complete");
+    assert.equal((await first).text, "first-only");
+  } finally {
+    transport.reply("hive.policy.denied");
+    await first.catch(() => undefined);
+    await sdk.close();
+  }
+});
+
+
+test("Query ID reservation retires after cancellation and successful collection", async () => {
+  const transport = new QueryTransport(); const sdk = client(transport);
+  const controller = new AbortController();
+  let sent!: () => void;
+  const published = new Promise<void>(resolve => { sent = resolve; });
+  transport.script = async () => { sent(); };
+  const first = sdk.query("cancel", { queryId: "fixture", timeoutMs: 2000, signal: controller.signal });
+  try {
+    await published; controller.abort();
+    await assert.rejects(first, { name: "AbortError" });
+    transport.script = async p => { p.reply("speak", "next"); p.reply("hive.query.complete"); };
+    for (let index = 0; index < 2; index++) assert.equal((await sdk.query("next", { queryId: "fixture" })).text, "next");
+  } finally { controller.abort(); await first.catch(() => undefined); await sdk.close(); }
+});

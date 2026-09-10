@@ -35,6 +35,9 @@ const SECRET_KEY_NAMES = new Set([
   "accesstoken",
   "refreshtoken",
   "authorization",
+  "apisecret",
+  "secretkey",
+  "credentials",
 ]);
 
 export function isSecretKey(key: string): boolean {

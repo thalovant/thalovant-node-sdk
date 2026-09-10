@@ -55,6 +55,7 @@ export class ThalovantClient {
   private readonly transport: HiveMindRuntimeTransport;
   private readonly replySettleMs: number;
   private readonly emptyReplyWaitMs: number;
+  private readonly activeReplyIds = new Set<string>();
   private connected = false;
   // Retain timed-out work until both its connect and cleanup settle. A later
   // call may time out waiting here, but may never race an abandoned session.
@@ -376,6 +377,12 @@ export class ThalovantClient {
       signal?: AbortSignal;
     } = {},
   ): Promise<ThalovantReply> {
+    if (options.signal?.aborted) throw operationAbortedError();
+    const requestId = options.requestId ?? newRequestId();
+    return this.withReplyReservation("ask", requestId, () => this.askReserved(text, { ...options, requestId }));
+  }
+
+  private async askReserved(text: string, options: NonNullable<Parameters<ThalovantClient["ask"]>[1]>): Promise<ThalovantReply> {
     const prompt = text.trim();
     if (!prompt) throw new Error("ask() requires a non-empty text prompt.");
     const timeoutMs = requestTimeout(options.timeoutMs);
@@ -514,6 +521,13 @@ export class ThalovantClient {
       signal?: AbortSignal;
     } = {},
   ): Promise<ThalovantReply> {
+    if (options.signal?.aborted) throw operationAbortedError();
+    const requestId = options.requestId ?? newRequestId();
+    const queryId = options.queryId ?? requestId;
+    return this.withReplyReservation("query", queryId, () => this.queryReserved(text, { ...options, requestId, queryId }));
+  }
+
+  private async queryReserved(text: string, options: NonNullable<Parameters<ThalovantClient["query"]>[1]>): Promise<ThalovantReply> {
     const prompt = text.trim();
     if (!prompt) throw new Error("query() requires a non-empty text prompt.");
     const timeoutMs = requestTimeout(options.timeoutMs);
@@ -661,6 +675,18 @@ export class ThalovantClient {
       options.signal?.removeEventListener("abort", onAbort);
       this.transport.removeEventListener("query", listener);
       this.transport.removeEventListener("cascade", listener);
+    }
+  }
+
+  /** Reserve only the collector's wire namespace; release after listener retirement. */
+  private async withReplyReservation<T>(namespace: "ask" | "query", identifier: string, work: () => Promise<T>): Promise<T> {
+    const key = JSON.stringify([namespace, identifier]);
+    if (this.activeReplyIds.has(key)) throw new ThalovantRuntimeError("A reply collector with this correlation ID is already active.");
+    this.activeReplyIds.add(key);
+    try {
+      return await work();
+    } finally {
+      this.activeReplyIds.delete(key);
     }
   }
 

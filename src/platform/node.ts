@@ -12,7 +12,7 @@ import {
   randomBytes as nodeRandomBytes,
   randomUUID as nodeRandomUUID,
 } from "node:crypto";
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -218,21 +218,49 @@ export async function readNoiseState(directory: string, filename: string): Promi
   const path = join(directory, filename);
   try {
     await stat(path);
-  } catch {
-    return undefined;
+    if (filename === NOISE_KEY_FILENAME || filename === NOISE_PSK_FILENAME) {
+      return await readSecretFile(path, filename === NOISE_KEY_FILENAME ? "Noise key file" : "Noise PSK cache");
+    }
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if (error instanceof ThalovantIdentityError) throw error;
+    throw new ThalovantIdentityError(`Could not read ${filename}; existing Noise state was not reset.`);
   }
-  if (filename === NOISE_KEY_FILENAME) {
-    return readSecretFile(path, "Noise key file");
-  }
-  if (filename === NOISE_PSK_FILENAME) {
-    // Derived pre-shared keys are key material too, so they get the same
-    // owner-only enforcement rather than the permissive pins path.
-    return readSecretFile(path, "Noise PSK cache");
+}
+
+/** Serialize a complete state transaction across Node processes; never steal a lock. */
+export async function withNoiseStateLock<T>(directory: string, work: () => Promise<T>, timeoutMs = 5_000): Promise<T> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, ".noise-state.lock");
+  const owner = `${process.pid}:${randomUUID()}`;
+  const deadline = performance.now() + timeoutMs;
+  let handle;
+  for (;;) {
+    try {
+      handle = await open(path, "wx", 0o600);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw new ThalovantIdentityError("Could not acquire the Noise state lock.");
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) {
+        throw new ThalovantIdentityError("Noise state is locked by another writer. If a writer crashed, confirm it has stopped before removing .noise-state.lock.");
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, Math.min(25, remaining)));
+    }
   }
   try {
-    return await readFile(path, "utf8");
-  } catch {
-    return undefined;
+    await handle.writeFile(owner, "utf8");
+    return await work();
+  } finally {
+    await handle.close();
+    // Recovery is supported only after this writer has stopped. The marker
+    // detects an obvious replacement; it does not make live external removal safe.
+    if (await readFile(path, "utf8").catch(() => undefined) === owner) {
+      await rm(path);
+    }
   }
 }
 
@@ -242,9 +270,8 @@ export async function writeNoiseState(directory: string, filename: string, conte
 
   // Write to a unique temporary file in the same directory and rename it into
   // place. Truncating the real file first would leave it empty or half-written
-  // if the write failed, and readNoiseState maps empty pins to {} -- which
-  // would make the next connection look like first contact and re-pin whatever
-  // key it was offered.
+  // if the write failed. The caller's transaction lock also prevents separate
+  // processes from publishing competing read/modify/write results.
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, contents, { mode: 0o600 });

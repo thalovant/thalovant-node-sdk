@@ -238,3 +238,8 @@ export async function writeNoiseState(directory: string, filename: string, conte
     // Quota or a private window; the in-memory copy above still serves this page.
   }
 }
+
+/** Browser transactions use noise-store's in-page queue; namespaces must not be shared across tabs. */
+export async function withNoiseStateLock<T>(_directory: string, work: () => Promise<T>): Promise<T> {
+  return work();
+}
