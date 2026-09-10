@@ -379,7 +379,8 @@ test("wait rejects with the operation error message on failure", async () => {
   try {
     await assert.rejects(api().installHubSkill("hub-1", "skill-weather", { wait: true, ...clock }), (error: unknown) => {
       assert.ok(error instanceof ThalovantApiError);
-      assert.match(error.message, /skill-weather failed: pip install failed/);
+      assert.match(error.message, /skill-weather.*failed: pip install failed/);
+      assert.match(error.message, /operation op-1/);
       return true;
     });
   } finally {
@@ -394,7 +395,7 @@ test("wait falls back to the error code and then the status", async () => {
     operations: [operation("timed_out", { error_code: "runtime_timeout" })],
   });
   try {
-    await assert.rejects(api().installHubSkill("hub-1", "skill-weather", { wait: true, ...clock }), /failed: runtime_timeout/);
+    await assert.rejects(api().installHubSkill("hub-1", "skill-weather", { wait: true, ...clock }), /operation op-1.*failed: runtime_timeout/);
   } finally {
     withCode.restore();
   }
@@ -427,10 +428,81 @@ test("wait times out with a typed error", async () => {
         return true;
       },
     );
-    // 0 s, 2 s, 4 s, then the 1 s remainder: four reads, never a fifth.
+    // Read at 0 s, 2 s and 4 s; the 1 s remainder exhausts the budget.
     const reads = fetchScript.requests.filter((request) => request.path === "/api/v1/operations/op-1");
-    assert.equal(reads.length, 4);
+    assert.equal(reads.length, 3);
     assert.equal(clock.elapsed(), 5_000);
+  } finally {
+    fetchScript.restore();
+  }
+});
+
+test("an expired hub skill wait budget does not start an operation read", async () => {
+  const clock = fakeClock();
+  const fetchScript = scriptFetch({
+    routes: { "POST /api/v1/hubs/hub-1/skills": [202, ACCEPTED_INSTALL] },
+    operations: [operation("ready")],
+  });
+  try {
+    await assert.rejects(
+      api().installHubSkill("hub-1", "skill-weather", { wait: true, timeoutMs: 0, ...clock }),
+      ThalovantTimeoutError,
+    );
+    assert.deepEqual(fetchScript.requests.map(request => request.method), ["POST"]);
+  } finally {
+    fetchScript.restore();
+  }
+});
+
+for (const failure of ["HTTP", "network"] as const) {
+  test(`hub skill ${failure} poll failure retains the accepted operation and safe cause without retry`, async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: string[] = [];
+    const clock = fakeClock();
+    const sentinel = "NETWORK-CREDENTIAL-FIXTURE";
+    globalThis.fetch = async (url, init) => {
+      requests.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
+      if (init?.method === "POST") return jsonResponse(202, ACCEPTED_INSTALL);
+      if (failure === "network") throw new Error(`https://api.invalid/?authorization=${sentinel}`);
+      return jsonResponse(503, { detail: "Temporarily unavailable" });
+    };
+    const sdk = api();
+    const getOperation = sdk.getOperation.bind(sdk);
+    let originalError: unknown;
+    sdk.getOperation = async id => {
+      try { return await getOperation(id); }
+      catch (error) { originalError = error; throw error; }
+    };
+    try {
+      await assert.rejects(sdk.installHubSkill("hub-1", "skill-weather", { wait: true, ...clock }), (error: unknown) => {
+        assert.ok(error instanceof ThalovantApiError);
+        assert.match(error.message, /operation op-1/);
+        assert.equal(error.cause, originalError);
+        assert.ok(error.cause instanceof ThalovantApiError);
+        if (failure === "HTTP") assert.match(error.cause.message, /HTTP 503: Temporarily unavailable/);
+        assert.doesNotMatch(String(error) + String(error.cause), new RegExp(sentinel));
+        return true;
+      });
+      assert.deepEqual(requests, ["POST /api/v1/hubs/hub-1/skills", "GET /api/v1/operations/op-1"]);
+      assert.equal(clock.elapsed(), 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+}
+
+test("an unexpected hub skill poll exception is not exposed as a credential-bearing cause", async () => {
+  const fetchScript = scriptFetch({ routes: { "POST /api/v1/hubs/hub-1/skills": [202, ACCEPTED_INSTALL] } });
+  const sdk = api();
+  sdk.getOperation = async () => { throw new Error("UNTRUSTED-RESPONSE-FIXTURE"); };
+  try {
+    await assert.rejects(sdk.installHubSkill("hub-1", "skill-weather", { wait: true }), (error: unknown) => {
+      assert.ok(error instanceof ThalovantApiError);
+      assert.match(error.message, /operation op-1/);
+      assert.equal(error.cause, undefined);
+      assert.doesNotMatch(String(error), /UNTRUSTED-RESPONSE-FIXTURE/);
+      return true;
+    });
   } finally {
     fetchScript.restore();
   }

@@ -356,7 +356,7 @@ export interface HubSkillOperation {
 export interface HubSkillWaitOptions {
   /** Poll the accepted operation until it converges. Default `false`. */
   wait?: boolean;
-  /** Overall deadline for `wait`, in milliseconds. Default 120000. */
+  /** Polling budget in milliseconds; no new read starts after expiry. Default 120000. */
   timeoutMs?: number;
   /** Poll interval in milliseconds. Default 2000. Intended for tests. */
   pollIntervalMs?: number;
@@ -1167,8 +1167,22 @@ export class ThalovantControlPlane {
     const sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
     const now = options.now ?? (() => Date.now());
     const deadline = now() + timeoutMs;
+    const timeoutError = () => new ThalovantTimeoutError(
+      `Timed out after ${timeoutMs}ms waiting for the hub skill change (${accepted.skill}, operation ${accepted.operation_id}) to converge.`,
+    );
     while (true) {
-      const operation = await this.getOperation(accepted.operation_id);
+      if (now() >= deadline) throw timeoutError();
+      let operation: OperationResource;
+      try {
+        operation = await this.getOperation(accepted.operation_id);
+      } catch (error) {
+        // The request layer sanitizes API errors. Native fetch/parse errors can
+        // contain response previews or credential URLs and must not become causes.
+        throw new ThalovantApiError(
+          `Hub skill change was accepted as operation ${accepted.operation_id}, but reading its status failed.`,
+          error instanceof ThalovantApiError ? { cause: error } : undefined,
+        );
+      }
       if (operation.status === "ready") {
         return { ...accepted, state: converged, operation };
       }
@@ -1177,14 +1191,10 @@ export class ThalovantControlPlane {
           operation.error_message ||
           operation.error_code ||
           `operation ${operation.id} ended with status ${operation.status}`;
-        throw new ThalovantApiError(`Hub skill change for ${accepted.skill} failed: ${detail}`);
+        throw new ThalovantApiError(`Hub skill change for ${accepted.skill} (operation ${accepted.operation_id}) failed: ${detail}`);
       }
       const remaining = deadline - now();
-      if (remaining <= 0) {
-        throw new ThalovantTimeoutError(
-          `Timed out after ${timeoutMs}ms waiting for the hub skill change (${accepted.skill}, operation ${accepted.operation_id}) to converge.`,
-        );
-      }
+      if (remaining <= 0) throw timeoutError();
       await sleep(Math.min(intervalMs, remaining));
     }
   }

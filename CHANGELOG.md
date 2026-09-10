@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.16
+
+- Stop hub-skill operation polling before starting a read at or after the wait deadline, including an already-expired budget.
+- Keep the accepted operation ID in poll-read and terminal-operation errors so callers can resume tracking the change. Preserve the sanitized API error as the cause of a failed read, without retrying the mutation or failed read or exposing unknown native error contents.
+
 ## 0.3.15
 
 - Add hub-scoped skill management on the control plane: `listHubSkills`, `installHubSkill`, `updateHubSkill`, and `removeHubSkill` address one hub by id over `GET`/`POST /v1/hubs/{hub_id}/skills` and `PATCH`/`DELETE /v1/hubs/{hub_id}/skills/{skill}`. Listing resolves with a typed `HubSkillList` envelope (`hub_id`, `runtime_group_id`, `observed_at`, `source`, runtime phase and message, `data` rows with the requested, installed, observed, and latest versions, `update_available`, `active`, and a `state` of `pending`, `installed`, `failed`, `removing`, `drifted`, `quarantined`, or `unmanaged`). The writes resolve with a typed `HubSkillOperation` from the API's HTTP 202 (`operation_id`, `hub_id`, `runtime_group_id`, `skill`, `version`, `previous_version`, `state`); installing at another version performs an update. `wait: true` polls the operation every two seconds until it converges (`installed` or `removed`), rejects with `ThalovantApiError` carrying the operation's error when it fails, and with `ThalovantTimeoutError` after `timeoutMs` (default 120000). Listing needs `hubs:inspect`; the writes need `hubs:write` and a paid plan.

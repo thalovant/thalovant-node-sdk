@@ -341,8 +341,12 @@ The writes resolve with a typed `HubSkillOperation` (`operation_id`,
 `hub_id`, `runtime_group_id`, `skill`, `version`, `previous_version`,
 `state`). Installing a skill the hub already carries at another version
 performs an update. With `wait: true` a `failed` or `timed_out` operation
-rejects with `ThalovantApiError` carrying the operation's error message, and
-running past `timeoutMs` rejects with `ThalovantTimeoutError`. The API
+rejects with `ThalovantApiError` carrying the accepted operation ID and error message, and
+running past the polling budget `timeoutMs` rejects with `ThalovantTimeoutError`;
+no new status read starts once that budget expires. A failed status read is not
+retried: the error message retains the accepted operation ID so you can resume
+with `getOperation`, and its `cause` retains the original sanitized API error.
+The polling deadline does not cancel an HTTP request already in flight. The API
 answers HTTP 409 `skill_version_already_installed` for the same version,
 HTTP 404 `hub_without_runtime_group` when the hub has no runtime group yet
 (a plain 404 for an unknown hub or a skill that is not installed), and HTTP
