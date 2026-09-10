@@ -590,6 +590,10 @@ This guard does not make an ID safe to reuse: after a timeout or cancellation,
 a late reply can still arrive. Use a new ID for every later logical operation;
 correlation IDs are not idempotency tokens.
 
+Intent descriptions may return a partial result after a timeout only when at
+least one actual definition was received. Empty or unknown-intent replies alone
+do not hide missing responses; a fully answered set of empty replies succeeds.
+
 ## Conversations
 
 Use a conversation when related turns should share one session.

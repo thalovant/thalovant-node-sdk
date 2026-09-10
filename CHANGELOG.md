@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.14
+
+- Require an actual usable definition before suppressing a describe timeout within or across batches. Empty or unknown-intent replies followed by silence now report the timeout; fully answered empty responses remain successful. Correlation and partial recovery with actual definitions are unchanged.
+
 ## 0.3.13
 
 - Compare validated Noise pins by case-insensitive hexadecimal value without rewriting established bytes, strip normalized legacy crypto-key fields before bootstrap requests, and verify a clean public npm import in the publish workflow.

@@ -850,3 +850,31 @@ test("optional probe deadline includes a held send and removes its listeners", a
     await sdk.close();
   }
 });
+
+for (const firstReply of [{ ok: false, error: "unknown intent" }, { ok: true, definitions: [] }]) {
+  for (const batch of [0, 1]) {
+    for (const silentSecond of [true, false]) {
+      test(`describe empty/error replies ${silentSecond ? "cannot hide silence" : "remain valid when fully answered"}, batch=${batch}, ok=${firstReply.ok}`, async () => {
+        class EmptyReplies extends FakeHubTransport {
+          override async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+            this.emitted.push({ eventType, data: { ...data }, context: { ...context } });
+            if (!silentSecond || data.intent_name === "first") this.deliver("ovos.intent.describe.response", firstReply, context);
+          }
+        }
+        const hub = new EmptyReplies({ sync: true });
+        const sdk = client(hub);
+        const wanted = ["first", "second"].map(intentName => ({ skillId: WEATHER, intentName, lang: "en-us" }));
+        try {
+          const result = describeMany(sdk, wanted, { timeoutMs: 30, batch });
+          if (silentSecond) await assert.rejects(result, ThalovantTimeoutError);
+          else {
+            const found = await result;
+            assert.equal(found.size, 2);
+            assert.ok([...found.values()].every(definitions => definitions.length === 0));
+          }
+          assert.equal(hub.emitted.length, 2);
+        } finally { await sdk.close(); }
+      });
+    }
+  }
+}
