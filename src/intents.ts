@@ -502,7 +502,7 @@ export async function describeMany(
         // into a timeout while the same skill with fewer intents only loses
         // its sentences. A hub silent from the start still fails at the first
         // window, since nothing is found.
-        if (!(error instanceof ThalovantTimeoutError) || found.size === 0) throw error;
+        if (!(error instanceof ThalovantTimeoutError) || ![...found.values()].some(definitions => definitions.length > 0)) throw error;
       }
     }
     return found;
@@ -562,7 +562,7 @@ export async function describeMany(
     } catch (error) {
       // A partial answer is still an answer: the intents the hub did not
       // describe in time simply carry no sentences.
-      if (!(error instanceof ThalovantTimeoutError) || found.size === 0) throw error;
+      if (!(error instanceof ThalovantTimeoutError) || ![...found.values()].some(definitions => definitions.length > 0)) throw error;
     }
   } finally {
     clearTimeout(timer);
