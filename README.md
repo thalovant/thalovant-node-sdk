@@ -200,10 +200,10 @@ await api.releaseRuntimeGroup(group.id as string, { channel: "stable" });
 await api.releaseHub(hub.id as string, { channel: "stable" });
 ```
 
-Creating a hub is idempotent. `createHub` sends a generated `Idempotency-Key`
-header, so a retried call after a timeout returns the hub that was already
-created instead of making a second one. Pass your own `idempotencyKey` to
-control the key.
+`createHub` sends an `Idempotency-Key` header. To safely retry after a timeout
+or uncertain outcome, retain an explicit `idempotencyKey` before the first call
+and reuse it with the same payload. When you omit the option, each call generates
+a fresh key, so a later retry can create a second hub.
 
 Updating and deleting a hub use optimistic locking. Pass the `etag` from the
 hub resource you read; the SDK sends it as `If-Match`, and the API rejects a
