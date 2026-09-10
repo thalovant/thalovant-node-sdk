@@ -896,9 +896,11 @@ export class ThalovantControlPlane {
     const password = newSecret();
     // options.spec is caller-supplied and spread wholesale, so a legacy
     // cryptoKey in it would be sent to /v1/clients and could come back inside
-    // a validation error. v3 issues no crypto key, so drop both spellings
-    // rather than carry a secret the platform no longer has a use for.
-    const { cryptoKey: _cryptoKey, crypto_key: _cryptoKeySnake, ...callerSpec } = options.spec ?? {};
+    // a validation error. v3 issues no crypto key, so drop normalized legacy
+    // spellings while preserving reference fields and unrelated metadata.
+    const callerSpec = Object.fromEntries(Object.entries(options.spec ?? {}).filter(
+      ([key]) => key.toLowerCase().replace(/[_-]/g, "") !== "cryptokey",
+    ));
     const spec: JsonRecord = {
       ...callerSpec,
       version: String(options.spec?.version ?? "1"),

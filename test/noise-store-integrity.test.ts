@@ -159,3 +159,17 @@ test("prototype-shaped node IDs are ordinary own pin entries", async () => {
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("equivalent hexadecimal key casing preserves verified pin bytes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "thalovant-pin-case-"));
+  try {
+    for (const [stored, incoming] of [["AB", "ab"], ["ab", "AB"]]) {
+      await saveNoisePin(directory, "hub", stored.repeat(32));
+      const before = await readFile(join(directory, NOISE_PINS_FILENAME), "utf8");
+      await pinHubKey(directory, "hub", incoming.repeat(32));
+      assert.equal(await readFile(join(directory, NOISE_PINS_FILENAME), "utf8"), before);
+      assert.equal(await loadNoisePin(directory, "hub"), stored.repeat(32));
+      await assert.rejects(pinHubKey(directory, "hub", "cd".repeat(32)), /static key changed/);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

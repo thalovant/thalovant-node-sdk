@@ -585,8 +585,10 @@ Browser caveats:
 Use a fresh request ID for each logical Ask and a fresh query ID for each
 logical Query. One client rejects overlapping collectors with the same ID
 before dispatch. Ask request IDs and scoped Query IDs are separate namespaces.
-Cancellation or completion releases the reservation after listeners retire;
-use new IDs for later logical operations to exclude late replies.
+Cancellation or completion releases the reservation after listeners retire.
+This guard does not make an ID safe to reuse: after a timeout or cancellation,
+a late reply can still arrive. Use a new ID for every later logical operation;
+correlation IDs are not idempotency tokens.
 
 ## Conversations
 

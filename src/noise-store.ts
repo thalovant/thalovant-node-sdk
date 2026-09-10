@@ -94,7 +94,7 @@ export async function loadNoisePin(directory: string | undefined, nodeId: string
   return pins[nodeId];
 }
 
-/** Record the hub static key for a node id on first contact. */
+/** Explicitly record or replace a hub pin; pinHubKey enforces first-contact trust. */
 export async function saveNoisePin(directory: string | undefined, nodeId: string, publicKey: string): Promise<void> {
   if (!nodeId.trim() || !publicKey.trim()) return;
   validateNoisePin(publicKey);
@@ -154,7 +154,7 @@ export async function pinHubKey(
       await saveNoisePinLocked(directory, nodeId, remoteStaticKey);
       return;
     }
-    if (pinned !== remoteStaticKey) {
+    if (pinned.toLowerCase() !== remoteStaticKey.toLowerCase()) {
       throw new ThalovantConnectionError(
         "The hub's Noise static key changed. If the hub was not reinstalled or replaced, another machine may be answering at this address. If it was, drop the stale pin with forgetNoisePin and reconnect to trust the new key.",
       );

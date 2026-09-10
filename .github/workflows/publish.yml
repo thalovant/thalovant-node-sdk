@@ -148,6 +148,21 @@ jobs:
           echo "@thalovant/sdk $PACKAGE_VERSION was not visible on npm after waiting."
           exit 1
 
+      - name: Smoke-test the public npm package
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sdk_consumer="$(mktemp -d)"
+          trap 'rm -rf "$sdk_consumer"' EXIT
+          touch "$sdk_consumer/user.npmrc" "$sdk_consumer/global.npmrc"
+          env -u NODE_AUTH_TOKEN -u NPM_TOKEN -u NPM_AUTH_TOKEN \
+            NPM_CONFIG_USERCONFIG="$sdk_consumer/user.npmrc" \
+            NPM_CONFIG_GLOBALCONFIG="$sdk_consumer/global.npmrc" \
+            npm install --prefix "$sdk_consumer" --ignore-scripts --no-package-lock \
+              --registry=https://registry.npmjs.org/ "@thalovant/sdk@$PACKAGE_VERSION"
+          cd "$sdk_consumer"
+          node --input-type=module -e 'const sdk = await import("@thalovant/sdk"); if (typeof sdk.ThalovantClient !== "function") throw new Error("ThalovantClient export is missing")'
+
       - name: Attach package and SBOM to the GitHub release
         if: env.RELEASE_TAG != ''
         env:

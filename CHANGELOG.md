@@ -2,6 +2,8 @@
 
 ## 0.3.13
 
+- Compare validated Noise pins by case-insensitive hexadecimal value without rewriting established bytes, strip normalized legacy crypto-key fields before bootstrap requests, and verify a clean public npm import in the publish workflow.
+
 - Fail closed on corrupt, empty, or unreadable Noise identity and pin state. Serialize Node state transactions across processes with a bounded lock wait, preserving existing trust after failures. Browser coordination remains scoped to one page.
 - Reject overlapping Ask request IDs and Query query IDs on one client before dispatch, without disturbing the active collector. Different wire namespaces remain independent.
 - Retain usable nested API error details and redact additional normalized secret-bearing metadata keys from display output. Explicit persistence remains unchanged.
