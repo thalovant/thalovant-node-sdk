@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.13
+
+- Compare validated Noise pins by case-insensitive hexadecimal value without rewriting established bytes, strip normalized legacy crypto-key fields before bootstrap requests, and verify a clean public npm import in the publish workflow.
+
+- Fail closed on corrupt, empty, or unreadable Noise identity and pin state. Serialize Node state transactions across processes with a bounded lock wait, preserving existing trust after failures. Browser coordination remains scoped to one page.
+- Reject overlapping Ask request IDs and Query query IDs on one client before dispatch, without disturbing the active collector. Different wire namespaces remain independent.
+- Retain usable nested API error details and redact additional normalized secret-bearing metadata keys from display output. Explicit persistence remains unchanged.
+- Correct removed crypto-helper documentation, runtime-config replacement guidance, boolean query-option release notes, and the Node patch floor required by npm trusted publishing.
+
 ## 0.3.12
 
 - Reject HTTP disconnect acknowledgments that also report `ok: false` or combine a known no-session error with extra fields. Keep admission ownership and replica affinity until cleanup is confirmed.
@@ -164,10 +173,10 @@ Security hardening release. No new endpoints or features.
 - Add the hub provisioning surface, which was read-only until now: `createHub(payload, options)`, `updateHub(hubId, payload, { etag })`, `deleteHub(hubId, { etag })`, `releaseHub(hubId, options)`, `setHubRating(hubId, rating)`, `clearHubRating(hubId)`, and `getHubRuntimeCapabilities(hubId)`.
 - Add the runtime group and skill surface: `listRuntimeGroups`, `getRuntimeGroup`, `createRuntimeGroup`, `updateRuntimeGroup`, `getRuntimeGroupConfig`, `updateRuntimeGroupConfig`, `releaseRuntimeGroup`, `deleteRuntimeGroup`, `installRuntimeGroupSkill`, and `uninstallRuntimeGroupSkill`.
 - Add skill discovery, so callers can find what is installable instead of having to know a skill id: `listMarketplaceSkills(options)` reads the catalog, `listRuntimeGroupMarketplace(runtimeGroupId, options)` resolves that catalog against one group (desired state, observed state, and the plan's `installable`/`purchase_required` verdict), and `listRuntimeGroupInventory(runtimeGroupId, options)` reports only what the group is observed running.
-- `PATCH` and `DELETE /v1/hubs/{id}` enforce optimistic locking, so `updateHub` and `deleteHub` take a **required** `etag` option and send it as `If-Match`; a stale *or missing* value is HTTP 412 and changes nothing. The runtime group routes read no `If-Match`. `createHub` sends an `Idempotency-Key` header, generated unless you pass `idempotencyKey`, so a retried create cannot make a second hub.
+- `PATCH` and `DELETE /v1/hubs/{id}` enforce optimistic locking, so `updateHub` and `deleteHub` take a **required** `etag` option and send it as `If-Match`; a stale *or missing* value is HTTP 412 and changes nothing. The runtime group routes read no `If-Match`. `createHub` sends an `Idempotency-Key` header, generated unless you pass `idempotencyKey`. To safely retry after an uncertain outcome, retain an explicit key before the first call and reuse that key with the same payload; a later call without it generates a fresh key and can create another hub.
 - Plan and scope gates surface as the usual `ThalovantApiError`: the provisioning writes need a paid plan and `hubs:write` (HTTP 402 on the free plan, HTTP 403 without the scope), the ratings need `hubs:write` with no plan gate, and the three discovery reads are **not** paid-gated at all (`hubs:read` for the catalog, `hubs:inspect` for the two group reads) so a free-plan token can browse before upgrading.
 - Unlike `getHubRuntimeCapabilities`, neither group read answers HTTP 409 when nothing is reporting; they return an empty `data` list with the provenance in `source`.
-- New exported types: `HubPayload`, `HubWriteOptions`, `RuntimeGroupPayload`, `ReleaseOptions`, `RuntimeGroupListOptions`, `RuntimeGroupConfigOptions`, `RuntimeGroupSkillInstallOptions`, `MarketplaceSkillListOptions`, `RuntimeGroupMarketplaceOptions`, and `RuntimeGroupInventoryOptions`. camelCase options and payload keys map to the API's snake_case bodies and query params, and falsy boolean options are omitted rather than sent as `false`. No existing signature changed and the browser bundle is unaffected.
+- New exported types: `HubPayload`, `HubWriteOptions`, `RuntimeGroupPayload`, `ReleaseOptions`, `RuntimeGroupListOptions`, `RuntimeGroupConfigOptions`, `RuntimeGroupSkillInstallOptions`, `MarketplaceSkillListOptions`, `RuntimeGroupMarketplaceOptions`, and `RuntimeGroupInventoryOptions`. camelCase options and payload keys map to the API's snake_case bodies and query params, and falsy boolean query options are omitted rather than sent as `false`; request bodies preserve explicit `active: false`. No existing signature changed and the browser bundle is unaffected.
 - Document the provisioning walkthrough (discover skills, create a runtime group, create a hub, install a skill, release) and the skill discovery reads in the README, with the paid-plan and scope requirements per route.
 
 ## 0.2.27

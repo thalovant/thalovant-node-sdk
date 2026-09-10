@@ -200,10 +200,10 @@ await api.releaseRuntimeGroup(group.id as string, { channel: "stable" });
 await api.releaseHub(hub.id as string, { channel: "stable" });
 ```
 
-Creating a hub is idempotent. `createHub` sends a generated `Idempotency-Key`
-header, so a retried call after a timeout returns the hub that was already
-created instead of making a second one. Pass your own `idempotencyKey` to
-control the key.
+`createHub` sends an `Idempotency-Key` header. To safely retry after a timeout
+or uncertain outcome, retain an explicit `idempotencyKey` before the first call
+and reuse it with the same payload. When you omit the option, each call generates
+a fresh key, so a later retry can create a second hub.
 
 Updating and deleting a hub use optimistic locking. Pass the `etag` from the
 hub resource you read; the SDK sends it as `If-Match`, and the API rejects a
@@ -222,12 +222,17 @@ Deleting a hub also deletes its clients and ACLs. Runtime groups have no
 `If-Match` requirement, but the API refuses to delete the workspace default
 group or a group that still has hubs attached (HTTP 409).
 
-Runtime configuration is merged, not replaced:
+The API replaces runtime configuration. Read the complete configuration,
+preserve the fields you need, then send the complete replacement. This
+read/modify/write is not atomic: serialize writers because the route provides
+no revision or conditional-write token:
 
 ```ts
-await api.updateRuntimeGroupConfig(group.id as string, { lang: "en-us" });
-const config = await api.getRuntimeGroupConfig(group.id as string);
-console.log(config.config);
+const stored = await api.getRuntimeGroupConfig(group.id as string);
+await api.updateRuntimeGroupConfig(group.id as string, {
+  ...(stored.config as Record<string, unknown>),
+  lang: "en-us",
+});
 ```
 
 Rating a public hub needs the `hubs:write` scope but **no** paid plan:
@@ -522,12 +527,18 @@ can retry it. The original connection error remains the caller's failure even
 when that cleanup also fails. HTTP errors omit authorization URLs and raw
 response details.
 
+Node serializes Noise state transactions across processes sharing a directory.
+A lock wait is bounded to five seconds. Corrupt or unreadable keys and pins fail
+without changing their bytes. After a crashed writer, confirm it has stopped
+before removing `.noise-state.lock`; do not delete keys or pins to clear a lock.
+
 ## Using In The Browser
 
 The SDK also runs in browsers. The control plane (`login`, `listPublicHubs`,
 `createClientIdentity`, memory, analytics) uses the global `fetch`, and
 `ThalovantClient` works over the `wss` and `https` protocols using the global
-`WebSocket` and Web Crypto (`crypto.subtle`) for HiveMind payload encryption.
+`WebSocket` and the same authenticated v3 Noise handshake and payload ciphers
+as Node. PSK derivation uses WebAssembly.
 
 package.json ships a `browser` map alongside the `exports` entry, so bundlers
 (esbuild, webpack, Vite, Rollup with `@rollup/plugin-node-resolve`) pick
@@ -561,12 +572,23 @@ Browser caveats:
   `fromConfig()`, and `defaultConfigPath()` throw in browsers. Construct
   `ThalovantIdentity` from an in-memory object (for example, the result of
   `createClientIdentity`).
-- The synchronous crypto helpers (`encryptAsJson`, `decryptFromJson`,
-  `encryptAsBinary`, `decryptBinary`) throw in browsers; use the `*Async`
-  variants, which the transports already use on both platforms.
+- The legacy `encryptAsJson`, `decryptFromJson`, `encryptAsBinary`,
+  `decryptBinary`, and their async variants were removed by the v3 Noise
+  migration. Use the client and transport APIs for authenticated messages.
+- The browser state queue coordinates one page only. Give independent tabs
+  distinct runtime identities and Noise storage namespaces; it does not provide
+  a cross-tab lock.
 - Browsers ignore the SDK `user-agent` header on control-plane requests, and a
   client identity is a secret: only embed identities scoped to public or
   kiosk-style hubs in web apps.
+
+Use a fresh request ID for each logical Ask and a fresh query ID for each
+logical Query. One client rejects overlapping collectors with the same ID
+before dispatch. Ask request IDs and scoped Query IDs are separate namespaces.
+Cancellation or completion releases the reservation after listeners retire.
+This guard does not make an ID safe to reuse: after a timeout or cancellation,
+a late reply can still arrive. Use a new ID for every later logical operation;
+correlation IDs are not idempotency tokens.
 
 ## Conversations
 

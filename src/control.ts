@@ -709,11 +709,12 @@ export class ThalovantControlPlane {
   }
 
   /**
-   * Merge runtime configuration into a runtime group.
+   * Replace a runtime group's configuration.
    *
-   * The API merges `config` into the stored configuration rather than replacing
-   * it, and marks the group pending so the runtime operator reconciles the
-   * change. `personas` is replaced only when provided.
+   * Read the complete config and preserve required fields before calling. The
+   * API replaces it (apart from its protected control section) and provides no
+   * revision/conditional-write token, so callers must serialize updates.
+   * `personas` is replaced only when provided.
    *
    * Requires a paid plan and a token with the `hubs:write` scope.
    */
@@ -895,9 +896,11 @@ export class ThalovantControlPlane {
     const password = newSecret();
     // options.spec is caller-supplied and spread wholesale, so a legacy
     // cryptoKey in it would be sent to /v1/clients and could come back inside
-    // a validation error. v3 issues no crypto key, so drop both spellings
-    // rather than carry a secret the platform no longer has a use for.
-    const { cryptoKey: _cryptoKey, crypto_key: _cryptoKeySnake, ...callerSpec } = options.spec ?? {};
+    // a validation error. v3 issues no crypto key, so drop normalized legacy
+    // spellings while preserving reference fields and unrelated metadata.
+    const callerSpec = Object.fromEntries(Object.entries(options.spec ?? {}).filter(
+      ([key]) => key.toLowerCase().replace(/[_-]/g, "") !== "cryptokey",
+    ));
     const spec: JsonRecord = {
       ...callerSpec,
       version: String(options.spec?.version ?? "1"),
@@ -1204,7 +1207,10 @@ function detailString(value: unknown): string | undefined {
     return undefined;
   }
   if (isRecord(value)) {
-    return detailString(value.msg ?? value.message ?? value.detail);
+    for (const candidate of [value.msg, value.message, value.detail]) {
+      const nested = detailString(candidate);
+      if (nested) return nested;
+    }
   }
   return undefined;
 }
