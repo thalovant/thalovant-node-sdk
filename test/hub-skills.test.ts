@@ -583,3 +583,24 @@ test("an accepted body must carry an operation id", async () => {
     fetchScript.restore();
   }
 });
+
+test("history preserves nullable event/operation fields and encodes path/query", async () => {
+  const original = globalThis.fetch;
+  const history = { hub_id: "hub/one", runtime_group_id: "shared", data: [
+    { id: "event:1", kind: "event", actor_email: null, version: "1.2.0" },
+    { id: "operation:1", kind: "operation", status: "failed", operation_id: "op-1" },
+  ] };
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    calls++;
+    assert.equal(String(url), "https://dash.example.com/api/v1/hubs/hub%2Fone/skills/history?limit=200");
+    return jsonResponse(200, history);
+  };
+  try {
+    assert.deepEqual(await api().listHubSkillHistory("hub/one", { limit: 200 }), history);
+    for (const limit of [0, 201, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(() => api().listHubSkillHistory("hub/one", { limit }), RangeError);
+    }
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = original; }
+});
