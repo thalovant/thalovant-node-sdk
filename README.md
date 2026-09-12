@@ -1067,3 +1067,7 @@ without locale data. Custom regex rules use JavaScript Unicode syntax and may
 start with Python-style global `(?i)`, `(?m)`, or `(?s)` flags. Invalid regex rules
 fail during construction. Regenerate bundled data with
 `node scripts/sync-listing-data.mjs /path/to/thalovant-languages` at the pinned commit.
+
+Regenerate the cross-SDK reference cases with
+`python scripts/sync-reference-fixtures.py --fixtures-only --test-dir test`,
+using the pinned public Python packages listed in that script.
