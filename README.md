@@ -977,7 +977,7 @@ an already-running HTTP request retains its normal request timeout.
 
 Read history with `api.listHubSkillHistory(hubId, { limit: 50 })`; it returns the API JSON envelope.
 
-## Request helpers and safe configuration updates (0.5.0)
+## Request helpers and safe configuration updates
 
 Request hints carry a recognized language, ordered intent pipeline, and caller
 location without changing the caller's context. Empty hints are omitted. The
