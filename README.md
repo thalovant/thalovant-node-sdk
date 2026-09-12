@@ -1050,10 +1050,9 @@ intent.examples("fr-CA", 2, { sentence: true });
 `sentence: true` also renders patterns. Explicit `slots` override locale examples.
 Unknown languages keep slot names and capitalized, unpunctuated lines. A phrase
 that already has punctuation or ends on a known prefix remains unchanged.
-Omitting the language preserves the first registration's locale. Exact language
-tags take priority; regional fallback stays within the same language and script,
-with registration order breaking ties. Python uses OVOS's CLDR distance matcher,
-so ties among multiple regional variants can select a different registration.
+Omitting the language preserves the first registration's locale. Regional fallback uses the OVOS distance policy with langcodes 3.5.1 CLDR data,
+including the Portuguese norm region. Distances above ten do not match; ties
+preserve registration order.
 
 Examples rank complete phrases ahead of prefixes and slot patterns, then prefer
 fuller wording up to eight words. Rendered duplicates and empty phrases do not

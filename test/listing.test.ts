@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { asSentence, HubIntent, ListingRules, speakable } from '../src/index.js';
+import { asSentence, closestLanguage, HubIntent, ListingRules, speakable } from '../src/index.js';
 
 test('regional registrations and omitted language keep the selected locale', () => {
   const intent = new HubIntent({skillId:'s',name:'n',engine:'padatious',phrases:{'fr-FR':['volume {level} pour cent'],'en-US':['volume {level} percent']}});
@@ -84,4 +84,19 @@ test('matches the published Python 0.6.5 golden listing cases in every shipped l
     const actual = row.kind === 'sentence' ? asSentence(row.text,lang) : row.kind === 'speakable' ? speakable(row.text,{},lang) : listing.rank(row.phrases,lang);
     assert.deepEqual(actual,row.expected,JSON.stringify(row));
   }
+});
+
+
+test('language selection matches 990 OVOS cases including regional ties and scripts', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const vectors = JSON.parse(await readFile(new URL('../../test/language-matching-vectors.json', import.meta.url), 'utf8'));
+  for (const row of vectors.cases) assert.equal(closestLanguage(row.target,row.available) ?? null,row.expected,JSON.stringify(row));
+});
+
+test('custom regex rules preserve escaped literals and multiple global flags', () => {
+  const listing = new ListingRules({sentence_ends:'.!?',languages:{xq:{question_patterns:['(?i)(?m)^can it',String.raw`\\b`,String.raw`\bété\b`]}}});
+  assert.equal(listing.asks('CAN IT work','xq'),true);
+  assert.equal(listing.asks(String.raw`write \b here`,'xq'),true);
+  assert.equal(listing.asks('été','xq'),true);
+  assert.equal(listing.asks('just a word','xq'),false);
 });

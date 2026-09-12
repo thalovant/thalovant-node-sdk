@@ -4,6 +4,7 @@
 
 - Add locale-aware sentence listings, regional phrase selection, canonical slot examples and fuller phrase ranking, matching the Python 0.6.5 listing feature for supported locales.
 - Ship generated thalovant-languages 0.1.1 rules. Custom `ListingRules` snapshots and explicit no-data rendering work in Node and browsers without filesystem access.
+- Match OVOS locale distances, regional preferences and script boundaries using versioned langcodes CLDR tables.
 - Preserve selected locale, compile question rules independently, and support optional question categories without requiring opener words.
 
 ## 0.5.1 — 2026-09-12

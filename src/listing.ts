@@ -14,44 +14,34 @@ export interface ListingData {
   languages: Readonly<Record<string, ListingLanguage>>;
 }
 
-function fold(tag: string): string {
-  const value = tag.trim().replaceAll('_', '-');
-  try { return new Intl.Locale(value).toString().toLowerCase(); }
-  catch { return value.toLowerCase(); } // Private/application tags are valid data keys.
-}
-
-/** Exact tags first, then the same language/script and nearest available region.
- * Ties preserve registration order. Unrelated languages never supply phrases.
- */
-export function closestLanguage(target: string, available: readonly string[]): string | undefined {
-  const wanted = fold(target);
-  const exact = available.find(tag => fold(tag) === wanted);
-  if (exact !== undefined) return exact;
-  function parts(tag: string): { language: string; script?: string; region?: string } {
-    try { const locale = new Intl.Locale(tag).maximize(); return locale; }
-    catch { return { language: tag.split('-')[0] }; }
-  }
-  const requested = parts(wanted);
-  let best: string | undefined, distance = Infinity;
-  for (const tag of available) {
-    const candidate = parts(fold(tag));
-    if (candidate.language !== requested.language || candidate.script !== requested.script) continue;
-    const score = candidate.region === requested.region ? 0 : 1;
-    if (score < distance) { best = tag; distance = score; }
-  }
-  return best;
-}
+import { closestLanguage } from "./language-matching.js";
+export { closestLanguage } from "./language-matching.js";
 
 function pattern(expression: string): RegExp {
   // Python data permits leading global flags. Compile each rule independently.
   const flags = new Set(['i', 'u']);
-  expression = expression.replace(/^\(\?([ims]+)\)/, (_, inline: string) => {
-    for (const flag of inline) flags.add(flag);
-    return '';
-  });
+  let inline = expression.match(/^\(\?([ims]+)\)/);
+  while (inline) {
+    for (const flag of inline[1]) flags.add(flag);
+    expression = expression.slice(inline[0].length);
+    inline = expression.match(/^\(\?([ims]+)\)/);
+  }
   // Python's Unicode word boundary includes letters/numbers/underscore. JS \b
-  // remains ASCII even in Unicode mode. Preserve the data's boundary semantics.
-  expression = expression.replace(/\\b/g, '(?:(?<![\\p{L}\\p{N}_])(?=[\\p{L}\\p{N}_])|(?<=[\\p{L}\\p{N}_])(?![\\p{L}\\p{N}_]))');
+  // remains ASCII even in Unicode mode. Preserve escaped literals and classes.
+  const boundary = '(?:(?<![\\p{L}\\p{N}_])(?=[\\p{L}\\p{N}_])|(?<=[\\p{L}\\p{N}_])(?![\\p{L}\\p{N}_]))';
+  let converted = '', inClass = false;
+  for (let i=0;i<expression.length;i++) {
+    const char = expression[i];
+    if (char === '\\' && i+1<expression.length) {
+      const next = expression[++i];
+      converted += next === 'b' && !inClass ? boundary : char+next;
+    } else {
+      if (char === '[') inClass = true;
+      if (char === ']') inClass = false;
+      converted += char;
+    }
+  }
+  expression = converted;
   return new RegExp(expression, [...flags].join(''));
 }
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
