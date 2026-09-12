@@ -994,7 +994,7 @@ test("control plane manages runtime groups and skills", async () => {
     const merged = await api.updateRuntimeGroupConfig(
       "group-1",
       { lang: "en-us" },
-      { personas: { default: "helpful" } },
+      { personas: { default: "helpful" }, merge: false },
     );
     const released = await api.releaseRuntimeGroup("group-1", { channel: "stable" });
     const installed = await api.installRuntimeGroupSkill("group-1", "skill-weather");
@@ -1033,7 +1033,7 @@ test("control plane omits unset runtime group config personas and release fields
 
   try {
     const api = new ThalovantControlPlane("https://dash.example.com/api", { accessToken: "token" });
-    await api.updateRuntimeGroupConfig("group-1", { lang: "en-us" });
+    await api.updateRuntimeGroupConfig("group-1", { lang: "en-us" }, { merge: false });
     await api.releaseRuntimeGroup("group-1");
     await api.releaseHub("hub-1");
 

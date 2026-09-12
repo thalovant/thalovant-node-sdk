@@ -152,11 +152,22 @@ export class HubIntent {
   }
 
   /** A few sentences worth showing: whole ones before ones with a slot, shorter first. */
-  examples(lang?: string, limit = 2): readonly string[] {
-    const pool = lang ? this.phrasesFor(lang) : Object.values(this.phrases)[0] ?? [];
+  examples(lang?: string, limit = 2, options: { speakable?: boolean; slots?: Readonly<Record<string, string>> } = {}): readonly string[] {
+    let pool = lang ? this.phrasesFor(lang) : Object.values(this.phrases)[0] ?? [];
+    const ranks = new Map<string, number>();
+    if (options.speakable) {
+      const rendered: string[] = [];
+      for (const pattern of pool) {
+        const sentence = speakable(pattern, options.slots);
+        if (!sentence) continue;
+        if (!ranks.has(sentence)) rendered.push(sentence);
+        ranks.set(sentence, Math.min(ranks.get(sentence) ?? 1, Number(pattern.includes("{"))));
+      }
+      pool = rendered;
+    }
     if (limit <= 0) return pool;
     return [...pool]
-      .sort((a, b) => Number(a.includes("{")) - Number(b.includes("{")) || a.length - b.length)
+      .sort((a, b) => (ranks.get(a) ?? Number(a.includes("{"))) - (ranks.get(b) ?? Number(b.includes("{"))) || [...a].length - [...b].length)
       .slice(0, limit);
   }
 
@@ -731,4 +742,18 @@ export async function listFallbacks(client: ThalovantClient, options: { timeoutM
 async function withFallbacks(client: ThalovantClient, inventory: HubIntentInventory, timeoutMs?: number): Promise<HubIntentInventory> {
   const fallbacks = await listFallbacks(client, { timeoutMs: Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, FALLBACK_PROBE_TIMEOUT_MS) });
   return new HubIntentInventory({ ...inventory, fallbacks: fallbacks ?? [], fallbacksKnown: fallbacks !== null });
+}
+
+/** Render one illustrative sentence without inventing slot values. */
+export function speakable(pattern: string, slots: Readonly<Record<string, string>> = {}): string {
+  let text = pattern;
+  while (/\[[^\[\]]*\]/.test(text)) text = text.replace(/\[[^\[\]]*\]/g, "");
+  while (/\([^()]*\)/.test(text)) text = text.replace(/\(([^()]*)\)/g, (_, group: string) => {
+    const options = group.split("|").map(value => value.trim());
+    const real = options.filter(Boolean);
+    return real.length < options.length && real.length <= 1 ? "" : real[0] ?? "";
+  });
+  return text.replace(/\{([a-z_][a-z0-9_]*)\}/g, (_, slot: string) =>
+    Object.hasOwn(slots, slot) ? slots[slot] : slot.replaceAll("_", " "))
+    .replace(/\s{2,}/g, " ").replace(/^[ ,]+|[ ,]+$/g, "");
 }

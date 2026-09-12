@@ -13,7 +13,7 @@
  */
 
 /** Package version. Must equal the `version` field of package.json. */
-export const SDK_VERSION = "0.4.0";
+export const SDK_VERSION = "0.5.0";
 
 /** Product token shared by every Thalovant Node SDK user agent. */
 export const USER_AGENT_PRODUCT = "ThalovantNodeSDK";

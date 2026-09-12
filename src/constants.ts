@@ -1,8 +1,12 @@
 import { USER_AGENT } from "./version.js";
 
 export const EVENT_RECOGNIZER_LOOP_UTTERANCE = "recognizer_loop:utterance";
+export const EVENT_AUDIO_QUEUE = "mycroft.audio.queue";
+export const MAX_AUDIO_CLIP_BYTES = 4 * 1024 * 1024;
+export const MAX_REPLY_MEDIA_BYTES = 16 * 1024 * 1024;
 export const EVENT_SPEAK = "speak";
 export const EVENT_OVOS_UTTERANCE_SPEAK = "ovos.utterance.speak";
+export const MEDIA_EVENTS = new Set([EVENT_SPEAK, EVENT_OVOS_UTTERANCE_SPEAK, EVENT_AUDIO_QUEUE]);
 export const EVENT_UTTERANCE_HANDLED = "ovos.utterance.handled";
 /** Current OVOS name for "no intent matched the utterance". */
 export const EVENT_INTENT_UNMATCHED = "ovos.intent.unmatched";

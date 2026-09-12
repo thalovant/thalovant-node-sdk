@@ -5,7 +5,13 @@ export class ThalovantIdentityError extends ThalovantError {}
 export class ThalovantConnectionError extends ThalovantError {}
 export class ThalovantTimeoutError extends ThalovantError {}
 export class ThalovantRuntimeError extends ThalovantError {}
-export class ThalovantApiError extends ThalovantError {}
+export class ThalovantApiError extends ThalovantError {
+  readonly statusCode?: number;
+  constructor(message?: string, options?: ErrorOptions & { statusCode?: number }) {
+    super(message, options);
+    this.statusCode = options?.statusCode;
+  }
+}
 export class ThalovantUnsupportedProtocolError extends ThalovantError {}
 
 /**
