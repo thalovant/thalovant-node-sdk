@@ -216,6 +216,8 @@ export interface RuntimeGroupListOptions {
 
 /** Options for `updateRuntimeGroupConfig`. */
 export interface RuntimeGroupConfigOptions {
+  /** Deep merge with a revision precondition by default; false explicitly replaces via PATCH. */
+  merge?: boolean;
   /** Replaces the stored personas. Left untouched when omitted. */
   personas?: JsonRecord;
 }
@@ -621,7 +623,7 @@ export class ThalovantControlPlane {
       }
       if (response.ok) {
         if (!isRecord(parsed)) {
-          throw new ThalovantApiError("Thalovant API returned an unexpected response shape.");
+          throw new ThalovantApiError("Thalovant API returned an unexpected response shape.", { statusCode: response.status });
         }
         return parsed;
       }
@@ -629,14 +631,14 @@ export class ThalovantControlPlane {
       if (error === "slow_down") {
         waitMs += DEVICE_SLOW_DOWN_STEP_MS;
       } else if (error === "access_denied") {
-        throw new ThalovantApiError("The device sign-in request was denied in the browser.");
+        throw new ThalovantApiError("The device sign-in request was denied in the browser.", { statusCode: response.status });
       } else if (error === "expired_token") {
         throw new ThalovantApiError(
           "The device sign-in code expired before it was approved. " +
-            "Call loginWithBrowser() again to request a new code.",
+            "Call loginWithBrowser() again to request a new code.", { statusCode: response.status },
         );
       } else if (error !== "authorization_pending") {
-        throw new ThalovantApiError(apiErrorMessage(response.status, text));
+        throw new ThalovantApiError(apiErrorMessage(response.status, text), { statusCode: response.status });
       }
       const remaining = deadline - now();
       if (remaining <= 0) {
@@ -885,23 +887,39 @@ export class ThalovantControlPlane {
   }
 
   /**
-   * Replace a runtime group's configuration.
-   *
-   * Read the complete config and preserve required fields before calling. The
-   * API replaces it (apart from its protected control section) and provides no
-   * revision/conditional-write token, so callers must serialize updates.
-   * `personas` is replaced only when provided.
-   *
-   * Requires a paid plan and a token with the `hubs:write` scope.
+   * Deep merge using a revision precondition, rereading after at most two conflicts.
+   * A server without revision support fails before a write. No unsafe PATCH fallback.
+   * Set merge:false for explicit unconditional replacement. Personas replace only when supplied.
+   * Requires hubs:read and paid hubs:write for merging; replacement needs hubs:write.
    */
-  updateRuntimeGroupConfig(
+  async updateRuntimeGroupConfig(
     runtimeGroupId: string,
     config: JsonRecord,
     options: RuntimeGroupConfigOptions = {},
   ): Promise<JsonRecord> {
+    const path = `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}/config`;
     const body: JsonRecord = { config };
     if (options.personas !== undefined) body.personas = options.personas;
-    return this.request("PATCH", `/v1/runtime-groups/${encodeURIComponent(runtimeGroupId)}/config`, { body });
+    if (options.merge === false) return this.request("PATCH", path, { body });
+    // Snapshot the caller's delta before the first asynchronous operation.
+    const mergeBody = JSON.parse(JSON.stringify(body)) as JsonRecord;
+    const delta = mergeBody.config as JsonRecord;
+    assertSafeConfigNumbers(delta);
+    for (let attempt = 0; ; attempt++) {
+      const snapshot = await this.getRuntimeGroupConfig(runtimeGroupId);
+      if (typeof snapshot.revision !== "string" || !/^[0-9a-f]{64}$/.test(snapshot.revision)
+          || !isRecord(snapshot.config)) {
+        throw new ThalovantApiError("Safe configuration merge requires a valid config and revision from the API.");
+      }
+      assertSafeConfigNumbers(snapshot.config);
+      try {
+        return await this.request("PUT", path, { body: {
+          ...mergeBody, config: mergeConfig(snapshot.config, delta), expected_revision: snapshot.revision,
+        } });
+      } catch (error) {
+        if (!(error instanceof ThalovantApiError) || error.statusCode !== 412 || attempt >= 2) throw error;
+      }
+    }
   }
 
   /**
@@ -1322,15 +1340,17 @@ export class ThalovantControlPlane {
   ): Promise<JsonRecord> {
     const response = await this.send(method, path, options);
     if (!response.ok) {
-      throw new ThalovantApiError(apiErrorMessage(response.status, await response.text(), options.redactSecrets));
+      throw new ThalovantApiError(apiErrorMessage(response.status, await response.text(), options.redactSecrets), { statusCode: response.status });
     }
     const text = await response.text();
     if (!text.trim()) {
       return {};
     }
-    const body = JSON.parse(text) as unknown;
+    let body: unknown;
+    try { body = JSON.parse(text); }
+    catch { throw new ThalovantApiError("Thalovant API returned invalid JSON.", { statusCode: response.status }); }
     if (!isRecord(body)) {
-      throw new ThalovantApiError("Thalovant API returned an unexpected response shape.");
+      throw new ThalovantApiError("Thalovant API returned an unexpected response shape.", { statusCode: response.status });
     }
     return body;
   }
@@ -1552,4 +1572,23 @@ function detailString(value: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+/** Objects merge recursively; arrays and scalars replace. Own keys only, including __proto__. */
+function mergeConfig(base: JsonRecord, delta: JsonRecord): JsonRecord {
+  return Object.fromEntries([...new Set([...Object.keys(base), ...Object.keys(delta)])].map(key => {
+    if (!Object.hasOwn(delta, key)) return [key, base[key]];
+    const value = delta[key];
+    return [key, Object.hasOwn(base, key) && isRecord(base[key]) && isRecord(value)
+      ? mergeConfig(base[key], value) : value];
+  }));
+}
+
+/** Refuse a read/merge/write that could silently round an untouched integer. */
+function assertSafeConfigNumbers(value: unknown): void {
+  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    throw new ThalovantApiError("Safe configuration merge cannot preserve integers outside JavaScript's safe range; use string identifiers or a client with lossless integer support.");
+  }
+  if (Array.isArray(value)) value.forEach(assertSafeConfigNumbers);
+  else if (isRecord(value)) Object.values(value).forEach(assertSafeConfigNumbers);
 }

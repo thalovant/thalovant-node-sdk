@@ -1,4 +1,4 @@
-import { FAILURE_EVENTS } from "./constants.js";
+import { FAILURE_EVENTS, EVENT_AUDIO_QUEUE, MAX_AUDIO_CLIP_BYTES, MAX_REPLY_MEDIA_BYTES } from "./constants.js";
 import { displayItemsFromEventData, richMediaFromData, stripSsml, ThalovantDisplayItem } from "./rich.js";
 
 export interface SessionContext {
@@ -67,6 +67,39 @@ export class ThalovantEvent {
     return requestIdFromContext(this.context) ?? requestIdFromMapping(this.data);
   }
 
+  get lang(): string | undefined {
+    const value = this.data.lang || this.context.lang || this.context.session?.lang;
+    return value == null ? undefined : String(value);
+  }
+
+  get isAudio(): boolean { return this.name === EVENT_AUDIO_QUEUE; }
+  get hasAudio(): boolean { return this.isAudio && typeof this.data.binary_data === "string" && this.data.binary_data.length > 0; }
+
+  /** Decode embedded hex only; never fetch a path or URL supplied by a skill. */
+  audioBytes(maxBytes = MAX_AUDIO_CLIP_BYTES): Uint8Array {
+    const encoded = this.isAudio ? this.data.binary_data : undefined;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new RangeError("Invalid audio byte limit.");
+    if (typeof encoded !== "string" || !encoded.length) throw new Error("No embedded audio data.");
+    if (encoded.length > maxBytes * 2) throw new Error("Embedded audio exceeds the byte limit.");
+    // Python bytes.fromhex permits whitespace between bytes, never between nibbles.
+    // Scan iteratively: a repeated regex group can exhaust the stack on a valid clip.
+    const bytes = new Uint8Array(Math.floor(encoded.length / 2));
+    let high = -1, written = 0;
+    for (let i = 0; i < encoded.length; i++) {
+      const c = encoded.charCodeAt(i);
+      if (c === 32 || (c >= 9 && c <= 13)) {
+        if (high >= 0) throw new Error("Invalid embedded audio hex.");
+        continue;
+      }
+      const value = c >= 48 && c <= 57 ? c - 48 : c >= 65 && c <= 70 ? c - 55 : c >= 97 && c <= 102 ? c - 87 : -1;
+      if (value < 0) throw new Error("Invalid embedded audio hex.");
+      if (high < 0) high = value;
+      else { bytes[written++] = high * 16 + value; high = -1; }
+    }
+    if (high >= 0) throw new Error("Invalid embedded audio hex.");
+    return bytes.subarray(0, written);
+  }
+
   get isFailure(): boolean {
     return FAILURE_EVENTS.has(this.name);
   }
@@ -99,6 +132,11 @@ export class ThalovantEvent {
 
 export interface ThalovantReply {
   text: string;
+  /** Language selected by the runtime, from the first event carrying a hint. */
+  readonly lang?: string;
+  readonly mediaEvents?: ThalovantEvent[];
+  readonly hasAudio?: boolean;
+  readonly droppedMedia?: number;
   displayText: string;
   utterances: string[];
   handled: boolean;
@@ -191,4 +229,26 @@ function requestIdFromContext(context?: EventContext): string | undefined {
 function requestIdFromMapping(mapping?: Record<string, unknown>): string | undefined {
   const value = mapping?.request_id ?? mapping?.thalovant_request_id ?? mapping?.correlation_id;
   return value === undefined || value === null ? undefined : String(value);
+}
+
+/** @internal Bound skill audio before retaining it in a reply. */
+export class ReplyMediaBudget {
+  dropped = 0;
+  private chars = 0;
+  private readonly seen = new WeakSet<object>();
+  accept(event: ThalovantEvent): boolean {
+    if (!event.isAudio) return true;
+    if (typeof event.raw === "object" && event.raw !== null) {
+      if (this.seen.has(event.raw)) return false;
+    }
+    const encoded = event.data.binary_data;
+    if (typeof encoded !== "string" || encoded.length > MAX_AUDIO_CLIP_BYTES * 2
+        || this.chars + encoded.length > MAX_REPLY_MEDIA_BYTES * 2) {
+      this.dropped++;
+      return false;
+    }
+    if (typeof event.raw === "object" && event.raw !== null) this.seen.add(event.raw);
+    this.chars += encoded.length;
+    return true;
+  }
 }

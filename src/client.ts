@@ -1,4 +1,6 @@
 import {
+  EVENT_AUDIO_QUEUE,
+  MEDIA_EVENTS,
   EVENT_INTENT_FAILURE,
   EVENT_INTENT_UNMATCHED,
   EVENT_OVOS_UTTERANCE_SPEAK,
@@ -20,8 +22,10 @@ import {
   newSessionId,
   ThalovantEvent,
   ThalovantReply,
+  ReplyMediaBudget,
   utterancePayload,
 } from "./events.js";
+import { requestContext, type RequestContextOptions } from "./context.js";
 import { ThalovantIdentity } from "./identity.js";
 import * as intentQueries from "./intents.js";
 import { HubIntentInventory, IntentDefinition, IntentRegistration } from "./intents.js";
@@ -366,7 +370,7 @@ export class ThalovantClient {
   /** Ask with a total connection/send/collection budget and optional cancellation. */
   async ask(
     text: string,
-    options: {
+    options: RequestContextOptions & {
       timeoutMs?: number;
       lang?: string;
       context?: EventContext;
@@ -394,7 +398,7 @@ export class ThalovantClient {
     const lang = options.lang ?? "en-us";
     const requestId = options.requestId ?? newRequestId();
     const sessionId = options.sessionId ?? newSessionId();
-    const context = contextWithCorrelation(this.contextWithIdentityMetadata(options.context ?? {}), {
+    const context = contextWithCorrelation(this.contextWithIdentityMetadata(requestContext(options.context, options) ?? {}), {
       sessionId, siteId: this.identity.siteId, lang, requestId,
     });
     try {
@@ -407,6 +411,7 @@ export class ThalovantClient {
     if (performance.now() >= deadline) throw timeoutError();
     const fragments: string[] = [];
     const events: ThalovantEvent[] = [];
+    const mediaBudget = new ReplyMediaBudget();
     let failureEvent: ThalovantEvent | undefined;
     let softFailureEvent: ThalovantEvent | undefined;
     let terminal = false;
@@ -433,7 +438,11 @@ export class ThalovantClient {
       const detail = (raw as CustomEvent).detail;
       const event = eventFromBusPayload(detail, detail);
       if (!eventMatchesRequiredCorrelation(event, listenerContext)) return;
+      if (!mediaBudget.accept(event)) return;
       switch (event.name) {
+        case EVENT_AUDIO_QUEUE:
+          events.push(event);
+          break;
         case EVENT_SPEAK:
         case EVENT_OVOS_UTTERANCE_SPEAK: {
           const normalized = event.text.trim().replace(/\s+/g, " ");
@@ -486,6 +495,10 @@ export class ThalovantClient {
         text: replyText,
         displayText: stripSsml(replyText),
         utterances: fragments,
+        lang: events.map(event => event.lang).find(Boolean),
+        mediaEvents: events.filter(event => MEDIA_EVENTS.has(event.name)),
+        hasAudio: events.some(event => event.isAudio),
+        droppedMedia: mediaBudget.dropped,
         handled: !effectiveFailure,
         ok: !effectiveFailure,
         sessionId: events.map(event => event.sessionId).find(id => id !== undefined && id.trim().length > 0) ?? context.session?.session_id,
@@ -546,6 +559,7 @@ export class ThalovantClient {
     });
     const fragments: string[] = [];
     const events: ThalovantEvent[] = [];
+    const mediaBudget = new ReplyMediaBudget();
     let failureEvent: ThalovantEvent | undefined;
     let softFailureEvent: ThalovantEvent | undefined;
     try {
@@ -585,6 +599,7 @@ export class ThalovantClient {
       const payload = busPayloadFromHivePayload(message.payload);
       if (!payload) return;
       const event = eventFromBusPayload(payload, payload);
+      if (!mediaBudget.accept(event)) return;
       if (event.name === "hive.query.complete") {
         events.push(event);
         complete();
@@ -658,6 +673,10 @@ export class ThalovantClient {
         text: replyText,
         displayText: stripSsml(replyText),
         utterances: fragments,
+        lang: events.map(event => event.lang).find(Boolean),
+        mediaEvents: events.filter(event => MEDIA_EVENTS.has(event.name)),
+        hasAudio: events.some(event => event.isAudio),
+        droppedMedia: mediaBudget.dropped,
         handled: !failureEvent,
         ok: !failureEvent,
         sessionId: events.map(event => event.sessionId).find(id => id !== undefined && id.trim().length > 0) ?? context.session?.session_id,
@@ -891,7 +910,7 @@ export class ThalovantConversation {
     this.context = options.context ?? {};
   }
 
-  ask(text: string, options: { timeoutMs?: number; lang?: string; context?: EventContext; requestId?: string; signal?: AbortSignal; replySettleMs?: number; emptyReplyWaitMs?: number } = {}): Promise<ThalovantReply> {
+  ask(text: string, options: RequestContextOptions & { timeoutMs?: number; lang?: string; context?: EventContext; requestId?: string; signal?: AbortSignal; replySettleMs?: number; emptyReplyWaitMs?: number } = {}): Promise<ThalovantReply> {
     return this.client.ask(text, {
       ...options,
       lang: options.lang ?? this.lang,

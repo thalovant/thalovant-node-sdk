@@ -17,6 +17,7 @@ export {
   HubIntentInventory,
   HubSkillIntents,
   sameLanguage,
+  speakable,
   SOURCE_ENGINES,
   SOURCE_MANIFEST,
   type HubIntentSource,

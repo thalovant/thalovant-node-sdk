@@ -222,15 +222,13 @@ Deleting a hub also deletes its clients and ACLs. Runtime groups have no
 `If-Match` requirement, but the API refuses to delete the workspace default
 group or a group that still has hubs attached (HTTP 409).
 
-The API replaces runtime configuration. Read the complete configuration,
-preserve the fields you need, then send the complete replacement. This
-read/modify/write is not atomic: serialize writers because the route provides
-no revision or conditional-write token:
+Configuration updates deep-merge with a revision precondition. The SDK reads
+fresh configuration after HTTP 412 conflicts, with at most three total write attempts.
+A server without revision support fails before a write. Merging needs both
+`hubs:read` and paid `hubs:write`; set `merge: false` for explicit replacement:
 
 ```ts
-const stored = await api.getRuntimeGroupConfig(group.id as string);
 await api.updateRuntimeGroupConfig(group.id as string, {
-  ...(stored.config as Record<string, unknown>),
   lang: "en-us",
 });
 ```
@@ -978,3 +976,55 @@ never repeats an accepted mutation and starts no new read after its deadline;
 an already-running HTTP request retains its normal request timeout.
 
 Read history with `api.listHubSkillHistory(hubId, { limit: 50 })`; it returns the API JSON envelope.
+
+## Request helpers and safe configuration updates (0.5.0)
+
+Request hints carry a recognized language, ordered intent pipeline, and caller
+location without changing the caller's context. Empty hints are omitted. The
+location helper requires a city and omits invalid or zero/zero coordinates.
+The hub validates language hints against its configured languages.
+
+Replies expose their reported language, ordered speech/audio events, and a
+count of dropped media. Embedded skill clips are limited to 4 MiB each and
+16 MiB per reply, checked before retention and decoding. Audio does not extend
+the reply settlement window. Decoding accepts hexadecimal bytes with ASCII
+whitespace between bytes; it never fetches a skill-supplied URL or file path.
+The application owns playback (the `play`/`Play` function in this example).
+
+```ts
+const location = buildLocation({ city: "Montréal", country: "CA", latitude: 45.5, longitude: -73.5 });
+const reply = await client.ask("Quel temps fait-il ?", { sttLang: "fr-ca", location });
+for (const event of reply.mediaEvents ?? []) if (event.isAudio) play(event.audioBytes());
+const sentences = intent.examples("en-us", 2, { speakable: true, slots: { location: "Montréal" } });
+await api.updateRuntimeGroupConfig(groupId, { tts: { module: "piper" } });
+// Explicit full replacement:
+await api.updateRuntimeGroupConfig(groupId, fullConfig, { merge: false });
+```
+
+Guarded merging requires the `hubs:read` and `hubs:write` scopes and a paid plan.
+Safe merging requires an API whose configuration GET returns a valid `revision`
+and whose configuration PUT checks `expected_revision`. The SDK rereads and
+reapplies the original delta only after HTTP 412, with at most three attempts.
+Arrays and scalar values replace; objects merge recursively. Personas replace
+only when explicitly supplied. Connection failures, redirects, other statuses,
+and ambiguous write results are never retried. No unsafe PATCH fallback is used.
+Unconditional replacements must still be coordinated with other writers.
+
+Use the explicit replacement operation shown above when a complete replacement
+is intended, including when working with an older API. Existing code relying on
+replacement must opt into it when upgrading. Raw intent patterns remain the
+default; speakable examples remove optional parts, choose alternatives, and
+substitute caller-supplied slots while retaining complete-phrase priority.
+
+The audio limits use encoded-length upper bounds before decoding, so formatting
+whitespace consumes budget too. Like Python's `bytes.fromhex`, ASCII whitespace
+alone decodes to zero bytes. Bounded malformed clips remain available as event
+metadata and fail when decoded; they are never fetched or played automatically.
+Distinct audio events may intentionally repeat identical sound content. Only
+repeated delivery of the same event object is suppressed where object identity
+is available, without counting it as a dropped clip. Rendered example ranking
+uses the original pattern's slot presence even when sample values are supplied.
+
+Guarded merges reject integers outside JavaScript’s safe range before writing,
+so reading and merging cannot silently round an untouched configuration value.
+Represent large identifiers as strings or use an SDK with lossless integers.

@@ -66,3 +66,39 @@ export function buildClientContext(base: EventContext = {}, options: ClientConte
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
+
+/** Hints applied only to this request; omitted hints preserve existing context. */
+export interface RequestContextOptions {
+  sttLang?: string;
+  pipeline?: readonly string[];
+  location?: Record<string, unknown>;
+}
+
+export function requestContext(base: EventContext = {}, options: RequestContextOptions = {}): EventContext | undefined {
+  const result = { ...base };
+  if (result.session) result.session = { ...result.session };
+  const stages = options.pipeline?.map(stage => stage.trim()).filter(Boolean);
+  if (stages?.length) result.session = { ...asRecord(result.session), pipeline: stages };
+  if (options.sttLang?.trim()) result.stt_lang = options.sttLang.trim();
+  if (options.location && Object.keys(options.location).length) result.location = { ...options.location };
+  return Object.keys(result).length ? result : undefined;
+}
+
+/** Build the request-level location shape understood by OVOS skills. */
+export function buildLocation(options: {
+  city?: string; region?: string; country?: string;
+  latitude?: number | string; longitude?: number | string; timezone?: string;
+} = {}): Record<string, unknown> | undefined {
+  const city = options.city?.trim();
+  if (!city) return undefined;
+  const result: Record<string, unknown> = { city };
+  if (options.region?.trim()) result.region = options.region.trim();
+  if (options.country?.trim()) result.country_code = options.country.trim().toUpperCase();
+  if (options.timezone?.trim()) result.timezone = { code: options.timezone.trim() };
+  const coordinate = (value: number | string | undefined): number =>
+    value === undefined || (typeof value === "string" && !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim())) ? NaN : Number(value);
+  const lat = coordinate(options.latitude), lon = coordinate(options.longitude);
+  if (Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0)
+      && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) result.coordinate = { latitude: lat, longitude: lon };
+  return result;
+}
