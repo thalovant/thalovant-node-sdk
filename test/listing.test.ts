@@ -100,3 +100,11 @@ test('custom regex rules preserve escaped literals and multiple global flags', (
   assert.equal(listing.asks('été','xq'),true);
   assert.equal(listing.asks('just a word','xq'),false);
 });
+
+
+test('punctuation-heavy runtime phrases are trimmed in linear time', () => {
+  const listing = new ListingRules();
+  const marks = '!'.repeat(1024*1024);
+  assert.equal(listing.asks('word'+marks+'word','en'),false);
+  assert.equal(listing.asks(marks+'what'+marks+' time is it','en'),true);
+});

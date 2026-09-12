@@ -45,6 +45,13 @@ function pattern(expression: string): RegExp {
   return new RegExp(expression, [...flags].join(''));
 }
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function trimQuestionMarks(text: string): string {
+  const marks = ",;:!?.’'\"()";
+  let start = 0, end = text.length;
+  while (start < end && marks.includes(text[start])) start++;
+  while (end > start && marks.includes(text[end-1])) end--;
+  return text.slice(start,end);
+}
 const words = (text: string): string[] => text.trim() ? text.trim().split(/\s+/u) : [];
 
 /** An immutable snapshot; pass null to render without language data, or supply
@@ -90,7 +97,7 @@ export class ListingRules {
   asks(text: string, lang?: string): boolean {
     const tag = this.tag(lang);
     if (tag !== undefined && this.patterns.get(tag)!.some(rule => rule.test(text))) return true;
-    const tokens = words(text).map(word => word.replace(/^[,;:!?.’'"()]+|[,;:!?.’'"()]+$/gu, '').toLowerCase()).filter(Boolean);
+    const tokens = words(text).map(word => trimQuestionMarks(word).toLowerCase()).filter(Boolean);
     return tokens.length > 0 && (this.wordSet(lang, 'question_openers').has(tokens[0]) ||
       tokens.some(word => this.wordSet(lang, 'question_words_anywhere').has(word)));
   }
