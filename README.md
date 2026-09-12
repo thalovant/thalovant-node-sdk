@@ -1071,3 +1071,6 @@ fail during construction. Regenerate bundled data with
 Regenerate the cross-SDK reference cases with
 `python scripts/sync-reference-fixtures.py --fixtures-only --test-dir test`,
 using the pinned public Python packages listed in that script.
+
+The SDK code and CLDR matching tables are MIT-licensed; bundled
+`thalovant-languages` data is Apache-2.0-licensed. Both notices ship with the SDK.
