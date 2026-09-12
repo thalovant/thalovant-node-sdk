@@ -1072,5 +1072,5 @@ Regenerate the cross-SDK reference cases with
 `python scripts/sync-reference-fixtures.py --fixtures-only --test-dir test`,
 using the pinned public Python packages listed in that script.
 
-The SDK code and CLDR matching tables are MIT-licensed; bundled
-`thalovant-languages` data is Apache-2.0-licensed. Both notices ship with the SDK.
+The SDK code, CLDR matching tables and bundled `thalovant-languages` data
+retain their upstream MIT license notices. Both data notices ship with the SDK.

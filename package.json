@@ -3,7 +3,7 @@
   "version": "0.6.0",
   "description": "Node.js, browser, and TypeScript SDK for direct Thalovant hub data-plane clients and agents",
   "type": "module",
-  "license": "MIT AND Apache-2.0",
+  "license": "MIT",
   "author": "Thalovant",
   "repository": {
     "type": "git",
