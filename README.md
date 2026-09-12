@@ -909,6 +909,7 @@ it before resending. Per-plan limits are listed in the dashboard and at
 - `controlPlane.installRuntimeGroupSkill(runtimeGroupId, skillId, options)` with optional `marketplaceSkillId`, `sourceType`, `sourceRef`, `versionPin`, and `active`
 - `controlPlane.uninstallRuntimeGroupSkill(runtimeGroupId, skillId)`
 - `controlPlane.listHubSkills(hubId)`
+- `controlPlane.listHubSkillHistory(hubId, options)` with optional integer `limit` (1–200, default 50)
 - `controlPlane.installHubSkill(hubId, skill, options)` with optional `version`, `wait`, and `timeoutMs`
 - `controlPlane.updateHubSkill(hubId, skill, { version, wait, timeoutMs })` — `version` required
 - `controlPlane.removeHubSkill(hubId, skill, options)` with optional `wait` and `timeoutMs`
