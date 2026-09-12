@@ -9,6 +9,17 @@ import {
 const revision = (n: number) => n.toString(16).padStart(64, "0");
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
+test("merge refuses unsafe stored integers before any write", async t => {
+  let reads = 0;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    assert.equal(init?.method, "GET"); reads++;
+    return new Response('{"config":{"nested":[9007199254740993]},"revision":"' + revision(1) + '"}');
+  });
+  await assert.rejects(new ThalovantControlPlane("https://example.com", { accessToken: "test" })
+    .updateRuntimeGroupConfig("g", { lang: "en" }), /safe range/);
+  assert.equal(reads, 1);
+});
+
 test("configuration snapshots nested personas and delta before reads and retries", async t => {
   const config = { nested: { value: "original" } };
   const personas = { default: { name: "original" } };

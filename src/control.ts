@@ -904,12 +904,14 @@ export class ThalovantControlPlane {
     // Snapshot the caller's delta before the first asynchronous operation.
     const mergeBody = JSON.parse(JSON.stringify(body)) as JsonRecord;
     const delta = mergeBody.config as JsonRecord;
+    assertSafeConfigNumbers(delta);
     for (let attempt = 0; ; attempt++) {
       const snapshot = await this.getRuntimeGroupConfig(runtimeGroupId);
       if (typeof snapshot.revision !== "string" || !/^[0-9a-f]{64}$/.test(snapshot.revision)
           || !isRecord(snapshot.config)) {
         throw new ThalovantApiError("Safe configuration merge requires a valid config and revision from the API.");
       }
+      assertSafeConfigNumbers(snapshot.config);
       try {
         return await this.request("PUT", path, { body: {
           ...mergeBody, config: mergeConfig(snapshot.config, delta), expected_revision: snapshot.revision,
@@ -1580,4 +1582,13 @@ function mergeConfig(base: JsonRecord, delta: JsonRecord): JsonRecord {
     return [key, Object.hasOwn(base, key) && isRecord(base[key]) && isRecord(value)
       ? mergeConfig(base[key], value) : value];
   }));
+}
+
+/** Refuse a read/merge/write that could silently round an untouched integer. */
+function assertSafeConfigNumbers(value: unknown): void {
+  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    throw new ThalovantApiError("Safe configuration merge cannot preserve integers outside JavaScript's safe range; use string identifiers or a client with lossless integer support.");
+  }
+  if (Array.isArray(value)) value.forEach(assertSafeConfigNumbers);
+  else if (isRecord(value)) Object.values(value).forEach(assertSafeConfigNumbers);
 }

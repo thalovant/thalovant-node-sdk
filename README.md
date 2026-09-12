@@ -1024,3 +1024,7 @@ Distinct audio events may intentionally repeat identical sound content. Only
 repeated delivery of the same event object is suppressed where object identity
 is available, without counting it as a dropped clip. Rendered example ranking
 uses the original pattern's slot presence even when sample values are supplied.
+
+Guarded merges reject integers outside JavaScript’s safe range before writing,
+so reading and merging cannot silently round an untouched configuration value.
+Represent large identifiers as strings or use an SDK with lossless integers.
