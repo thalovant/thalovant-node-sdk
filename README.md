@@ -1066,7 +1066,8 @@ to `speakable` and `asSentence`. `new ListingRules(null)` selects bare rendering
 without locale data. Custom regex rules use JavaScript Unicode syntax and may
 start with Python-style global `(?i)`, `(?m)`, or `(?s)` flags. Invalid regex rules
 fail during construction. Regenerate bundled data with
-`node scripts/sync-listing-data.mjs /path/to/thalovant-languages` at the pinned commit.
+`node scripts/sync-listing-data.mjs /path/to/python3.13` with the pinned public
+packages listed in `scripts/sync-reference-fixtures.py`.
 
 Regenerate the cross-SDK reference cases with
 `python scripts/sync-reference-fixtures.py --fixtures-only --test-dir test`,
