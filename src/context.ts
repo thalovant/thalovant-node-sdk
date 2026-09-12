@@ -76,6 +76,7 @@ export interface RequestContextOptions {
 
 export function requestContext(base: EventContext = {}, options: RequestContextOptions = {}): EventContext | undefined {
   const result = { ...base };
+  if (result.session) result.session = { ...result.session };
   const stages = options.pipeline?.map(stage => stage.trim()).filter(Boolean);
   if (stages?.length) result.session = { ...asRecord(result.session), pipeline: stages };
   if (options.sttLang?.trim()) result.stt_lang = options.sttLang.trim();

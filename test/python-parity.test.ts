@@ -9,6 +9,26 @@ import {
 const revision = (n: number) => n.toString(16).padStart(64, "0");
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
+test("configuration snapshots nested personas and delta before reads and retries", async t => {
+  const config = { nested: { value: "original" } };
+  const personas = { default: { name: "original" } };
+  let writes = 0;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    if (init?.method === "GET") {
+      config.nested.value = "changed";
+      personas.default.name = "changed";
+      return json({ config: {}, revision: revision(1) });
+    }
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.config.nested.value, "original");
+    assert.equal(body.personas.default.name, "original");
+    return json({}, ++writes === 1 ? 412 : 200);
+  });
+  await new ThalovantControlPlane("https://example.com", { accessToken: "test" })
+    .updateRuntimeGroupConfig("g", config, { personas });
+  assert.equal(writes, 2);
+});
+
 test("request hints preserve caller/session data and omit empty hints", () => {
   const base = { session: { session_id: "kept", pipeline: ["old"] }, extra: true };
   const location = buildLocation({ city: " Montréal ", country: " ca ", region: " QC ", latitude: "45.5", longitude: "-73.5", timezone: "America/Toronto" });
@@ -17,6 +37,8 @@ test("request hints preserve caller/session data and omit empty hints", () => {
     extra: true, session: { session_id: "kept", pipeline: ["intent"] }, stt_lang: "fr-CA", location,
   });
   assert.deepEqual(base.session.pipeline, ["old"]);
+  requestContext(base, { sttLang: "fr" })!.session!.session_id = "changed";
+  assert.equal(base.session.session_id, "kept");
   assert.equal(requestContext(), undefined);
   assert.equal(buildLocation({ country: "CA" }), undefined);
   for (const [latitude, longitude] of [[0, 0], [91, 0], [0, 181], [NaN, 2], [Infinity, 1], ["", "5"], ["bad", "2"], ["0x2", "3"]]) {

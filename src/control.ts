@@ -902,7 +902,8 @@ export class ThalovantControlPlane {
     if (options.personas !== undefined) body.personas = options.personas;
     if (options.merge === false) return this.request("PATCH", path, { body });
     // Snapshot the caller's delta before the first asynchronous operation.
-    const delta = JSON.parse(JSON.stringify(config)) as JsonRecord;
+    const mergeBody = JSON.parse(JSON.stringify(body)) as JsonRecord;
+    const delta = mergeBody.config as JsonRecord;
     for (let attempt = 0; ; attempt++) {
       const snapshot = await this.getRuntimeGroupConfig(runtimeGroupId);
       if (typeof snapshot.revision !== "string" || !/^[0-9a-f]{64}$/.test(snapshot.revision)
@@ -911,7 +912,7 @@ export class ThalovantControlPlane {
       }
       try {
         return await this.request("PUT", path, { body: {
-          ...body, config: mergeConfig(snapshot.config, delta), expected_revision: snapshot.revision,
+          ...mergeBody, config: mergeConfig(snapshot.config, delta), expected_revision: snapshot.revision,
         } });
       } catch (error) {
         if (!(error instanceof ThalovantApiError) || error.statusCode !== 412 || attempt >= 2) throw error;

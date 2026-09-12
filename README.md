@@ -223,7 +223,7 @@ Deleting a hub also deletes its clients and ACLs. Runtime groups have no
 group or a group that still has hubs attached (HTTP 409).
 
 Configuration updates deep-merge with a revision precondition. The SDK reads
-fresh configuration after HTTP 412 conflicts and retries at most three times.
+fresh configuration after HTTP 412 conflicts, with at most three total write attempts.
 A server without revision support fails before a write. Merging needs both
 `hubs:read` and paid `hubs:write`; set `merge: false` for explicit replacement:
 
@@ -1001,6 +1001,7 @@ await api.updateRuntimeGroupConfig(groupId, { tts: { module: "piper" } });
 await api.updateRuntimeGroupConfig(groupId, fullConfig, { merge: false });
 ```
 
+Guarded merging requires the `hubs:read` and `hubs:write` scopes and a paid plan.
 Safe merging requires an API whose configuration GET returns a valid `revision`
 and whose configuration PUT checks `expected_revision`. The SDK rereads and
 reapplies the original delta only after HTTP 412, with at most three attempts.
@@ -1014,3 +1015,12 @@ is intended, including when working with an older API. Existing code relying on
 replacement must opt into it when upgrading. Raw intent patterns remain the
 default; speakable examples remove optional parts, choose alternatives, and
 substitute caller-supplied slots while retaining complete-phrase priority.
+
+The audio limits use encoded-length upper bounds before decoding, so formatting
+whitespace consumes budget too. Like Python's `bytes.fromhex`, ASCII whitespace
+alone decodes to zero bytes. Bounded malformed clips remain available as event
+metadata and fail when decoded; they are never fetched or played automatically.
+Distinct audio events may intentionally repeat identical sound content. Only
+repeated delivery of the same event object is suppressed where object identity
+is available, without counting it as a dropped clip. Rendered example ranking
+uses the original pattern's slot presence even when sample values are supplied.
