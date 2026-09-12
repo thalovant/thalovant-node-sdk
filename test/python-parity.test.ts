@@ -85,8 +85,8 @@ test("speakable examples retain original complete-phrase priority and best dupli
   const intent = new HubIntent({ skillId: "x", name: "x", engine: "padatious", phrases: {
     "en-us": ["{x}", "a complete sentence", "[please]", "(x|y)", "x"],
   } });
-  assert.deepEqual(intent.examples("en-us", 2, { speakable: true }), ["x", "a complete sentence"]);
-  assert.deepEqual(intent.examples("en-us", 0, { speakable: true }), ["x", "a complete sentence"]);
+  assert.deepEqual(intent.examples("en-us", 2, { speakable: true }), ["a complete sentence", "x"]);
+  assert.deepEqual(intent.examples("en-us", 0, { speakable: true }), ["a complete sentence", "x"]);
 });
 
 test("audio decoding is bounded, strict and never resolves URLs", () => {

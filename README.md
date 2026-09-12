@@ -1032,3 +1032,39 @@ Represent large identifiers as strings or use an SDK with lossless integers.
 Guarded configuration merges in 0.5.1 also reject non-finite values before
 serialization and validate supplied personas for unsafe integers. Stored
 numeric exponents that overflow JavaScript numbers are rejected before writing.
+
+### Locale-aware intent listings
+
+Version 0.6.0 adds sentence rendering and includes a generated snapshot of
+[`thalovant-languages` 0.1.1](https://github.com/thalovant/thalovant-languages/tree/v0.1.1).
+The language rules work in browsers and Node without network or filesystem access.
+
+```ts
+import { asSentence, ListingRules, speakable } from "@thalovant/sdk";
+
+asSentence("quelle heure est-il", "fr-CA"); // "Quelle heure est-il?"
+speakable("volume [to] {level} percent", {}, "en"); // "volume fifty percent"
+intent.examples("fr-CA", 2, { sentence: true });
+```
+
+`sentence: true` also renders patterns. Explicit `slots` override locale examples.
+Unknown languages keep slot names and capitalized, unpunctuated lines. A phrase
+that already has punctuation or ends on a known prefix remains unchanged.
+Omitting the language preserves the first registration's locale. Exact language
+tags take priority; regional fallback stays within the same language and script,
+with registration order breaking ties. Python uses OVOS's CLDR distance matcher,
+so ties among multiple regional variants can select a different registration.
+
+Examples rank complete phrases ahead of prefixes and slot patterns, then prefer
+fuller wording up to eight words. Rendered duplicates and empty phrases do not
+consume the limit. A non-positive limit returns all results; raw unlimited
+phrases retain registration order.
+
+For an application-defined data tree, construct `new ListingRules(data)` using
+`{ sentence_ends, languages }` and the canonical listing keys. The SDK snapshots
+the input. Pass it as the `listing` option to `examples`, or as the last argument
+to `speakable` and `asSentence`. `new ListingRules(null)` selects bare rendering
+without locale data. Custom regex rules use JavaScript Unicode syntax and may
+start with Python-style global `(?i)`, `(?m)`, or `(?s)` flags. Invalid regex rules
+fail during construction. Regenerate bundled data with
+`node scripts/sync-listing-data.mjs /path/to/thalovant-languages` at the pinned commit.

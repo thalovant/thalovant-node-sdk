@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 — 2026-09-12
+
+- Add locale-aware sentence listings, regional phrase selection, canonical slot examples and fuller phrase ranking, matching the Python 0.6.5 listing feature for supported locales.
+- Ship generated thalovant-languages 0.1.1 rules. Custom `ListingRules` snapshots and explicit no-data rendering work in Node and browsers without filesystem access.
+- Preserve selected locale, compile question rules independently, and support optional question categories without requiring opener words.
+
 ## 0.5.1 — 2026-09-12
 
 - Reject non-finite configuration values before JSON serialization can turn them into null. Guarded writes also validate unsafe integers in personas and overflowing numeric exponents in stored snapshots.

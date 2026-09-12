@@ -27,6 +27,7 @@
  * and `intent.service.padatious.manifest.get`, names only, no language) are
  * the fallback for a hub allowed for those alone.
  */
+import { closestLanguage, defaultListing, type ListingRules } from "./listing.js";
 import type { ThalovantClient } from "./client.js";
 import {
   EVENT_ADAPT_MANIFEST,
@@ -145,30 +146,26 @@ export class HubIntent {
   }
 
   phrasesFor(lang: string): readonly string[] {
-    for (const [candidate, sentences] of Object.entries(this.phrases)) {
-      if (sameLanguage(candidate, lang)) return sentences;
-    }
-    return [];
+    const match = closestLanguage(lang, Object.keys(this.phrases));
+    return match === undefined ? [] : this.phrases[match];
   }
 
-  /** A few sentences worth showing: whole ones before ones with a slot, shorter first. */
-  examples(lang?: string, limit = 2, options: { speakable?: boolean; slots?: Readonly<Record<string, string>> } = {}): readonly string[] {
-    let pool = lang ? this.phrasesFor(lang) : Object.values(this.phrases)[0] ?? [];
-    const ranks = new Map<string, number>();
-    if (options.speakable) {
-      const rendered: string[] = [];
-      for (const pattern of pool) {
-        const sentence = speakable(pattern, options.slots);
-        if (!sentence) continue;
-        if (!ranks.has(sentence)) rendered.push(sentence);
-        ranks.set(sentence, Math.min(ranks.get(sentence) ?? 1, Number(pattern.includes("{"))));
-      }
-      pool = rendered;
+  /** Complete phrases before prefixes and slots; fuller wording up to eight words. */
+  examples(lang?: string, limit = 2, options: { speakable?: boolean; sentence?: boolean; slots?: Readonly<Record<string, string>>; listing?: ListingRules } = {}): readonly string[] {
+    const renderLang = lang || Object.keys(this.phrases)[0];
+    const pool = renderLang ? this.phrasesFor(renderLang) : [];
+    const listing = options.listing ?? defaultListing;
+    if (!options.speakable && !options.sentence) return limit <= 0 ? pool : listing.rank(pool, renderLang).slice(0, limit);
+    const rendered: string[] = [], seen = new Set<string>();
+    for (const original of listing.rank(pool, renderLang)) {
+      let value = speakable(original, options.slots, renderLang, listing);
+      if (options.sentence) value = listing.asSentence(value, renderLang);
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      rendered.push(value);
+      if (limit > 0 && rendered.length >= limit) break;
     }
-    if (limit <= 0) return pool;
-    return [...pool]
-      .sort((a, b) => (ranks.get(a) ?? Number(a.includes("{"))) - (ranks.get(b) ?? Number(b.includes("{"))) || [...a].length - [...b].length)
-      .slice(0, limit);
+    return rendered;
   }
 
   asObject(): Record<string, unknown> {
@@ -744,8 +741,9 @@ async function withFallbacks(client: ThalovantClient, inventory: HubIntentInvent
   return new HubIntentInventory({ ...inventory, fallbacks: fallbacks ?? [], fallbacksKnown: fallbacks !== null });
 }
 
-/** Render one illustrative sentence without inventing slot values. */
-export function speakable(pattern: string, slots: Readonly<Record<string, string>> = {}): string {
+/** Render an illustrative phrase using locale examples, then explicit slot overrides. */
+export function speakable(pattern: string, slots: Readonly<Record<string, string>> = {}, lang?: string, listing: ListingRules = defaultListing): string {
+  slots = { ...listing.slotExamples(lang), ...slots };
   let text = pattern;
   while (/\[[^\[\]]*\]/.test(text)) text = text.replace(/\[[^\[\]]*\]/g, "");
   while (/\([^()]*\)/.test(text)) text = text.replace(/\(([^()]*)\)/g, (_, group: string) => {
