@@ -9,6 +9,27 @@ import {
 const revision = (n: number) => n.toString(16).padStart(64, "0");
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
+test("merge rejects non-finite config and unsafe persona numbers before I/O", async t => {
+  t.mock.method(globalThis, "fetch", async () => { assert.fail("invalid numbers must not reach the API"); });
+  const api = new ThalovantControlPlane("https://example.com", { accessToken: "test" });
+  for (const value of [NaN, Infinity, -Infinity]) {
+    await assert.rejects(api.updateRuntimeGroupConfig("g", { nested: [value] }), /finite/);
+    await assert.rejects(api.updateRuntimeGroupConfig("g", {}, { personas: { value } }), /finite/);
+  }
+  await assert.rejects(api.updateRuntimeGroupConfig("g", {}, { personas: { nested: [2 ** 53] } }), /safe range/);
+});
+
+test("merge rejects overflowing stored JSON exponents before any write", async t => {
+  let reads = 0;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    assert.equal(init?.method, "GET"); reads++;
+    return new Response('{"config":{"gain":1e400},"revision":"' + revision(1) + '"}');
+  });
+  await assert.rejects(new ThalovantControlPlane("https://example.com", { accessToken: "test" })
+    .updateRuntimeGroupConfig("g", { lang: "en" }), /finite/);
+  assert.equal(reads, 1);
+});
+
 test("merge refuses unsafe stored integers before any write", async t => {
   let reads = 0;
   t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {

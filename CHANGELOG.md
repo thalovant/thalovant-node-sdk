@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1 — 2026-09-12
+
+- Reject non-finite configuration values before JSON serialization can turn them into null. Guarded writes also validate unsafe integers in personas and overflowing numeric exponents in stored snapshots.
+
 ## 0.5.0 — 2026-09-12
 
 - Refuse guarded merges with integers outside JavaScript’s safe range before writing, preventing silent rounding of untouched values.
