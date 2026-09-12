@@ -14,7 +14,7 @@ test('regional registrations and omitted language keep the selected locale', () 
 test('slot defaults are locale data and caller overrides win', () => {
   assert.equal(speakable('volume [to] {level} percent',{},'en-US'), 'volume fifty percent');
   assert.equal(speakable('weather in {location}',{location:'Sherbrooke'},'en'), 'weather in Sherbrooke');
-  assert.equal(speakable('weather in {location}',{},'zh'), 'weather in location');
+  assert.equal(speakable('weather in {location}',{},'tlh'), 'weather in location');
   assert.equal(speakable('set the {gadget_name} going',{},'en'), 'set the gadget name going');
 });
 
@@ -28,7 +28,7 @@ test('canonical language rules distinguish questions, commands and prefixes', ()
   assert.equal(asSentence('tell me what happened','en-US'), 'Tell me what happened.');
   assert.equal(asSentence('quand est la fete du Canada','fr'), 'Quand est la fete du Canada?');
   assert.equal(asSentence('weather in Toronto','en'), 'Weather in Toronto.');
-  assert.equal(asSentence('como esta el tiempo','es-ES'), 'Como esta el tiempo');
+  assert.equal(asSentence('nuqneH','tlh'), 'NuqneH');
   assert.equal(asSentence('what time is it'), 'What time is it');
   assert.equal(asSentence('current conditions in','en'), 'Current conditions in');
   assert.equal(asSentence('quelles sont les conditions actuelles a','fr'), 'Quelles sont les conditions actuelles a');
@@ -75,7 +75,7 @@ test('no data keeps bare lines and slot names', () => {
   assert.deepEqual(listing.rank(['weather in','what is the weather'],'en'),['what is the weather','weather in']);
 });
 
-test('matches the published Python 0.6.5 golden listing cases in every shipped locale', async () => {
+test('matches the published Python 0.6.8 golden listing cases in every shipped locale', async () => {
   const { readFile } = await import('node:fs/promises');
   const vectors = JSON.parse(await readFile(new URL('../../test/listing-vectors.json', import.meta.url), 'utf8'));
   const listing = new ListingRules();

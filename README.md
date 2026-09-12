@@ -1035,8 +1035,8 @@ numeric exponents that overflow JavaScript numbers are rejected before writing.
 
 ### Locale-aware intent listings
 
-Version 0.6.0 adds sentence rendering and includes a generated snapshot of
-[`thalovant-languages` 0.1.1](https://github.com/thalovant/thalovant-languages/tree/v0.1.1).
+Version 0.6.1 adds sentence rendering and includes a generated snapshot of
+[`thalovant-languages` 0.2.1](https://github.com/thalovant/thalovant-languages/tree/v0.2.1).
 The language rules work in browsers and Node without network or filesystem access.
 
 ```ts
@@ -1066,7 +1066,8 @@ to `speakable` and `asSentence`. `new ListingRules(null)` selects bare rendering
 without locale data. Custom regex rules use JavaScript Unicode syntax and may
 start with Python-style global `(?i)`, `(?m)`, or `(?s)` flags. Invalid regex rules
 fail during construction. Regenerate bundled data with
-`node scripts/sync-listing-data.mjs /path/to/thalovant-languages` at the pinned commit.
+`node scripts/sync-listing-data.mjs /path/to/python3.13` with the pinned public
+packages listed in `scripts/sync-reference-fixtures.py`.
 
 Regenerate the cross-SDK reference cases with
 `python scripts/sync-reference-fixtures.py --fixtures-only --test-dir test`,
@@ -1074,3 +1075,18 @@ using the pinned public Python packages listed in that script.
 
 The SDK code, CLDR matching tables and bundled `thalovant-languages` data
 retain their upstream MIT license notices. Both data notices ship with the SDK.
+
+### Language data refresh
+
+The bundled listing data follows `thalovant-languages` 0.2.1: 270 languages
+(290 base and regional entries), with regional rules resolved through the
+public package loader. Sentence marks and trailing words now match Python 0.6.8;
+for example Spanish `qué hora es` becomes `Qué hora es?`, while French
+`coupe le son` remains a complete sentence. Undescribed languages such as
+`tlh` still render bare. The reference fixtures cover 4,652 listing cases and
+990 OVOS language-selection cases.
+
+Regenerate with `node scripts/sync-listing-data.mjs /path/to/python3.13`
+after installing the exact public package versions listed in
+`scripts/sync-reference-fixtures.py`. The generator validates those versions
+and rejects a custom language-data override.
