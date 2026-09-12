@@ -902,9 +902,15 @@ export class ThalovantControlPlane {
     if (options.personas !== undefined) body.personas = options.personas;
     if (options.merge === false) return this.request("PATCH", path, { body });
     // Snapshot the caller's delta before the first asynchronous operation.
-    const mergeBody = JSON.parse(JSON.stringify(body)) as JsonRecord;
+    const mergeBody = JSON.parse(JSON.stringify(body, (_key, value: unknown) => {
+      // JSON.stringify otherwise silently turns NaN and infinities into null.
+      if (typeof value === "number" && !Number.isFinite(value)) {
+        throw new ThalovantApiError("Configuration numbers must be finite.");
+      }
+      return value;
+    })) as JsonRecord;
+    assertSafeConfigNumbers(mergeBody);
     const delta = mergeBody.config as JsonRecord;
-    assertSafeConfigNumbers(delta);
     for (let attempt = 0; ; attempt++) {
       const snapshot = await this.getRuntimeGroupConfig(runtimeGroupId);
       if (typeof snapshot.revision !== "string" || !/^[0-9a-f]{64}$/.test(snapshot.revision)
@@ -1586,6 +1592,9 @@ function mergeConfig(base: JsonRecord, delta: JsonRecord): JsonRecord {
 
 /** Refuse a read/merge/write that could silently round an untouched integer. */
 function assertSafeConfigNumbers(value: unknown): void {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new ThalovantApiError("Configuration numbers must be finite.");
+  }
   if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
     throw new ThalovantApiError("Safe configuration merge cannot preserve integers outside JavaScript's safe range; use string identifiers or a client with lossless integer support.");
   }

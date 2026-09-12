@@ -1028,3 +1028,7 @@ uses the original pattern's slot presence even when sample values are supplied.
 Guarded merges reject integers outside JavaScript’s safe range before writing,
 so reading and merging cannot silently round an untouched configuration value.
 Represent large identifiers as strings or use an SDK with lossless integers.
+
+Guarded configuration merges in 0.5.1 also reject non-finite values before
+serialization and validate supplied personas for unsafe integers. Stored
+numeric exponents that overflow JavaScript numbers are rejected before writing.
