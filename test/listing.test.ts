@@ -108,3 +108,12 @@ test('punctuation-heavy runtime phrases are trimmed in linear time', () => {
   assert.equal(listing.asks('word'+marks+'word','en'),false);
   assert.equal(listing.asks(marks+'what'+marks+' time is it','en'),true);
 });
+
+
+test('custom non-boundaries use Unicode letters and preserve Python reference empty-input behavior', () => {
+  const rules = new ListingRules({sentence_ends:'.!?',languages:{xq:{question_patterns:[String.raw`\Bété\B`]}}});
+  assert.equal(rules.asks('été','xq'),false);
+  assert.equal(rules.asks('pétéx','xq'),true);
+  const empty = new ListingRules({sentence_ends:'.!?',languages:{xq:{question_patterns:[String.raw`\B`]}}});
+  assert.equal(empty.asks('','xq'),false);
+});

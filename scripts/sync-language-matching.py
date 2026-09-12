@@ -7,7 +7,8 @@ from pathlib import Path
 import langcodes.data_dicts as data
 import langcodes.language_distance as distance
 
-assert version('langcodes') == '3.5.1', 'Use langcodes==3.5.1'
+if version('langcodes') != '3.5.1':
+    raise RuntimeError('Use langcodes==3.5.1')
 result = {
     'likely': data.LIKELY_SUBTAGS, 'languages': data.LANGUAGE_REPLACEMENTS,
     'scripts': data.SCRIPT_REPLACEMENTS, 'territories': data.TERRITORY_REPLACEMENTS,

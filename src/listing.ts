@@ -29,12 +29,13 @@ function pattern(expression: string): RegExp {
   // Python's Unicode word boundary includes letters/numbers/underscore. JS \b
   // remains ASCII even in Unicode mode. Preserve escaped literals and classes.
   const boundary = '(?:(?<![\\p{L}\\p{N}_])(?=[\\p{L}\\p{N}_])|(?<=[\\p{L}\\p{N}_])(?![\\p{L}\\p{N}_]))';
+  const nonBoundary = '(?:(?=[\\s\\S])|(?<=[\\s\\S]))(?:(?<=[\\p{L}\\p{N}_])(?=[\\p{L}\\p{N}_])|(?<![\\p{L}\\p{N}_])(?![\\p{L}\\p{N}_]))';
   let converted = '', inClass = false;
   for (let i=0;i<expression.length;i++) {
     const char = expression[i];
     if (char === '\\' && i+1<expression.length) {
       const next = expression[++i];
-      converted += next === 'b' && !inClass ? boundary : char+next;
+      converted += next === 'b' && !inClass ? boundary : next === 'B' && !inClass ? nonBoundary : char+next;
     } else {
       if (char === '[') inClass = true;
       if (char === ']') inClass = false;

@@ -155,6 +155,7 @@ export class HubIntent {
     const renderLang = lang || Object.keys(this.phrases)[0];
     const pool = renderLang ? this.phrasesFor(renderLang) : [];
     const listing = options.listing ?? defaultListing;
+    // Python preserves registration order for unlimited raw patterns.
     if (!options.speakable && !options.sentence) return limit <= 0 ? pool : listing.rank(pool, renderLang).slice(0, limit);
     const rendered: string[] = [], seen = new Set<string>();
     for (const original of listing.rank(pool, renderLang)) {
