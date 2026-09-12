@@ -1079,8 +1079,17 @@ export class ThalovantControlPlane {
     return hubSkillListFromRecord(await this.request("GET", hubSkillsPath(hubId)));
   }
 
+  /** Newest-first skill events/operations for the hub's shared runtime; requires hubs:inspect. */
+  listHubSkillHistory(hubId: string, options: { limit?: number } = {}): Promise<JsonRecord> {
+    const limit = options.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      throw new RangeError("limit must be an integer from 1 to 200");
+    }
+    return this.request("GET", `${hubSkillsPath(hubId)}/history?limit=${limit}`);
+  }
+
   /**
-   * Install a skill on one hub.
+   * Install a skill on the hub’s shared runtime group. All hubs sharing it are affected.
    *
    * The API accepts the change with HTTP 202 and applies it live on the hub,
    * typically within about fifteen seconds and without restarting it.
@@ -1116,7 +1125,7 @@ export class ThalovantControlPlane {
   }
 
   /**
-   * Move one hub's skill to another version.
+   * Move a skill on the hub's shared runtime group to another version.
    *
    * `version` is required: `"latest"` or an exact `x.y.z`. The API accepts
    * with HTTP 202 and `state: "updating"`; `wait` and `timeoutMs` behave
@@ -1136,7 +1145,7 @@ export class ThalovantControlPlane {
   }
 
   /**
-   * Remove a skill from one hub.
+   * Remove a skill from the hub’s shared runtime group.
    *
    * The API accepts with HTTP 202 and `state: "removing"`; `wait` and
    * `timeoutMs` behave exactly as in `installHubSkill`, converging on

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 — 2026-09-12
+
+- Add shared-runtime hub skill history with bounded limits.
+- Correct hub skill documentation: changes affect every hub sharing the runtime group.
+
 ## 0.3.16
 
 - Stop hub-skill operation polling before starting a read at or after the wait deadline, including an already-expired budget.

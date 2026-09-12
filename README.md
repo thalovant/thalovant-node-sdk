@@ -303,9 +303,9 @@ answered). `getHubRuntimeCapabilities` is the one that answers HTTP 409 instead.
 
 ## Skills On One Hub
 
-A hub can also carry skills of its own, next to whatever its runtime group
-provides, and it can start with none at all. The four hub-skill calls address
-**one hub by id** (the authenticated hub routes do not take slugs) and every
+The hub-skill calls manage the attachments of the hub’s shared runtime group.
+The group can start with no skills. These calls address
+**the runtime group selected by a hub id** (the authenticated hub routes do not take slugs) and every
 change applies live on that hub, typically within about fifteen seconds and
 without restarting it.
 
@@ -960,3 +960,20 @@ settling. Intent misses may recover through later speech before completion.
 Completion, policy denial and query-timeout events end collection; later events
 are ignored. A hard failure after speech returns that partial reply with
 `ok: false`; a hard failure before any speech raises a runtime error.
+
+
+### Shared-runtime skill management
+
+Hub-addressed skill methods select the runtime group attached to the hub UUID.
+Every hub sharing that group sees the same skill changes and history. The API
+requires a restricted token to cover all served hubs. Reads need `hubs:inspect`
+(`hubs:read` implies it); writes need `hubs:write`, an eligible paid plan and ownership.
+
+The history response contains newest-first `event` and `operation` entries,
+including nullable actor/version fields. Its limit is 1–200 (50 where omitted).
+An accepted mutation is not proof the skill is ready. Optional waiting polls the
+operation, with a 120-second default timeout and two-second interval. Polling
+never repeats an accepted mutation and starts no new read after its deadline;
+an already-running HTTP request retains its normal request timeout.
+
+Read history with `api.listHubSkillHistory(hubId, { limit: 50 })`; it returns the API JSON envelope.
