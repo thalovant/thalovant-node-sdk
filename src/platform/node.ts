@@ -293,3 +293,30 @@ export const NOISE_PSK_FILENAME = "noise_psks.json";
 export function noiseStateDir(): string {
   return dirname(defaultConfigPath("config.yaml"));
 }
+
+export function defaultInventoryCacheDirectory(): string {
+  return join(process.env.XDG_CACHE_HOME || join(homedir(),'.cache'),'thalovant');
+}
+export async function readInventoryCache(directory:string,filename:string):Promise<{contents:string;modifiedAt:number}> {
+  const handle=await open(join(directory,filename),'r');
+  try {
+    const info=await handle.stat();
+    const limit=8*1024*1024;
+    if(info.size>limit)throw new RangeError('Inventory cache exceeds size limit');
+    const chunks:Buffer[]=[];let size=0;
+    for await (const chunk of handle.createReadStream({autoClose:false})) {
+      size+=chunk.length;if(size>limit)throw new RangeError('Inventory cache exceeds size limit');chunks.push(chunk);
+    }
+    return {contents:Buffer.concat(chunks).toString('utf8'),modifiedAt:info.mtimeMs/1000};
+  }
+  finally {await handle.close();}
+}
+export async function writeInventoryCache(directory:string,filename:string,contents:string):Promise<void> {
+  await mkdir(directory,{recursive:true,mode:0o700});
+  const scratch=join(directory,`.intents-${randomUUID()}.partial`);
+  try {
+    const handle=await open(scratch,'wx',0o600);
+    try {await handle.writeFile(contents,'utf8');await handle.sync();}finally {await handle.close();}
+    await rename(scratch,join(directory,filename));
+  } finally {await rm(scratch,{force:true});}
+}

@@ -243,3 +243,15 @@ export async function writeNoiseState(directory: string, filename: string, conte
 export async function withNoiseStateLock<T>(_directory: string, work: () => Promise<T>): Promise<T> {
   return work();
 }
+
+export function defaultInventoryCacheDirectory(): string { return 'thalovant-inventory'; }
+export async function readInventoryCache(directory:string,filename:string):Promise<{contents:string;modifiedAt:number}|undefined> {
+  const raw=globalThis.localStorage.getItem(`${directory}:${filename}`);
+  if(!raw||raw.length>8*1024*1024)return undefined;
+  const value:unknown=JSON.parse(raw);
+  if(!value||typeof value!=='object'||!('contents' in value)||typeof value.contents!=='string'||!('modifiedAt' in value)||typeof value.modifiedAt!=='number'||!Number.isFinite(value.modifiedAt))return undefined;
+  return {contents:value.contents,modifiedAt:value.modifiedAt};
+}
+export async function writeInventoryCache(directory:string,filename:string,contents:string):Promise<void> {
+  globalThis.localStorage.setItem(`${directory}:${filename}`,JSON.stringify({contents,modifiedAt:Date.now()/1000}));
+}
