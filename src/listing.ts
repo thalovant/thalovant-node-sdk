@@ -96,8 +96,14 @@ export class ListingRules {
     return last !== undefined && this.wordSet(lang, 'trailing_words').has(last.toLowerCase());
   }
   asks(text: string, lang?: string): boolean {
+    if (!this.available) return false;
+    text = text.trim();
+    const last = [...text].at(-1)?.codePointAt(0);
+    // Unicode 15.1 names containing QUESTION MARK, matching languages 0.3.0.
+    if (last !== undefined && [0x3f, 0xbf, 0x37e, 0x55e, 0x61f, 0x1367, 0x1945, 0x2047, 0x2049, 0x2753, 0x2754, 0x2a7b, 0x2a7c, 0x2cfa, 0x2cfb, 0x2e2e, 0x2e54, 0xa60f, 0xa6f7, 0xfe16, 0xfe56, 0xff1f, 0x11143, 0x1e95f, 0x1fbc4, 0xe003f].includes(last)) return true;
     const tag = this.tag(lang);
-    if (tag !== undefined && this.patterns.get(tag)!.some(rule => rule.test(text))) return true;
+    const patterns = lang ? (tag === undefined ? [] : this.patterns.get(tag)!) : [...this.patterns.values()].flat();
+    if (patterns.some(rule => rule.test(text))) return true;
     const tokens = words(text).map(word => trimQuestionMarks(word).toLowerCase()).filter(Boolean);
     return tokens.length > 0 && (this.wordSet(lang, 'question_openers').has(tokens[0]) ||
       tokens.some(word => this.wordSet(lang, 'question_words_anywhere').has(word)));

@@ -117,3 +117,11 @@ test('custom non-boundaries use Unicode letters and preserve Python reference em
   const empty = new ListingRules({sentence_ends:'.!?',languages:{xq:{question_patterns:[String.raw`\B`]}}});
   assert.equal(empty.asks('','xq'),false);
 });
+
+
+test('question detection matches the Python 0.7 public reference including supplementary scalars', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const vectors = JSON.parse(await readFile(new URL('../../test/question-vectors.json', import.meta.url), 'utf8'));
+  for (const row of vectors.cases) assert.equal(new ListingRules().asks(row.text,row.lang ?? undefined),row.expected,JSON.stringify(row));
+  assert.equal(new ListingRules(null).asks('question?'),false);
+});
