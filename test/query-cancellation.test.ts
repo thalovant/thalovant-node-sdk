@@ -216,6 +216,9 @@ for (const terminal of ["hive.query.complete", "hive.policy.denied", "hive.query
         else {
           const reply = await bounded(pending);
           assert.equal(reply.text, "partial"); assert.equal(reply.ok, terminal === "hive.query.complete");
+          assert.equal(reply.claimed, terminal === "hive.query.complete");
+          assert.deepEqual(reply.pipelineIds, []);
+          assert.deepEqual(reply.skillIds, []);
           assert.deepEqual(reply.events.map(event => event.name), ["speak", terminal]);
         }
         assertClean(peer, controller.signal); assert.equal(peer.disconnects, 0);

@@ -139,6 +139,9 @@ test("ask retains ordered audio within clip/aggregate limits and ignores duplica
     const reply = await client.ask("hello", { sttLang: " fr ", pipeline: ["test"], replySettleMs: 0, timeoutMs: 1000 });
     assert.equal(reply.text, "Bonjour");
     assert.equal(reply.lang, "fr");
+    assert.equal(reply.claimed, true);
+    assert.deepEqual(reply.pipelineIds, []);
+    assert.deepEqual(reply.skillIds, []);
     assert.equal(reply.hasAudio, true);
     assert.equal(reply.droppedMedia, 2);
     assert.equal(reply.mediaEvents?.length, 5);

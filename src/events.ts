@@ -131,6 +131,10 @@ export class ThalovantEvent {
 }
 
 export interface ThalovantReply {
+  /** SDK-produced replies always include these; optional for custom reply objects. */
+  readonly pipelineIds?: string[];
+  readonly skillIds?: string[];
+  readonly claimed?: boolean;
   text: string;
   /** Language selected by the runtime, from the first event carrying a hint. */
   readonly lang?: string;
@@ -146,6 +150,17 @@ export interface ThalovantReply {
   events: ThalovantEvent[];
   failureEvent?: ThalovantEvent;
   displayItems(options?: { maxTextChars?: number }): ThalovantDisplayItem[];
+}
+
+/** Ordered string stamps and advisory claim status; never proof of peer identity. */
+export function replyClaimMetadata(reply: Pick<ThalovantReply, "events" | "handled" | "ok" | "failureEvent">): {
+  pipelineIds: string[]; skillIds: string[]; claimed: boolean;
+} {
+  const ids = (key: string): string[] => [...new Set(reply.events.map(event => event.context[key])
+    .filter((value): value is string => typeof value === "string" && value.length > 0))];
+  const pipelineIds = ids("pipeline_id");
+  return { pipelineIds, skillIds: ids("skill_id"), claimed: reply.handled && reply.ok && !reply.failureEvent
+    && (pipelineIds.length === 0 || pipelineIds.some(stage => !stage.includes("fallback"))) };
 }
 
 export function newSessionId(): string {

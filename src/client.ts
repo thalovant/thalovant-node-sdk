@@ -1,3 +1,4 @@
+import { replyClaimMetadata } from "./events.js";
 import {
   EVENT_AUDIO_QUEUE,
   MEDIA_EVENTS,
@@ -491,7 +492,11 @@ export class ThalovantClient {
         throw timeoutError();
       }
       const replyText = fragments.join(" ");
+      const claimMetadata = () => replyClaimMetadata({ events, handled: !effectiveFailure, ok: !effectiveFailure, failureEvent: effectiveFailure });
       return {
+        get pipelineIds(): string[] { return claimMetadata().pipelineIds; },
+        get skillIds(): string[] { return claimMetadata().skillIds; },
+        get claimed(): boolean { return claimMetadata().claimed; },
         text: replyText,
         displayText: stripSsml(replyText),
         utterances: fragments,
@@ -669,7 +674,11 @@ export class ThalovantClient {
         throw new ThalovantTimeoutError(`Hub finished the query but did not emit a speak reply.`);
       }
       const replyText = fragments.join(" ");
+      const claimMetadata = () => replyClaimMetadata({ events, handled: !failureEvent, ok: !failureEvent, failureEvent });
       return {
+        get pipelineIds(): string[] { return claimMetadata().pipelineIds; },
+        get skillIds(): string[] { return claimMetadata().skillIds; },
+        get claimed(): boolean { return claimMetadata().claimed; },
         text: replyText,
         displayText: stripSsml(replyText),
         utterances: fragments,
