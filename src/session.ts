@@ -259,7 +259,13 @@ export class OriginPreference {
         this.quietUntil = 0;
         return client;
       } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") throw error;
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "name" in error &&
+          error.name === "AbortError"
+        )
+          throw error;
         this.quietUntil = this.clock() + this.cooldownSeconds;
       }
     }

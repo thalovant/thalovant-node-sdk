@@ -277,7 +277,7 @@ export class InventoryCache {
     const readable = (host || "local")
       .replace(/[^A-Za-z0-9._-]/g, "-")
       .slice(0, 40);
-    return `${mode}-${readable}-${bytesToHex(sha256(new TextEncoder().encode(`${mode}|${identityPath}`))).slice(0, 8)}`;
+    return `${mode}-${readable}-${bytesToHex(sha256(new TextEncoder().encode(`${mode}|${identityPath}|${host || "local"}`))).slice(0, 8)}`;
   }
   static async keyForIdentity(
     mode: string,
@@ -328,7 +328,11 @@ export async function identityHost(
   try {
     const raw = JSON.parse(await readSecretFile(identityPath, "identity file"));
     return typeof raw?.default_master === "string"
-      ? new URL(raw.default_master).hostname || undefined
+      ? new URL(
+          raw.default_master.includes("://")
+            ? raw.default_master
+            : `wss://${raw.default_master}`,
+        ).hostname || undefined
       : undefined;
   } catch {
     return undefined;

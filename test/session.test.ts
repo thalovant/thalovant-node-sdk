@@ -157,3 +157,25 @@ test("cancelled preferred-origin attempts never fall back", async () => {
   assert.equal(attempts, 1);
   assert.equal(origin.coolingDown, false);
 });
+
+test("cross-realm cancellation cannot start a public fallback", async () => {
+  const { runInNewContext } = await import("node:vm");
+  const cancelled = runInNewContext(
+    "Object.assign(new Error('cancelled'), { name: 'AbortError' })",
+  );
+  assert.equal(cancelled instanceof Error, false);
+  const origin = new OriginPreference("127.0.0.2");
+  let attempts = 0;
+  await assert.rejects(
+    origin.connect(
+      async () => {
+        attempts++;
+        throw cancelled;
+      },
+      { host: "hub.invalid", connectTimeout: 6 },
+    ),
+    (error) => error === cancelled,
+  );
+  assert.equal(attempts, 1);
+  assert.equal(origin.coolingDown, false);
+});

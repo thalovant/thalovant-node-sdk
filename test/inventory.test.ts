@@ -113,6 +113,7 @@ test("shared Python inventory contract survives sorted JSON across SDKs", async 
       "utf8",
     ),
   );
+  assert.equal(InventoryCache.key("hub"), data.cache_key);
   const inventory = Inventory.fromObject(data.inventory);
   for (const row of data.examples)
     assert.deepEqual(
@@ -122,4 +123,22 @@ test("shared Python inventory contract survives sorted JSON across SDKs", async 
   for (const row of data.speaks)
     assert.equal(inventory.skills[0].speaks(row.language), row.expected);
   assert.equal(inventory.skills[1].speaks("en"), undefined);
+});
+
+test("cache keys normalize identity hosts and hash their full untruncated names", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "thalovant-cache-key-"));
+  try {
+    const path = join(directory, "identity.json");
+    const first = "a".repeat(40) + "one.example",
+      second = "a".repeat(40) + "two.example";
+    await writeFile(path, JSON.stringify({ default_master: first }), {
+      mode: 0o600,
+    });
+    const key = await InventoryCache.keyForIdentity("hub", path);
+    assert.ok(key.startsWith("hub-" + "a".repeat(40) + "-"));
+    await writeFile(path, JSON.stringify({ default_master: second }));
+    assert.notEqual(await InventoryCache.keyForIdentity("hub", path), key);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
