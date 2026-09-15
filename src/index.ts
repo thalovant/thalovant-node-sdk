@@ -6,6 +6,7 @@ export * from "./noise.js";
 export * from "./noise-store.js";
 export * from "./errors.js";
 export * from "./events.js";
+export * from "./hubs.js";
 export * from "./identity.js";
 // The intent models and constants only. The wire helpers behind them
 // (`requestReply`, `describeMany`, ...) stay package-internal and are reached
@@ -24,6 +25,7 @@ export {
   type IntentDefinition,
   type IntentRegistration,
 } from "./intents.js";
+export * from "./native-auth.js";
 export * from "./protocols.js";
 export * from "./rich.js";
 export * from "./transport.js";

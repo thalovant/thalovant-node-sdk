@@ -1,92 +1,102 @@
 {
-  "schema_version": 1,
+  "capabilities": {
+    "cli": {
+      "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools.",
+      "status": "not-applicable"
+    },
+    "control": {
+      "implementation": {
+        "src/control.ts": "8b5f565b79d150e9752b97b015f99d099e8541b8469b2567b323ad0093437893",
+        "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
+        "src/native-auth.ts": "5a186664da7e4705973be0cbb31a79fb8657807080acbd7e34a0986622822a8e"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
+      "status": "required",
+      "tests": {
+        "test/control-security.test.ts": "b8e89b545dacdc117367aa277651436fa5fe47d9959d02c52a1ff76e035c1c6d",
+        "test/hub-skills.test.ts": "3e5551a1195dfb7c4a13b7dc1ad7e0903a1b216b5fbe200bece925353af94634",
+        "test/hubs.test.ts": "895a164d1cabe309886d2646cdd83611a7b4f58fe6944349c0fc3aab641a5c5e",
+        "test/native-auth.test.ts": "0654b625010f2a090b4d7f204130d88de1ffbcc0cea4cca38c335f482e5fefc6"
+      }
+    },
+    "identity": {
+      "implementation": {
+        "src/identity.ts": "998b49fa1b71f60531e70cdfebc5dcd18544ed955185616dd72d56c28f783112",
+        "src/protocols.ts": "3b497ee67c2e3ba2b334ac111579f3772ca6b2250792e5362e058ef23972dd52"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "status": "required",
+      "tests": {
+        "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8",
+        "test/sdk.test.ts": "5b7b16bc0bfc9fa47fee3051f97ca2ab5627a9322812c5c3e62944547d703267"
+      }
+    },
+    "inventory": {
+      "implementation": {
+        "src/inventory.ts": "fafa87e316d0351736b05d833a1b54379ee114d3cea748b031acb5e8c03adab2",
+        "src/platform/browser.ts": "c136d997b8526464106fa6c5dd8b78a99eb97ccfd912391fdd06e36ce6b232d5",
+        "src/platform/node.ts": "d00d04ddfb8707a4546b5133d31a7a7c93e8ef0c398547ce7e06591b89b11def"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "status": "required",
+      "tests": {
+        "test/inventory-vectors.json": "4deb456540b8b08aa4b59f8366d4295318b743245e7936febbdb199eb2dcfae0",
+        "test/inventory.test.ts": "79316d45b310903d46e6c0bcb66ed55b97abbede769b32353d8185dea570e0a3"
+      }
+    },
+    "listing": {
+      "implementation": {
+        "src/intents.ts": "3c047ceab8fe7b562621be0578dc5c69d82517a3c62de74e06ef20c98c30bd71",
+        "src/listing.ts": "1034ceed4d20ab80b19438f142498ad953fd6f58880c2e4cc1bee31e3402317f"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "status": "required",
+      "tests": {
+        "test/listing.test.ts": "04566c94130a66194ed183c3ce45f0fd79257a1677f4e58b0fdc0ca4153b0b4e",
+        "test/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
+      }
+    },
+    "runtime": {
+      "implementation": {
+        "src/client.ts": "710e1e9fad6f38467a1a517bfe2d9e5e07da1f049a58457695460042d87518a1",
+        "src/events.ts": "4acb5203a5cc634a5bcdf4dd5a56b76110a00a0afce2ca6538837cdf05d04fd8",
+        "src/noise.ts": "29c37c36c0fba02a9ff408b226d651c767f8c2236dff259da4970e0e6c759ca9",
+        "src/transport-core.ts": "09f7b59f53d016a0c9d88fb6f2768d1c0478bfdeac138ead9bfbf61e2e18e584"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
+      "status": "required",
+      "tests": {
+        "test/ask-wait-deadlines.test.ts": "29aa6e61ce7b0ef25d987e295d80d37bc9aeca6fa5253a348446fa8203f011f7",
+        "test/noise-transports.test.ts": "06ddd7ada87e9032c9c5f5de82576fdd848d555a955c143d77efb8617179c9a2",
+        "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8",
+        "test/reply-claim-vectors.json": "bfcd4a649fa8ecb0cede0ccd495cdbdc1a9881760e4654cd776cf81bed558cb1",
+        "test/reply-claims.test.ts": "8f2071035b281cca9fcfd8a3934cc9baf7c550ce6284021a95df9b40a0c7f540"
+      }
+    },
+    "session": {
+      "implementation": {
+        "src/session.ts": "a82d5076214fbc3b6b3e61eb171cd29727f53bb66213486d105f142a2fb9a7d2"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The connected-client factory owns failed connection cleanup; Python performs that dial internally and retains failed retirement before replacement.",
+      "status": "required",
+      "tests": {
+        "test/session.test.ts": "c5c7b84ec471163f5079bc2dfee231a610a8cc434f68f8aa370cbfe9cd122a67"
+      }
+    }
+  },
   "reference_digests": [
     "1133ac83dca463a5b7c69c980d1b5db46a1314d08151b31508982ad1cf41b6c6",
     "c13f62bf0c5ff9a8b06808542f89481f961e7c4e24af13928055598b76e2550c",
     "2440dd10059c468ca5012a3e4e9e057c9bd2df7ef442eba1d5dcdeb4afb3eafd",
     "4f17f2e999105c5629defd1c1ea71a197ecf725a9b559ff7b3bf9932638645bd",
     "676e935e66330f8614d6c23cccddd48e1c4577c3af761775f18e1ea0128b8007",
-    "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0"
+    "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0",
+    "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
+    "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b",
+    "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107",
+    "d02b21380724ae606673f1b7e74b57f7962c2dea1b0640fe642856c2f2be97e2",
+    "8c8c6d952c7d86633eb65eee20415f06ee114389b3cd5efc138e59a858ffdbab",
+    "20cc677bf3ca8d61c32f0f2d3fbf6562899cf83f951685d57a2bdd10e8d30a45"
   ],
-  "capabilities": {
-    "runtime": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
-      "implementation": {
-        "src/client.ts": "710e1e9fad6f38467a1a517bfe2d9e5e07da1f049a58457695460042d87518a1",
-        "src/transport-core.ts": "09f7b59f53d016a0c9d88fb6f2768d1c0478bfdeac138ead9bfbf61e2e18e584",
-        "src/noise.ts": "29c37c36c0fba02a9ff408b226d651c767f8c2236dff259da4970e0e6c759ca9",
-        "src/events.ts": "4acb5203a5cc634a5bcdf4dd5a56b76110a00a0afce2ca6538837cdf05d04fd8"
-      },
-      "tests": {
-        "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8",
-        "test/ask-wait-deadlines.test.ts": "29aa6e61ce7b0ef25d987e295d80d37bc9aeca6fa5253a348446fa8203f011f7",
-        "test/noise-transports.test.ts": "06ddd7ada87e9032c9c5f5de82576fdd848d555a955c143d77efb8617179c9a2",
-        "test/reply-claims.test.ts": "8f2071035b281cca9fcfd8a3934cc9baf7c550ce6284021a95df9b40a0c7f540",
-        "test/reply-claim-vectors.json": "bfcd4a649fa8ecb0cede0ccd495cdbdc1a9881760e4654cd776cf81bed558cb1"
-      }
-    },
-    "control": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
-      "implementation": {
-        "src/control.ts": "6a04ee2167552a837c85e3a47c3fa9fc8928778675f295262037b2d4a41fb2db"
-      },
-      "tests": {
-        "test/hub-skills.test.ts": "3e5551a1195dfb7c4a13b7dc1ad7e0903a1b216b5fbe200bece925353af94634",
-        "test/control-security.test.ts": "b8e89b545dacdc117367aa277651436fa5fe47d9959d02c52a1ff76e035c1c6d"
-      }
-    },
-    "identity": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
-      "implementation": {
-        "src/identity.ts": "998b49fa1b71f60531e70cdfebc5dcd18544ed955185616dd72d56c28f783112",
-        "src/protocols.ts": "3b497ee67c2e3ba2b334ac111579f3772ca6b2250792e5362e058ef23972dd52"
-      },
-      "tests": {
-        "test/sdk.test.ts": "5b7b16bc0bfc9fa47fee3051f97ca2ab5627a9322812c5c3e62944547d703267",
-        "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8"
-      }
-    },
-    "listing": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
-      "implementation": {
-        "src/listing.ts": "1034ceed4d20ab80b19438f142498ad953fd6f58880c2e4cc1bee31e3402317f",
-        "src/intents.ts": "3c047ceab8fe7b562621be0578dc5c69d82517a3c62de74e06ef20c98c30bd71"
-      },
-      "tests": {
-        "test/listing.test.ts": "04566c94130a66194ed183c3ce45f0fd79257a1677f4e58b0fdc0ca4153b0b4e",
-        "test/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
-      }
-    },
-    "inventory": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
-      "implementation": {
-        "src/inventory.ts": "fafa87e316d0351736b05d833a1b54379ee114d3cea748b031acb5e8c03adab2",
-        "src/platform/node.ts": "d00d04ddfb8707a4546b5133d31a7a7c93e8ef0c398547ce7e06591b89b11def",
-        "src/platform/browser.ts": "c136d997b8526464106fa6c5dd8b78a99eb97ccfd912391fdd06e36ce6b232d5"
-      },
-      "tests": {
-        "test/inventory.test.ts": "79316d45b310903d46e6c0bcb66ed55b97abbede769b32353d8185dea570e0a3",
-        "test/inventory-vectors.json": "4deb456540b8b08aa4b59f8366d4295318b743245e7936febbdb199eb2dcfae0"
-      }
-    },
-    "session": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The connected-client factory owns failed connection cleanup; Python performs that dial internally and retains failed retirement before replacement.",
-      "implementation": {
-        "src/session.ts": "a82d5076214fbc3b6b3e61eb171cd29727f53bb66213486d105f142a2fb9a7d2"
-      },
-      "tests": {
-        "test/session.test.ts": "c5c7b84ec471163f5079bc2dfee231a610a8cc434f68f8aa370cbfe9cd122a67"
-      }
-    },
-    "cli": {
-      "status": "not-applicable",
-      "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools."
-    }
-  }
+  "schema_version": 1
 }

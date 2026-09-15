@@ -1,3 +1,4 @@
+import { assertSecureTokenExchange } from "./native-auth.js";
 import { bytesToBase64Url, bytesToHex } from "./bytes.js";
 import { ThalovantApiError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
 import { ThalovantIdentity } from "./identity.js";
@@ -514,6 +515,39 @@ export class ThalovantControlPlane {
     if (options.otpCode !== undefined) body.otp_code = options.otpCode;
     if (options.recoveryCode !== undefined) body.recovery_code = options.recoveryCode;
     const token = await this.request("POST", "/v1/auth/token", { body, auth: false });
+    const accessToken = token.access_token;
+    if (typeof accessToken !== "string" || !accessToken) {
+      throw new ThalovantApiError("Thalovant API token response did not include access_token.");
+    }
+    this.accessToken = accessToken;
+    return token;
+  }
+
+  /**
+   * Exchange an authorization code for a scoped access token and store it.
+   *
+   * The other half of `beginNativeSignIn()`. The verifier is sent here and
+   * nowhere else; it never entered the browser, which is what makes an
+   * intercepted code useless to whoever intercepted it.
+   *
+   * A code presented twice revokes the token the first exchange minted
+   * (RFC 9700), so retrying a failed exchange with the same code destroys the
+   * token it is trying to obtain. Start again from `beginNativeSignIn()`.
+   */
+  async completeNativeSignIn(
+    code: string,
+    verifier: string,
+    clientId: string,
+    redirectUri: string,
+  ): Promise<JsonRecord> {
+    assertSecureTokenExchange(this.apiUrl);
+    const body: JsonRecord = {
+      code,
+      code_verifier: verifier,
+      client_id: clientId,
+      redirect_uri: redirectUri,
+    };
+    const token = await this.request("POST", "/v1/auth/native/token", { body, auth: false });
     const accessToken = token.access_token;
     if (typeof accessToken !== "string" || !accessToken) {
       throw new ThalovantApiError("Thalovant API token response did not include access_token.");
