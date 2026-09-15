@@ -9,6 +9,7 @@ import {
   isThalovantUrl,
   newVerifier,
   assertSecureTokenExchange,
+  assertSafeDashboard,
 } from "../src/native-auth.js";
 
 /**
@@ -117,4 +118,38 @@ test("the token exchange refuses cleartext, and allows loopback", () => {
   for (const local of ["http://localhost:8080", "http://127.0.0.1:8080", "https://api.thalovant.com"]) {
     assert.doesNotThrow(() => assertSecureTokenExchange(local));
   }
+});
+
+test("a callback arriving somewhere else is refused", async () => {
+  // CodeRabbit: state proves the answer belongs to this request; it does not
+  // prove it came back to the app that made it.
+  const begun = await beginNativeSignIn({ clientId: "app", redirectUri: "app://auth" });
+  assert.equal(codeFrom(begun, `app://auth?code=abc&state=${begun.state}`), "abc");
+  assert.equal(codeFrom(begun, `app://elsewhere?code=abc&state=${begun.state}`), null);
+  assert.equal(codeFrom(begun, `https://evil.test/auth?code=abc&state=${begun.state}`), null);
+});
+
+test("a dashboard that is not safe to hand the request to is refused", async () => {
+  for (const bad of ["http://dash.example.test", "https://evil.test@dash.thalovant.com", "ftp://dash.thalovant.com", "nonsense"]) {
+    assert.throws(() => assertSafeDashboard(bad), TypeError, bad);
+    await assert.rejects(
+      () => beginNativeSignIn({ clientId: "app", redirectUri: "app://auth", dashboardUrl: bad }),
+      TypeError,
+    );
+  }
+  // A self-hosted https dashboard is real, and loopback never leaves the machine.
+  for (const good of ["https://dash.example.test", "http://localhost:9000", "http://127.0.0.1:9000"]) {
+    assert.doesNotThrow(() => assertSafeDashboard(good));
+  }
+});
+
+test("the token exchange is reachable and refuses a cleartext control plane", async () => {
+  // CodeRabbit: completeNativeSignIn had no test caller at all.
+  const { ThalovantControlPlane } = await import("../src/control.js");
+  const plane = new ThalovantControlPlane("http://control.example.test");
+  await assert.rejects(
+    () => plane.completeNativeSignIn("code", "verifier", "app", "app://auth"),
+    /cleartext/,
+  );
+  assert.equal(plane.accessToken, undefined);
 });

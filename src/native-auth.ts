@@ -59,6 +59,11 @@ export interface NativeSignIn {
   readonly state: string;
   /** Never send this to the browser. Exchanged with the code, once. */
   readonly verifier: string;
+  /**
+   * The redirect this attempt asked for. A callback arriving at some other
+   * address is not this attempt's, however good its state looks.
+   */
+  readonly redirectUri: string;
 }
 
 export interface BeginNativeSignInOptions {
@@ -123,6 +128,7 @@ export async function beginNativeSignIn(options: BeginNativeSignInOptions): Prom
   const redirectUri = options.redirectUri?.trim() ?? "";
   if (!clientId) throw new TypeError("clientId is required to start a sign-in.");
   if (!redirectUri) throw new TypeError("redirectUri is required to start a sign-in.");
+  assertSafeDashboard(options.dashboardUrl ?? DEFAULT_DASHBOARD_URL);
   const verifier = newVerifier();
   const state = base64Url(randomBytes(24));
   const scopes = options.scopes ?? DEFAULT_NATIVE_SCOPES;
@@ -146,6 +152,7 @@ export async function beginNativeSignIn(options: BeginNativeSignInOptions): Prom
     authorizationUrl: `${dashboard}/authorize?${query.toString()}`,
     state,
     verifier,
+    redirectUri,
   };
 }
 
@@ -161,6 +168,10 @@ export async function beginNativeSignIn(options: BeginNativeSignInOptions): Prom
 export function codeFrom(signIn: NativeSignIn, redirect: string): string | null {
   const query = redirect.includes("?") ? redirect.slice(redirect.indexOf("?") + 1) : "";
   if (!query) return null;
+  // The callback has to arrive where this attempt asked it to. State proves
+  // the answer belongs to this request; the address proves it came back to the
+  // app that made it, and not to some other page handed the same query string.
+  if (!sameTarget(redirect, signIn.redirectUri)) return null;
   const found = new URLSearchParams(query);
   if (found.get("state") !== signIn.state) return null;
   // A refusal that also carries a code is still a refusal. Checking only for a
@@ -199,5 +210,50 @@ export function assertSecureTokenExchange(apiUrl: string): void {
   throw new TypeError(
     `Refusing to send an authorization code and PKCE verifier in cleartext to ${host}. ` +
       "Use https, or a loopback address while developing.",
+  );
+}
+
+function origin(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, "")}`.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function sameTarget(redirect: string, expected: string): boolean {
+  const a = origin(redirect);
+  const b = origin(expected);
+  return a !== null && a === b;
+}
+
+/**
+ * Refuse to hand the authorization request to a dashboard that cannot be
+ * trusted with it.
+ *
+ * The request carries the challenge, the scopes and the state. A caller may
+ * point this at their own dashboard -- a self-hosted control plane is a real
+ * thing -- but not at a cleartext one, and not at one whose address reads as a
+ * different host than it resolves to. Loopback is allowed: it never leaves the
+ * machine.
+ */
+export function assertSafeDashboard(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new TypeError(`dashboardUrl is not a URL: ${url}`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new TypeError("dashboardUrl must not carry credentials.");
+  }
+  if (parsed.protocol === "https:") return;
+  const host = parsed.hostname.toLowerCase();
+  if (parsed.protocol === "http:" && (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]")) {
+    return;
+  }
+  throw new TypeError(
+    `dashboardUrl must be https (or a loopback address while developing), not ${url}`,
   );
 }
