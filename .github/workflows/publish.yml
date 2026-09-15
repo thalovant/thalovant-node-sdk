@@ -145,15 +145,30 @@ jobs:
         env:
           PACKAGE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          for attempt in $(seq 1 12); do
-            PUBLISHED_VERSION="$(npm view "@thalovant/sdk@$PACKAGE_VERSION" version 2>/dev/null || true)"
+          # npm's read path can lag its write path by minutes. Twice on
+          # 2026-09-15 a publish that had genuinely succeeded was reported as
+          # a failed release because this loop gave up after two minutes, and
+          # the package was on the registry moments later. That failure is
+          # worse than a slow job: it says the release did not happen when it
+          # did, and the next person reaches for a republish that npm will
+          # refuse because the version already exists.
+          #
+          # --prefer-online matters as much as the timeout: npm answers `view`
+          # from its metadata cache, so a warm cache can keep saying "missing"
+          # long after the registry is serving it.
+          for attempt in $(seq 1 30); do
+            PUBLISHED_VERSION="$(npm view --prefer-online "@thalovant/sdk@$PACKAGE_VERSION" version 2>/dev/null || true)"
             if [ "$PUBLISHED_VERSION" = "$PACKAGE_VERSION" ]; then
-              echo "Verified @thalovant/sdk $PACKAGE_VERSION on npm."
+              echo "Verified @thalovant/sdk $PACKAGE_VERSION on npm after ${attempt} attempt(s)."
               exit 0
             fi
-            sleep 10
+            # 10s for the first minute, then 30s: quick when it is quick,
+            # patient when the registry is not. Worst case is about 15 minutes.
+            if [ "$attempt" -le 6 ]; then sleep 10; else sleep 30; fi
           done
-          echo "@thalovant/sdk $PACKAGE_VERSION was not visible on npm after waiting."
+          echo "@thalovant/sdk $PACKAGE_VERSION was not visible on npm after ~15 minutes."
+          echo "The publish step above may still have succeeded: check the registry before"
+          echo "republishing, because npm refuses a version that already exists."
           exit 1
 
       - name: Smoke-test the public npm package
