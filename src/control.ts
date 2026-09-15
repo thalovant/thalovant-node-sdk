@@ -542,7 +542,6 @@ export class ThalovantControlPlane {
   ): Promise<JsonRecord> {
     assertSecureTokenExchange(this.apiUrl);
     const body: JsonRecord = {
-      grant_type: "authorization_code",
       code,
       code_verifier: verifier,
       client_id: clientId,
