@@ -1,0 +1,154 @@
+/**
+ * The authorization-code grant with PKCE (RFC 7636), for a client that can
+ * open a browser.
+ *
+ * `loginWithBrowser()` is the device grant, and it exists for something that
+ * *cannot* open one: somebody reads a code off one screen and types it into
+ * another. A desktop tool, or an app, can open the browser itself and be
+ * handed the answer back, and asking its user to copy a code between two
+ * windows on the same machine is a worse experience than the one every other
+ * tool on that machine offers.
+ *
+ * ```ts
+ * const begun = await beginNativeSignIn({ clientId: "my-app", redirectUri: "myapp://auth" });
+ * open(begun.authorizationUrl);
+ * const code = codeFrom(begun, redirect);        // verifies state; null when not ours
+ * await plane.completeNativeSignIn(code, begun.verifier, "my-app", "myapp://auth");
+ * ```
+ *
+ * `begun.verifier` never leaves the process and never enters the browser. That
+ * is what PKCE is for: a code intercepted by whatever else claimed the
+ * redirect is useless without it.
+ */
+// `node:crypto` is not importable here: this package ships a browser bundle
+// and a test asserts the bundle pulls in no Node builtins. `globalThis.crypto`
+// is Web Crypto, present in Node >= 20 (which package.json requires) and in
+// every browser, so one implementation serves both.
+//
+// Its digest is async, which is why `beginNativeSignIn` is. A sync version
+// would mean either a Node-only import or carrying a SHA-256 of our own, and
+// an awaited call is a smaller price than either.
+function webCrypto(): Crypto {
+  const crypto = (globalThis as { crypto?: Crypto }).crypto;
+  if (!crypto?.subtle) {
+    throw new TypeError("Web Crypto is unavailable; Node 20+ or a secure browser context is required.");
+  }
+  return crypto;
+}
+
+function randomBytes(size: number): Uint8Array {
+  const out = new Uint8Array(size);
+  webCrypto().getRandomValues(out);
+  return out;
+}
+
+/** Where a person approves the request. */
+export const DEFAULT_DASHBOARD_URL = "https://dash.thalovant.com";
+
+/** The three a phone needs; also the three a free plan may mint. */
+export const DEFAULT_NATIVE_SCOPES = ["hubs:read", "clients:read", "clients:write"] as const;
+
+/**
+ * One sign-in attempt in progress. Keep it until the browser comes back; it
+ * holds the two secrets that make the round trip safe.
+ */
+export interface NativeSignIn {
+  /** Open this in a browser. */
+  readonly authorizationUrl: string;
+  /** Proves the redirect answers *this* attempt and not a replayed one. */
+  readonly state: string;
+  /** Never send this to the browser. Exchanged with the code, once. */
+  readonly verifier: string;
+}
+
+export interface BeginNativeSignInOptions {
+  clientId: string;
+  redirectUri: string;
+  scopes?: readonly string[];
+  dashboardUrl?: string;
+}
+
+function base64Url(raw: Uint8Array): string {
+  let binary = "";
+  for (const byte of raw) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** A PKCE verifier: 64 random bytes, base64url, no padding. */
+export function newVerifier(): string {
+  return base64Url(randomBytes(64));
+}
+
+/** The S256 challenge for a verifier. */
+export async function challengeFor(verifier: string): Promise<string> {
+  const digest = await webCrypto().subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return base64Url(new Uint8Array(digest));
+}
+
+/**
+ * Whether a URL belongs to Thalovant, for a caller that wants to show where it
+ * is about to send somebody. Scheme and host only: a display check, not an
+ * authorization one.
+ */
+export function isThalovantUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  const host = parsed.hostname.toLowerCase();
+  return host === "thalovant.com" || host.endsWith(".thalovant.com");
+}
+
+/**
+ * Start a sign-in. Returns the URL to open and the secrets to keep.
+ *
+ * `redirectUri` must be one the API has registered for `clientId`; the
+ * authorization endpoint matches it exactly and refuses anything else, so it
+ * cannot be turned into an open redirect.
+ */
+export async function beginNativeSignIn(options: BeginNativeSignInOptions): Promise<NativeSignIn> {
+  const clientId = options.clientId?.trim() ?? "";
+  const redirectUri = options.redirectUri?.trim() ?? "";
+  if (!clientId) throw new TypeError("clientId is required to start a sign-in.");
+  if (!redirectUri) throw new TypeError("redirectUri is required to start a sign-in.");
+  const verifier = newVerifier();
+  const state = base64Url(randomBytes(24));
+  const scopes = options.scopes ?? DEFAULT_NATIVE_SCOPES;
+  const dashboard = (options.dashboardUrl ?? DEFAULT_DASHBOARD_URL).replace(/\/+$/, "");
+  const query = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    code_challenge: await challengeFor(verifier),
+    // S256 only. `plain` is refused by the API, and offering it here would
+    // only give a caller a way to ask for the weaker one.
+    code_challenge_method: "S256",
+    scope: scopes.join(" "),
+    state,
+  });
+  return {
+    authorizationUrl: `${dashboard}/authorize?${query.toString()}`,
+    state,
+    verifier,
+  };
+}
+
+/**
+ * The authorization code out of the redirect the browser came back with, or
+ * null when it is not an answer to this attempt.
+ *
+ * null rather than a throw on a state mismatch, a missing code, or an `error=`
+ * response: all three mean "do not continue", and a caller that handles them
+ * alike cannot accidentally treat one of them as success.
+ */
+export function codeFrom(signIn: NativeSignIn, redirect: string): string | null {
+  const query = redirect.includes("?") ? redirect.slice(redirect.indexOf("?") + 1) : "";
+  if (!query) return null;
+  const found = new URLSearchParams(query);
+  if (found.get("state") !== signIn.state) return null;
+  const code = found.get("code");
+  return code ? code : null;
+}

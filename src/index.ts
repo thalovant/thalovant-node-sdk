@@ -24,6 +24,7 @@ export {
   type IntentDefinition,
   type IntentRegistration,
 } from "./intents.js";
+export * from "./native-auth.js";
 export * from "./protocols.js";
 export * from "./rich.js";
 export * from "./transport.js";

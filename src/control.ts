@@ -523,6 +523,39 @@ export class ThalovantControlPlane {
   }
 
   /**
+   * Exchange an authorization code for a scoped access token and store it.
+   *
+   * The other half of `beginNativeSignIn()`. The verifier is sent here and
+   * nowhere else; it never entered the browser, which is what makes an
+   * intercepted code useless to whoever intercepted it.
+   *
+   * A code presented twice revokes the token the first exchange minted
+   * (RFC 9700), so retrying a failed exchange with the same code destroys the
+   * token it is trying to obtain. Start again from `beginNativeSignIn()`.
+   */
+  async completeNativeSignIn(
+    code: string,
+    verifier: string,
+    clientId: string,
+    redirectUri: string,
+  ): Promise<JsonRecord> {
+    const body: JsonRecord = {
+      grant_type: "authorization_code",
+      code,
+      code_verifier: verifier,
+      client_id: clientId,
+      redirect_uri: redirectUri,
+    };
+    const token = await this.request("POST", "/v1/auth/native/token", { body, auth: false });
+    const accessToken = token.access_token;
+    if (typeof accessToken !== "string" || !accessToken) {
+      throw new ThalovantApiError("Thalovant API token response did not include access_token.");
+    }
+    this.accessToken = accessToken;
+    return token;
+  }
+
+  /**
    * Sign in through the browser device flow and store the API token.
    *
    * This is the sign-in path for accounts without a password (for example
