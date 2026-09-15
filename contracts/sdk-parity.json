@@ -6,13 +6,17 @@
     },
     "control": {
       "implementation": {
-        "src/control.ts": "04c4e08090bc8fffc9d3f8043f4b1ba8a996abdc7ed9fbf2ca99d0a339e4b0ef"
+        "src/control.ts": "04c4e08090bc8fffc9d3f8043f4b1ba8a996abdc7ed9fbf2ca99d0a339e4b0ef",
+        "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
+        "src/native-auth.ts": "cba2059f746b3884f173a0894483c4f191cb048d855c6cfcba934eb4d2035753"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
       "status": "required",
       "tests": {
         "test/control-security.test.ts": "b8e89b545dacdc117367aa277651436fa5fe47d9959d02c52a1ff76e035c1c6d",
-        "test/hub-skills.test.ts": "3e5551a1195dfb7c4a13b7dc1ad7e0903a1b216b5fbe200bece925353af94634"
+        "test/hub-skills.test.ts": "3e5551a1195dfb7c4a13b7dc1ad7e0903a1b216b5fbe200bece925353af94634",
+        "test/hubs.test.ts": "895a164d1cabe309886d2646cdd83611a7b4f58fe6944349c0fc3aab641a5c5e",
+        "test/native-auth.test.ts": "da9e25081bb9cb618c77e3989eb25366cc638e3b42790e884413d61481223dca"
       }
     },
     "identity": {
@@ -50,18 +54,6 @@
       "tests": {
         "test/listing.test.ts": "04566c94130a66194ed183c3ce45f0fd79257a1677f4e58b0fdc0ca4153b0b4e",
         "test/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
-      }
-    },
-    "native_auth": {
-      "implementation": {
-        "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
-        "src/native-auth.ts": "cba2059f746b3884f173a0894483c4f191cb048d855c6cfcba934eb4d2035753"
-      },
-      "reason": "Authorization-code sign-in with PKCE is implemented and exercised by the named regression suites: the challenge is checked to be S256 of the verifier, the verifier is checked never to reach the browser, a redirect answering a different attempt or carrying error= is refused, and the token exchange refuses cleartext to a non-loopback host. hubDisplayName is exercised against a catalog title, a name, a bare slug and a spec that is not shaped like a catalog.",
-      "status": "required",
-      "tests": {
-        "test/hubs.test.ts": "895a164d1cabe309886d2646cdd83611a7b4f58fe6944349c0fc3aab641a5c5e",
-        "test/native-auth.test.ts": "da9e25081bb9cb618c77e3989eb25366cc638e3b42790e884413d61481223dca"
       }
     },
     "runtime": {
