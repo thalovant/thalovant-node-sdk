@@ -8,7 +8,7 @@
       "implementation": {
         "src/control.ts": "04c4e08090bc8fffc9d3f8043f4b1ba8a996abdc7ed9fbf2ca99d0a339e4b0ef",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
-        "src/native-auth.ts": "cba2059f746b3884f173a0894483c4f191cb048d855c6cfcba934eb4d2035753"
+        "src/native-auth.ts": "a6c366635f38061daf72681770cdcea1ada74b9418216d52270fdf5f00ea9119"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
       "status": "required",
@@ -16,7 +16,7 @@
         "test/control-security.test.ts": "b8e89b545dacdc117367aa277651436fa5fe47d9959d02c52a1ff76e035c1c6d",
         "test/hub-skills.test.ts": "3e5551a1195dfb7c4a13b7dc1ad7e0903a1b216b5fbe200bece925353af94634",
         "test/hubs.test.ts": "895a164d1cabe309886d2646cdd83611a7b4f58fe6944349c0fc3aab641a5c5e",
-        "test/native-auth.test.ts": "da9e25081bb9cb618c77e3989eb25366cc638e3b42790e884413d61481223dca"
+        "test/native-auth.test.ts": "d54cd0d26a4195e3cafce6994977b20ccc9649441b409fc8b5406833841570e8"
       }
     },
     "identity": {
@@ -92,7 +92,8 @@
     "676e935e66330f8614d6c23cccddd48e1c4577c3af761775f18e1ea0128b8007",
     "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0",
     "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
-    "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b"
+    "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b",
+    "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107"
   ],
   "schema_version": 1
 }

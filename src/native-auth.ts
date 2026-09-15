@@ -103,6 +103,10 @@ export function isThalovantUrl(url: string): boolean {
     return false;
   }
   if (parsed.protocol !== "https:") return false;
+  // Reject embedded credentials: `https://evil.test@dash.thalovant.com/` has a
+  // host that passes, and a URL somebody is about to be sent to should not read
+  // as one host and resolve to another.
+  if (parsed.username || parsed.password) return false;
   const host = parsed.hostname.toLowerCase();
   return host === "thalovant.com" || host.endsWith(".thalovant.com");
 }

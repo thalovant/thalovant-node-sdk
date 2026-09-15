@@ -96,6 +96,8 @@ test("a Thalovant URL is recognised by scheme and host, and nothing else is", as
   assert.ok(!isThalovantUrl("http://dash.thalovant.com"));
   // The one that matters: a lookalike host ending in the same letters.
   assert.ok(!isThalovantUrl("https://dash.thalovant.com.evil.test"));
+  // A host that passes, reached through credentials that read as another.
+  assert.ok(!isThalovantUrl("https://evil.test@dash.thalovant.com"));
   assert.ok(!isThalovantUrl("https://notthalovant.com"));
   assert.ok(!isThalovantUrl("nonsense"));
 });
