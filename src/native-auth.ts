@@ -141,7 +141,8 @@ export async function beginNativeSignIn(options: BeginNativeSignInOptions): Prom
  * null when it is not an answer to this attempt.
  *
  * null rather than a throw on a state mismatch, a missing code, or an `error=`
- * response: all three mean "do not continue", and a caller that handles them
+ * response -- including one that also carries a code: all of those mean "do not
+ * continue", and a caller that handles them
  * alike cannot accidentally treat one of them as success.
  */
 export function codeFrom(signIn: NativeSignIn, redirect: string): string | null {
@@ -149,6 +150,41 @@ export function codeFrom(signIn: NativeSignIn, redirect: string): string | null 
   if (!query) return null;
   const found = new URLSearchParams(query);
   if (found.get("state") !== signIn.state) return null;
+  // A refusal that also carries a code is still a refusal. Checking only for a
+  // missing code accepted that pair and would have started an exchange on a
+  // code the server had just declined to issue.
+  if (found.has("error")) return null;
   const code = found.get("code");
   return code ? code : null;
+}
+
+/**
+ * Refuse to put an authorization code and its PKCE verifier on the wire in
+ * cleartext.
+ *
+ * The control-plane URL accepts an `http` scheme -- a self-hosted or local
+ * deployment may legitimately be served that way -- and the request path hands
+ * whatever it is given to fetch without looking. Every other call that would
+ * leak over http leaks a bearer token the caller already holds; this one leaks
+ * the two secrets that are about to become one, and a code is exchangeable by
+ * whoever sees it first.
+ *
+ * Loopback is allowed: a request that never leaves the machine has no
+ * cleartext to observe, and that is how the control plane is run while
+ * somebody is working on it.
+ */
+export function assertSecureTokenExchange(apiUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new TypeError(`Thalovant API URL could not be read: ${apiUrl}`);
+  }
+  if (parsed.protocol === "https:") return;
+  const host = parsed.hostname.toLowerCase();
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]") return;
+  throw new TypeError(
+    `Refusing to send an authorization code and PKCE verifier in cleartext to ${host}. ` +
+      "Use https, or a loopback address while developing.",
+  );
 }

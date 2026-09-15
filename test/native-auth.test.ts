@@ -8,6 +8,7 @@ import {
   codeFrom,
   isThalovantUrl,
   newVerifier,
+  assertSecureTokenExchange,
 } from "../src/native-auth.js";
 
 /**
@@ -97,4 +98,21 @@ test("a Thalovant URL is recognised by scheme and host, and nothing else is", as
   assert.ok(!isThalovantUrl("https://dash.thalovant.com.evil.test"));
   assert.ok(!isThalovantUrl("https://notthalovant.com"));
   assert.ok(!isThalovantUrl("nonsense"));
+});
+
+test("a refusal that also carries a code is still a refusal", async () => {
+  // CodeRabbit caught this: checking only for a missing code accepted
+  // `error=access_denied&code=...` and would have started an exchange on a
+  // code the authorization server had just declined to issue.
+  const begun = await beginNativeSignIn({ clientId: "app", redirectUri: "app://auth" });
+  assert.equal(codeFrom(begun, `app://auth?error=access_denied&code=abc&state=${begun.state}`), null);
+  assert.equal(codeFrom(begun, `app://auth?code=abc&error=server_error&state=${begun.state}`), null);
+});
+
+test("the token exchange refuses cleartext, and allows loopback", () => {
+  assert.throws(() => assertSecureTokenExchange("http://control.example.test"), /cleartext/);
+  // Loopback has no cleartext to observe, and is how the API is run locally.
+  for (const local of ["http://localhost:8080", "http://127.0.0.1:8080", "https://api.thalovant.com"]) {
+    assert.doesNotThrow(() => assertSecureTokenExchange(local));
+  }
 });

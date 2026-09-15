@@ -1,3 +1,4 @@
+import { assertSecureTokenExchange } from "./native-auth.js";
 import { bytesToBase64Url, bytesToHex } from "./bytes.js";
 import { ThalovantApiError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
 import { ThalovantIdentity } from "./identity.js";
@@ -539,6 +540,7 @@ export class ThalovantControlPlane {
     clientId: string,
     redirectUri: string,
   ): Promise<JsonRecord> {
+    assertSecureTokenExchange(this.apiUrl);
     const body: JsonRecord = {
       grant_type: "authorization_code",
       code,
