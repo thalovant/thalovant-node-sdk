@@ -71,7 +71,12 @@ export interface BeginNativeSignInOptions {
 function base64Url(raw: Uint8Array): string {
   let binary = "";
   for (const byte of raw) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  // Same reason for the padding: a trailing-run regex is the polynomial shape,
+  // even on our own output. The character swaps are single-character classes
+  // and cannot backtrack.
+  let encoded = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_");
+  while (encoded.endsWith("=")) encoded = encoded.slice(0, -1);
+  return encoded;
 }
 
 /** A PKCE verifier: 64 random bytes, base64url, no padding. */
@@ -117,7 +122,11 @@ export async function beginNativeSignIn(options: BeginNativeSignInOptions): Prom
   const verifier = newVerifier();
   const state = base64Url(randomBytes(24));
   const scopes = options.scopes ?? DEFAULT_NATIVE_SCOPES;
-  const dashboard = (options.dashboardUrl ?? DEFAULT_DASHBOARD_URL).replace(/\/+$/, "");
+  // Not `replace(/\/+$/, "")`: CodeQL is right that a trailing-run regex on a
+  // caller-supplied string backtracks polynomially, and this one is handed a
+  // URL from outside. Trimming in a loop is linear and does the same thing.
+  let dashboard = options.dashboardUrl ?? DEFAULT_DASHBOARD_URL;
+  while (dashboard.endsWith("/")) dashboard = dashboard.slice(0, -1);
   const query = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
