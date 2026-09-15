@@ -130,7 +130,15 @@ test("a callback arriving somewhere else is refused", async () => {
 });
 
 test("a dashboard that is not safe to hand the request to is refused", async () => {
-  for (const bad of ["http://dash.example.test", "https://evil.test@dash.thalovant.com", "ftp://dash.thalovant.com", "nonsense"]) {
+  for (const bad of [
+    "http://dash.example.test",
+    "https://evil.test@dash.thalovant.com",
+    "ftp://dash.thalovant.com",
+    "nonsense",
+    // A fragment puts every parameter somewhere a browser never sends.
+    "https://dash.example.test#section",
+    "https://dash.example.test?next=/x",
+  ]) {
     assert.throws(() => assertSafeDashboard(bad), TypeError, bad);
     await assert.rejects(
       () => beginNativeSignIn({ clientId: "app", redirectUri: "app://auth", dashboardUrl: bad }),

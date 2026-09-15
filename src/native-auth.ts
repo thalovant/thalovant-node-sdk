@@ -248,6 +248,13 @@ export function assertSafeDashboard(url: string): void {
   if (parsed.username || parsed.password) {
     throw new TypeError("dashboardUrl must not carry credentials.");
   }
+  // A query or a fragment breaks the address this builds. `<dash>#x` becomes
+  // `<dash>#x/authorize?client_id=...` -- every parameter lands in the
+  // fragment, which a browser never sends, so the authorize endpoint receives
+  // nothing and says nothing. A query mangles the path the same way.
+  if (parsed.search || parsed.hash) {
+    throw new TypeError("dashboardUrl must not carry a query or a fragment.");
+  }
   if (parsed.protocol === "https:") return;
   const host = parsed.hostname.toLowerCase();
   if (parsed.protocol === "http:" && (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]")) {
