@@ -1,5 +1,11 @@
 {
   "capabilities": {
+    "binary": {
+      "implementation": {},
+      "reason": "A BINARY frame is WIRE-1 bitstring-encoded and this transport reads UTF-8 JSON only. No hub emits one today: hivemind-core listen never wires the audio protocol.",
+      "status": "planned",
+      "tests": {}
+    },
     "cli": {
       "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools.",
       "status": "not-applicable"
@@ -17,6 +23,17 @@
         "test/hub-skills.test.ts": "3e5551a1195dfb7c4a13b7dc1ad7e0903a1b216b5fbe200bece925353af94634",
         "test/hubs.test.ts": "895a164d1cabe309886d2646cdd83611a7b4f58fe6944349c0fc3aab641a5c5e",
         "test/native-auth.test.ts": "0654b625010f2a090b4d7f204130d88de1ffbcc0cea4cca38c335f482e5fefc6"
+      }
+    },
+    "conversation": {
+      "implementation": {
+        "src/client.ts": "627f3170f12930820395a58b070b1d4b64113694c785afedeac987833c5d14ba",
+        "src/events.ts": "d3a293e363777c9860a61971418acb2154d80b47443e41381abfc6342c996a25"
+      },
+      "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
+      "status": "required",
+      "tests": {
+        "test/conversation-carry.test.ts": "af981a3c1cd72a54cf03bcae8dbbde111a38a1aa9196bf38156be7adaf363fe9"
       }
     },
     "identity": {
@@ -56,12 +73,24 @@
         "test/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
       }
     },
+    "mesh": {
+      "implementation": {
+        "src/client.ts": "627f3170f12930820395a58b070b1d4b64113694c785afedeac987833c5d14ba",
+        "src/events.ts": "d3a293e363777c9860a61971418acb2154d80b47443e41381abfc6342c996a25",
+        "src/transport-core.ts": "e17f2a20f80de5baef967e12234bcd6f6d70434e3c6da9d9323d24325c9ab2a5"
+      },
+      "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
+      "status": "required",
+      "tests": {
+        "test/conversation-carry.test.ts": "af981a3c1cd72a54cf03bcae8dbbde111a38a1aa9196bf38156be7adaf363fe9"
+      }
+    },
     "runtime": {
       "implementation": {
-        "src/client.ts": "710e1e9fad6f38467a1a517bfe2d9e5e07da1f049a58457695460042d87518a1",
-        "src/events.ts": "4acb5203a5cc634a5bcdf4dd5a56b76110a00a0afce2ca6538837cdf05d04fd8",
+        "src/client.ts": "627f3170f12930820395a58b070b1d4b64113694c785afedeac987833c5d14ba",
+        "src/events.ts": "d3a293e363777c9860a61971418acb2154d80b47443e41381abfc6342c996a25",
         "src/noise.ts": "29c37c36c0fba02a9ff408b226d651c767f8c2236dff259da4970e0e6c759ca9",
-        "src/transport-core.ts": "09f7b59f53d016a0c9d88fb6f2768d1c0478bfdeac138ead9bfbf61e2e18e584"
+        "src/transport-core.ts": "e17f2a20f80de5baef967e12234bcd6f6d70434e3c6da9d9323d24325c9ab2a5"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
       "status": "required",
@@ -103,6 +132,7 @@
     "8669034d6987af946303913780cce419efaff2a9181de7d46fbffe7092d7be9e",
     "c0d883e69ee7fa301c6e4c1b1a5c433ed290d63f79a3e6b397fdb0a988d111fa",
     "49bab2a8922b69b5cd886e7acadf217cdaa78bd94bfb48374e2f4b1cde85dfc0",
+    "9af92bcafd77385cd7c9cfede859eeb3586f65d0b24c9dbff36352089e94821c",
     "003cdf02562e53bd24cc58ac8eb44411cc7ac42d06ba3bbfa46e82386ea92ef7"
   ],
   "schema_version": 1

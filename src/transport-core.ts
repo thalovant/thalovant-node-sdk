@@ -24,6 +24,8 @@ import { createPlatformWebSocket, randomUUID } from "./platform/node.js";
 import type { PlatformWebSocket } from "./platform/types.js";
 import { decodeHiveBinaryFrame } from "./wire.js";
 
+const MESH_KINDS = new Set(["broadcast", "propagate", "escalate", "intercom", "rendezvous"]);
+
 export interface HiveMessage {
   msg_type: string;
   payload: Record<string, unknown>;
@@ -429,7 +431,9 @@ export class HiveMindHttpTransport extends EventTarget {
     if (!this.session) throw new ThalovantConnectionError("Application message arrived before Noise authentication.");
     if (message.msg_type === "bus") {
       this.dispatchEvent(new CustomEvent<BusPayload>("bus", { detail: message.payload as unknown as BusPayload }));
-    } else if (message.msg_type === "query" || message.msg_type === "cascade") {
+    } else if (MESH_KINDS.has(message.msg_type) || message.msg_type === "query" || message.msg_type === "cascade") {
+      // The five mesh kinds used to fall off the end of this chain with no
+      // branch and no log line: a hub relaying them had nobody listening.
       this.dispatchEvent(new CustomEvent<HiveMessage>(message.msg_type, { detail: message }));
     }
   }
