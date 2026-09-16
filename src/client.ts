@@ -559,6 +559,9 @@ export class ThalovantClient {
     let softFailureEvent: ThalovantEvent | undefined;
     let terminal = false;
     let handled = false;
+    // Whether the hub has said what the conversation now is, and what it said.
+    let sawHandled = false;
+    let handledContext: EventContext | undefined;
     let phaseTimer: ReturnType<typeof setTimeout> | undefined;
     let phase: "empty" | "settle" | undefined;
     let finish!: () => void;
@@ -576,11 +579,26 @@ export class ThalovantClient {
     };
     const listenerContext = requestOnlyCorrelationContext(context, requestId);
     const listener = (raw: Event): void => {
-      if (terminal) return;
-      if (performance.now() >= deadline) { complete(); return; }
       const detail = (raw as CustomEvent).detail;
       const event = eventFromBusPayload(detail, detail);
       if (!eventMatchesRequiredCorrelation(event, listenerContext)) return;
+      // Ahead of every gate below. The end of the turn is the one place a hub
+      // states what the conversation now is, and whether this reply is still
+      // collecting, already settled or already failed says nothing about what
+      // the next one will need. A short settle window -- zero most of all --
+      // completes the reply before this frame arrives.
+      if (event.name === EVENT_UTTERANCE_HANDLED) {
+        sawHandled = true;
+        this.rememberConversation(sessionId, event.context);
+        // And under the id the hub answered with, when it differs: a satellite
+        // reuses its own id, an ordinary caller is handed the reply's.
+        if (event.sessionId && event.sessionId !== sessionId) {
+          this.rememberConversation(event.sessionId, event.context);
+        }
+        handledContext = event.context;
+      }
+      if (terminal) return;
+      if (performance.now() >= deadline) { complete(); return; }
       if (!mediaBudget.accept(event)) return;
       switch (event.name) {
         case EVENT_AUDIO_QUEUE:
@@ -603,14 +621,6 @@ export class ThalovantClient {
         case EVENT_UTTERANCE_HANDLED:
           // The end of the turn is the one place a hub states what the
           // conversation now is, and it keeps none of it for a named session.
-          this.rememberConversation(sessionId, event.context);
-          // And under the id the hub answered with, when it differs. A reply's
-          // `sessionId` is the first non-empty *event* session id, so a caller
-          // that passes it to the next ask() looked up a key nothing was filed
-          // under and sent no carried state at all.
-          if (event.sessionId && event.sessionId !== sessionId) {
-            this.rememberConversation(event.sessionId, event.context);
-          }
           handled = true;
           events.push(event);
           if (!fragments.length) startWindow("empty", emptyReplyWaitMs);
@@ -672,6 +682,12 @@ export class ThalovantClient {
       clearTimeout(timer);
       clearTimeout(phaseTimer);
       options.signal?.removeEventListener("abort", onAbort);
+      // Removed unconditionally: this SDK guarantees no listener outlives an
+      // ask, and its suite checks that immediately on return. Holding one for
+      // a moment to catch a late `ovos.utterance.handled` would break that
+      // guarantee, so the remaining half of this -- a reply that settles
+      // before the hub says what the conversation now is -- needs a decision
+      // about latency, not a longer listener.
       this.transport.removeEventListener("bus", listener);
     }
   }

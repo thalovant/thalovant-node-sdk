@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/client.ts": "35db9b4dbbbbd0e6f1165e18bc69b9725e20e0c1b39b0ab246da7c700c3c0ed8",
+        "src/client.ts": "492a902571b2d17bd28bf42d4847b6344562ed2a83ab14ee4f91cff80d5e88ba",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd",
         "src/wire.ts": "51c5487f79bf79c32512aac11a919bdc1aa7dbaad64fd48a1372a7a9a6314a0c"
@@ -38,7 +38,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/client.ts": "35db9b4dbbbbd0e6f1165e18bc69b9725e20e0c1b39b0ab246da7c700c3c0ed8",
+        "src/client.ts": "492a902571b2d17bd28bf42d4847b6344562ed2a83ab14ee4f91cff80d5e88ba",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
@@ -95,7 +95,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/client.ts": "35db9b4dbbbbd0e6f1165e18bc69b9725e20e0c1b39b0ab246da7c700c3c0ed8",
+        "src/client.ts": "492a902571b2d17bd28bf42d4847b6344562ed2a83ab14ee4f91cff80d5e88ba",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
       },
@@ -110,7 +110,7 @@
     },
     "runtime": {
       "implementation": {
-        "src/client.ts": "35db9b4dbbbbd0e6f1165e18bc69b9725e20e0c1b39b0ab246da7c700c3c0ed8",
+        "src/client.ts": "492a902571b2d17bd28bf42d4847b6344562ed2a83ab14ee4f91cff80d5e88ba",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/noise.ts": "29c37c36c0fba02a9ff408b226d651c767f8c2236dff259da4970e0e6c759ca9",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
@@ -145,7 +145,8 @@
     "003cdf02562e53bd24cc58ac8eb44411cc7ac42d06ba3bbfa46e82386ea92ef7",
     "ed8b30df32ee8b385608cee8ebda39ccb04eb5079b73e8ccc23dca0c48d62449",
     "083b2da8b256cd970b3050218d8d51f13e7355633913d086c9f4147d8790165b",
-    "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30"
+    "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
+    "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9"
   ],
   "schema_version": 1
 }
