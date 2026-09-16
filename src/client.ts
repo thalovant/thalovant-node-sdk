@@ -71,8 +71,14 @@ export class ThalovantClient {
    * long-lived client handed a fresh session id per turn must not
    * accumulate one entry per turn for ever.
    */
-  private readonly conversations = new Map<string, Record<string, unknown>>();
+  private readonly conversations = new Map<string, { group: string[]; kept: Record<string, unknown> }>();
   private static readonly MAX_REMEMBERED_CONVERSATIONS = 32;
+  /**
+   * Session ids one conversation answers to. The cap above counts a group
+   * once, so without this a hub that re-translates the id every turn could
+   * grow a single group without limit.
+   */
+  private static readonly MAX_CONVERSATION_ALIASES = 8;
 
   private readonly replySettleMs: number;
   private readonly emptyReplyWaitMs: number;
@@ -478,34 +484,73 @@ export class ThalovantClient {
     } as never);
   }
 
-  /** Keep the session a hub returned, to send with the next utterance. */
-  private rememberConversation(sessionId: string, context: EventContext | undefined): void {
+  /**
+   * Keep the session a hub returned, under every id that reaches it.
+   *
+   * Filed as an entry per id they aged and were evicted separately, so a
+   * caller continuing under the id it sent could lose the carry while one
+   * using the hub's answering id kept it -- and the cap counted names rather
+   * than conversations.
+   */
+  private rememberConversation(sessionIds: string[], context: EventContext | undefined): void {
     const session = (context?.session ?? undefined) as Record<string, unknown> | undefined;
     const kept: Record<string, unknown> = {};
     for (const field of CONVERSATION_SESSION_FIELDS) {
       const value = session?.[field];
       if (value === undefined || value === null) continue;
       if (Array.isArray(value) ? value.length === 0 : typeof value === "object" && Object.keys(value as object).length === 0) continue;
+      // An empty scalar is not carried state: keeping `response_mode: ""`
+      // spent one of the entries the cap allows on a cleared session, so
+      // eviction could drop a session that still had state.
+      if (value === "") continue;
       kept[field] = value;
+    }
+    // A bare string would iterate as characters and file the carry under "s",
+    // "a", "t" -- silently, since a caller reaching this through a cast has no
+    // type to stop it.
+    const requested = typeof sessionIds === "string" ? [sessionIds as string] : sessionIds;
+    const keys: string[] = [];
+    for (const id of requested) if (!keys.includes(id)) keys.push(id);
+    if (!keys.length) return;
+    // Take over every id these already reach rather than dropping them: a turn
+    // continued under the hub's id must not forget the id a satellite still
+    // uses for the same conversation.
+    for (let index = 0; index < keys.length; index += 1) {
+      const previous = this.conversations.get(keys[index]);
+      this.conversations.delete(keys[index]);
+      if (!previous) continue;
+      for (const sibling of previous.group) {
+        this.conversations.delete(sibling);
+        if (!keys.includes(sibling)) keys.push(sibling);
+      }
     }
     // Forgetting is the state, not the absence of one: a turn that ended with
     // nothing active must not leave the old entry behind to resurrect it.
-    this.conversations.delete(sessionId);
-    if (!Object.keys(kept).length) return;
-    this.conversations.set(sessionId, kept);
-    while (this.conversations.size > ThalovantClient.MAX_REMEMBERED_CONVERSATIONS) {
-      const oldest = this.conversations.keys().next();
+    if (!Object.keys(kept).length) {
+      for (const key of keys) this.conversations.delete(key);
+      return;
+    }
+    // This turn's ids come first and inherited ones after, so the tail is the
+    // stalest: a hub answering under a fresh translated id (HIVEMIND-BRIDGE-1
+    // §4) would otherwise grow one group for ever.
+    keys.length = Math.min(keys.length, ThalovantClient.MAX_CONVERSATION_ALIASES);
+    const entry = { group: [...keys], kept };
+    for (const key of keys) this.conversations.set(key, entry);
+    // A Map keeps insertion order, so the first key really is the oldest --
+    // but a whole conversation goes at once, not one of its names.
+    while (new Set([...this.conversations.values()]).size > ThalovantClient.MAX_REMEMBERED_CONVERSATIONS) {
+      const oldest = this.conversations.values().next();
       if (oldest.done) break;
-      this.conversations.delete(oldest.value);
+      for (const sibling of oldest.value.group) this.conversations.delete(sibling);
     }
   }
 
   /** Put the last turn's conversation state back into this turn. */
   private continueConversation(context: EventContext, sessionId: string): EventContext {
-    const previous = this.conversations.get(sessionId);
-    if (!previous) return context;
+    const entry = this.conversations.get(sessionId);
+    if (!entry) return context;
     const session = (context.session ?? {}) as Record<string, unknown>;
-    const carried = carryConversation(previous, session);
+    const carried = carryConversation(entry.kept, session);
     if (carried === session) return context;
     return { ...context, session: carried } as EventContext;
   }
@@ -589,12 +634,12 @@ export class ThalovantClient {
       // completes the reply before this frame arrives.
       if (event.name === EVENT_UTTERANCE_HANDLED) {
         sawHandled = true;
-        this.rememberConversation(sessionId, event.context);
-        // And under the id the hub answered with, when it differs: a satellite
-        // reuses its own id, an ordinary caller is handed the reply's.
-        if (event.sessionId && event.sessionId !== sessionId) {
-          this.rememberConversation(event.sessionId, event.context);
-        }
+        // Both ids in one call: a satellite reuses its own, an ordinary caller
+        // is handed the reply's. Filed separately they aged and were evicted
+        // separately, so with the cache full the second could evict the first.
+        const carryKeys = [sessionId];
+        if (event.sessionId && event.sessionId !== sessionId) carryKeys.push(event.sessionId);
+        this.rememberConversation(carryKeys, event.context);
         handledContext = event.context;
       }
       if (terminal) return;

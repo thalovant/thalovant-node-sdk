@@ -73,10 +73,10 @@ test("the carry survives whichever session id the caller sends back", async () =
   const handlers = {
     converse_handlers: [{ skill_id: "fart", activated_at: 1 }],
   };
-  (client as never as { rememberConversation(id: string, ctx: unknown): void })
-    .rememberConversation("sat-1", { session: { ...handlers } });
-  (client as never as { rememberConversation(id: string, ctx: unknown): void })
-    .rememberConversation("hub-namespace:sat-1", { session: { ...handlers } });
+  // One call with both ids, as ask() does: filed separately they age and are
+  // evicted separately, and the cap counts names rather than conversations.
+  (client as never as { rememberConversation(ids: string[], ctx: unknown): void })
+    .rememberConversation(["sat-1", "hub-namespace:sat-1"], { session: { ...handlers } });
 
   const viaRequestId = (client as never as {
     continueConversation(ctx: unknown, id: string): Record<string, never>;
@@ -95,4 +95,51 @@ test("an empty string is a cleared field, not conversation state", async () => {
   const { carryConversation } = await import("../src/events.js");
   const carried = carryConversation({ response_mode: "" }, {});
   assert.equal(carried.response_mode, undefined, JSON.stringify(carried));
+});
+
+test("the mesh vectors are exercised through the client, not just its constants", async () => {
+  // Comparing HIVE_KINDS and refused_kinds only proved two lists match. The
+  // cases in mesh-vectors.json describe what subscribe refuses and the nested
+  // envelope each send produces, and a regression in either passed untouched.
+  const { ThalovantClient } = await import("../src/client.js");
+  const { ThalovantIdentity } = await import("../src/identity.js");
+  const identity = new ThalovantIdentity({
+    accessKey: "key", password: "password", siteId: "site",
+    defaultMaster: "http://hub.local", defaultPort: 5679,
+  });
+  const sent: Record<string, unknown>[] = [];
+  class MeshTransport extends EventTarget {
+    ready = false;
+    async connect() { this.ready = true; }
+    async disconnect() { this.ready = false; }
+    healthcheck() { return { connected: this.ready, handshakeComplete: this.ready, transportAlive: this.ready }; }
+    async emitBus() {}
+    async sendHiveMessage(message: unknown) { sent.push(message as Record<string, unknown>); }
+  }
+  const transport = new MeshTransport();
+  const client = new ThalovantClient(identity, { transport: transport as never });
+  try {
+    const spec = vectors("mesh-vectors.json");
+    for (const refused of spec.refused_kinds as string[]) {
+      assert.throws(
+        () => client.onHive(refused as never, () => {}),
+        new RegExp(refused),
+        `${refused} must be refused: it belongs to ask()`,
+      );
+    }
+    // A mesh envelope is nested -- HiveMessage(kind, HiveMessage(bus, Message))
+    // -- because the hub rewrites route and peers on the inner payload. A flat
+    // frame loses the route.
+    for (const method of ["propagate", "escalate", "broadcast"] as const) {
+      sent.length = 0;
+      await (client as never as Record<string, (t: string, d: unknown) => Promise<void>>)[method](
+        "speak", { utterance: "x" },
+      );
+      assert.equal(sent.length, 1, method);
+      const frame = sent[0] as { msg_type: string; payload: { msg_type: string; payload: Record<string, unknown> } };
+      assert.equal(frame.msg_type, method, `${method} sent ${frame.msg_type}`);
+      assert.equal(frame.payload.msg_type, "bus", `${method} did not nest a bus frame`);
+      assert.equal(frame.payload.payload.type, "speak", `${method} lost the bus message type`);
+    }
+  } finally { await client.close(); }
 });
