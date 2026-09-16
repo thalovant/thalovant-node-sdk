@@ -1,9 +1,12 @@
 import { concatBytes, nativeBytes, utf8Decode, utf8Encode } from "./bytes.js";
+import { binaryFrame, binaryKindName, type ThalovantBinary } from "./events.js";
 import { inflateBytes } from "./platform/node.js";
 
 export interface HiveWireMessage {
   msg_type: string;
   payload: Record<string, unknown>;
+  /** Present only on a BINARY frame, whose payload is bytes rather than JSON. */
+  binary?: ThalovantBinary;
   metadata?: Record<string, unknown>;
   route?: unknown[];
   node?: unknown;
@@ -46,6 +49,15 @@ const INT_TO_TYPE: Record<number, string> = {
 };
 
 export function encodeHiveBinaryFrame(message: HiveWireMessage): Uint8Array {
+  if (message.msg_type === "bin") {
+    // This SDK receives BINARY frames; it has never sent one, and the encoder
+    // below writes JSON. Re-encoding a decoded one would drop `binary.data`
+    // silently, and the next decode would read the first four bits of that
+    // JSON as a payload type and hand back corrupted bytes. Refuse instead.
+    throw new Error(
+      "BINARY frames are received, not sent: encodeHiveBinaryFrame cannot carry binary.data.",
+    );
+  }
   const typeId = TYPE_TO_INT[message.msg_type] ?? 11;
   const metadata = utf8Encode(JSON.stringify(message.metadata ?? {}));
   if (metadata.length > 255) {
@@ -73,10 +85,28 @@ export function decodeHiveBinaryFrame(payload: Uint8Array): HiveWireMessage {
   const compressed = reader.readBit() === 1;
   const metadataLength = reader.readUInt(8);
   const metadata = parseRecord(bytesToText(reader.readBytes(metadataLength), compressed));
+  const msgType = INT_TO_TYPE[typeId] ?? "3rdparty";
+  if (msgType === "bin") {
+    // A BINARY frame does not carry JSON. Four bits name the payload type, and
+    // everything after them is the clip itself: raw, misaligned because the
+    // padding went on the front, and never parsed or decompressed.
+    const kind = reader.readUInt(4);
+    return {
+      msg_type: msgType,
+      payload: {},
+      binary: binaryFrame(binaryKindName(kind), reader.readRemainingBytes(), metadata),
+      metadata,
+      route: [],
+      node: null,
+      target_site_id: null,
+      target_pubkey: null,
+      source_peer: null,
+    };
+  }
   const rawPayload = reader.readRemainingBytes();
   const payloadText = bytesToText(rawPayload, compressed);
   return {
-    msg_type: INT_TO_TYPE[typeId] ?? "3rdparty",
+    msg_type: msgType,
     payload: parseRecord(payloadText),
     metadata,
     route: [],

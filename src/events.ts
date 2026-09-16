@@ -187,6 +187,124 @@ export function mergeContext(base?: EventContext, extra?: EventContext): EventCo
   return merged;
 }
 
+/**
+ * The hive's own frame kinds, which a client may subscribe to.
+ *
+ * `query` and `cascade` are deliberately absent: they are this client's own
+ * request/response traffic and `ask()` already owns them, so subscribing to
+ * one would quietly compete for the same replies.
+ */
+export const HIVE_KINDS = ["broadcast", "propagate", "escalate", "intercom", "rendezvous"] as const;
+
+/**
+ * Payload types a BINARY frame can carry, by their wire number.
+ *
+ * A hub answers `speak:synth` by rendering the utterance and sending one of
+ * these back, so a client with no synthesiser of its own can still speak; a
+ * file arrives the same way. The wire numbers the type, this names it.
+ */
+export const BINARY_PAYLOAD_KINDS: Record<number, string> = {
+  1: "raw_audio",
+  2: "numpy_image",
+  3: "file",
+  4: "stt_transcribe",
+  5: "stt_handle",
+  6: "tts_audio",
+};
+
+/** A payload type nobody has named still arrives, under its number. */
+export function binaryKindName(wireNumber: number): string {
+  return BINARY_PAYLOAD_KINDS[wireNumber] ?? `binary:${wireNumber}`;
+}
+
+/** A binary frame: the bytes a hub sent, and what it said about them. */
+export interface ThalovantBinary {
+  /** `tts_audio`, `file`, ... or `binary:<wire number>` for an unnamed type. */
+  readonly kind: string;
+  /** The payload itself. Never parsed, never decompressed. */
+  readonly data: Uint8Array;
+  /** Metadata as the hub sent it. */
+  readonly metadata: Record<string, unknown>;
+  /** What was said, when this is rendered speech. Absent reads as null. */
+  readonly utterance: string | null;
+  /** The language it was said in. */
+  readonly lang: string | null;
+  /** The name a file arrived under. An empty name is no name. */
+  readonly fileName: string | null;
+}
+
+/** Read a hub's metadata into the shape above; absent and empty both read null. */
+export function binaryFrame(kind: string, data: Uint8Array, metadata: Record<string, unknown>): ThalovantBinary {
+  const text = (key: string): string | null => {
+    const value = metadata[key];
+    return typeof value === "string" && value !== "" ? value : null;
+  };
+  return {
+    kind,
+    data,
+    metadata,
+    utterance: text("utterance"),
+    lang: text("lang"),
+    fileName: text("file_name"),
+  };
+}
+
+export type HiveKind = (typeof HIVE_KINDS)[number];
+
+/**
+ * Session fields a client carries from one turn of a conversation to the next.
+ *
+ * A hub keeps nothing for a *named* session: OVOS-SESSION-2 §2.2 makes the
+ * orchestrator stateless for those, so the carrier a client sends is the whole
+ * snapshot and whatever the last turn activated is discarded the moment it
+ * ends. Without `converse_handlers` the converse pipeline has no skill to poll
+ * and every follow-up falls past it to the fallback.
+ *
+ * An allow-list, not a deny-list. Deliberately absent: the caller's own
+ * per-turn settings (`lang`, `pipeline`, `site_id`), because a satellite
+ * decides the language per utterance and a remembered one would silently
+ * outrank it; and the live device flags, which describe a moment that has
+ * passed by the time the next turn is sent.
+ */
+export const CONVERSATION_SESSION_FIELDS = [
+  "converse_handlers",
+  "active_handlers",
+  "active_skills",
+  "context",
+  "utterance_states",
+  "response_mode",
+] as const;
+
+function carried(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value as object).length > 0;
+  // An empty string is a cleared field, like an empty list or map. Counting it
+  // as state replayed a cleared `response_mode` onto the next turn and let a
+  // conversation with nothing in it hold one of the 32 remembered slots.
+  if (typeof value === "string") return value.length > 0;
+  return true;
+}
+
+/**
+ * Fill the conversation fields of `session` from the hub's last reply.
+ *
+ * This turn's own values win: a field the caller set is never overwritten, only
+ * one it left out is taken from the turn before.
+ */
+export function carryConversation(
+  previous: Record<string, unknown> | undefined,
+  session: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!previous) return session;
+  const next: Record<string, unknown> = { ...session };
+  for (const field of CONVERSATION_SESSION_FIELDS) {
+    if (field in next) continue;
+    if (carried(previous[field])) next[field] = previous[field];
+  }
+  return next;
+}
+
 export function contextWithCorrelation(
   context: EventContext = {},
   options: { sessionId?: string; siteId?: string; lang?: string; requestId?: string } = {},

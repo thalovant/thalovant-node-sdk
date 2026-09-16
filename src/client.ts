@@ -14,6 +14,9 @@ import {
 import { ThalovantConnectionError, ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
 import {
   contextWithCorrelation,
+  carryConversation,
+  CONVERSATION_SESSION_FIELDS,
+  HIVE_KINDS,
   BusPayload,
   eventFromBusPayload,
   eventMatchesContext,
@@ -21,6 +24,7 @@ import {
   mergeContext,
   newRequestId,
   newSessionId,
+  type ThalovantBinary,
   ThalovantEvent,
   ThalovantReply,
   ReplyMediaBudget,
@@ -58,6 +62,24 @@ export class ThalovantSubscription {
 export class ThalovantClient {
   readonly identity: ThalovantIdentity;
   private readonly transport: HiveMindRuntimeTransport;
+  /**
+   * The conversation each session id is in the middle of.
+   *
+   * A hub is stateless for a named session, so what the last turn
+   * activated comes back on ovos.utterance.handled and has to be sent
+   * again with the next utterance or it is gone. Bounded, because a
+   * long-lived client handed a fresh session id per turn must not
+   * accumulate one entry per turn for ever.
+   */
+  private readonly conversations = new Map<string, { group: string[]; kept: Record<string, unknown> }>();
+  private static readonly MAX_REMEMBERED_CONVERSATIONS = 32;
+  /**
+   * Session ids one conversation answers to. The cap above counts a group
+   * once, so without this a hub that re-translates the id every turn could
+   * grow a single group without limit.
+   */
+  private static readonly MAX_CONVERSATION_ALIASES = 8;
+
   private readonly replySettleMs: number;
   private readonly emptyReplyWaitMs: number;
   private readonly activeReplyIds = new Set<string>();
@@ -369,6 +391,170 @@ export class ThalovantClient {
   }
 
   /** Ask with a total connection/send/collection budget and optional cancellation. */
+  /**
+   * Listen to one of the hive's own frame kinds.
+   *
+   * A hub relays more than this client's conversation: `broadcast` is aimed
+   * down at every child, `propagate` walks the whole hive, `escalate` goes up
+   * to the parent, `intercom` is addressed node to node, and `rendezvous` is
+   * the mailbox peers use to find each other through NAT.
+   *
+   * Returns a function that unsubscribes.
+   */
+  onHive(kind: string, handler: (frame: unknown) => void): () => void {
+    if (!(HIVE_KINDS as readonly string[]).includes(kind)) {
+      // Named rather than silently never firing: subscribing to "bus" or to a
+      // typo is the kind of mistake that looks like a quiet hub.
+      throw new TypeError(`${kind} is not a hive frame kind; expected one of ${HIVE_KINDS.join(", ")}`);
+    }
+    const listener = (event: Event) => handler((event as CustomEvent).detail);
+    this.transport.addEventListener?.(kind, listener);
+    return () => this.transport.removeEventListener?.(kind, listener);
+  }
+
+  /**
+   * Listen for binary frames: rendered speech, and files.
+   *
+   * This is what a hub sends back for `speak:synth` -- the audio itself, so a
+   * client with no synthesiser can still speak -- and how it hands over a
+   * file. Delivered by subscription and not on a reply, because a binary frame
+   * carries no request id: it cannot be attributed to one `ask()`. Its
+   * `utterance` is the only thread back to a turn.
+   *
+   * `handler` runs on the transport's receive path, in subscription order,
+   * like every other subscription here. A handler that blocks holds up the
+   * next frame, so hand slow work -- decoding, playback, writing to disk -- to
+   * something of your own.
+   *
+   * Returns a function that unsubscribes.
+   */
+  onBinary(handler: (frame: ThalovantBinary) => void): () => void {
+    const listener = (event: Event) => handler((event as CustomEvent<ThalovantBinary>).detail);
+    this.transport.addEventListener?.("binary", listener);
+    return () => this.transport.removeEventListener?.("binary", listener);
+  }
+
+  /** Send an event across the hive; every node sees it once. */
+  async propagate(eventType: string, data: Record<string, unknown> = {}, context: EventContext = {}): Promise<void> {
+    return this.sendHive("propagate", eventType, data, context);
+  }
+
+  /** Send an event up to the parent node. */
+  async escalate(eventType: string, data: Record<string, unknown> = {}, context: EventContext = {}): Promise<void> {
+    return this.sendHive("escalate", eventType, data, context);
+  }
+
+  /**
+   * Send an event down to every child of this hub. **Admin only.**
+   *
+   * A hub requires admin standing and the `can_broadcast` grant, and a client
+   * that sends one without them is not answered with an error -- it is
+   * disconnected for misbehaviour. Nothing here can check first: a hub's HELLO
+   * carries its public key, peer name and node id, and nothing about what this
+   * client may do, so a refusal arrives as a closed socket on the next read.
+   */
+  async broadcast(eventType: string, data: Record<string, unknown> = {}, context: EventContext = {}): Promise<void> {
+    return this.sendHive("broadcast", eventType, data, context);
+  }
+
+  /**
+   * Wrap a bus event in a hive frame and send it.
+   *
+   * Nested on purpose: a hub reads `message.payload` of a mesh frame as a
+   * HiveMessage of its own and re-stamps its route on it before forwarding, so
+   * a flat frame would lose the route.
+   */
+  private async sendHive(kind: string, eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+    const type = eventType.trim();
+    if (!type) throw new TypeError("A hive frame needs a non-empty event type.");
+    if (!this.transport.sendHiveMessage) {
+      throw new ThalovantUnsupportedProtocolError("This transport does not support HiveMind frames.");
+    }
+    await this.connect();
+    await this.transport.sendHiveMessage({
+      msg_type: kind,
+      payload: {
+        msg_type: "bus",
+        payload: { type, data, context: this.contextWithIdentityMetadata(context) },
+        metadata: {},
+        route: [],
+      },
+      metadata: {},
+      route: [],
+    } as never);
+  }
+
+  /**
+   * Keep the session a hub returned, under every id that reaches it.
+   *
+   * Filed as an entry per id they aged and were evicted separately, so a
+   * caller continuing under the id it sent could lose the carry while one
+   * using the hub's answering id kept it -- and the cap counted names rather
+   * than conversations.
+   */
+  private rememberConversation(sessionIds: string[], context: EventContext | undefined): void {
+    const session = (context?.session ?? undefined) as Record<string, unknown> | undefined;
+    const kept: Record<string, unknown> = {};
+    for (const field of CONVERSATION_SESSION_FIELDS) {
+      const value = session?.[field];
+      if (value === undefined || value === null) continue;
+      if (Array.isArray(value) ? value.length === 0 : typeof value === "object" && Object.keys(value as object).length === 0) continue;
+      // An empty scalar is not carried state: keeping `response_mode: ""`
+      // spent one of the entries the cap allows on a cleared session, so
+      // eviction could drop a session that still had state.
+      if (value === "") continue;
+      kept[field] = value;
+    }
+    // A bare string would iterate as characters and file the carry under "s",
+    // "a", "t" -- silently, since a caller reaching this through a cast has no
+    // type to stop it.
+    const requested = typeof sessionIds === "string" ? [sessionIds as string] : sessionIds;
+    const keys: string[] = [];
+    for (const id of requested) if (!keys.includes(id)) keys.push(id);
+    if (!keys.length) return;
+    // Take over every id these already reach rather than dropping them: a turn
+    // continued under the hub's id must not forget the id a satellite still
+    // uses for the same conversation.
+    for (let index = 0; index < keys.length; index += 1) {
+      const previous = this.conversations.get(keys[index]);
+      this.conversations.delete(keys[index]);
+      if (!previous) continue;
+      for (const sibling of previous.group) {
+        this.conversations.delete(sibling);
+        if (!keys.includes(sibling)) keys.push(sibling);
+      }
+    }
+    // Forgetting is the state, not the absence of one: a turn that ended with
+    // nothing active must not leave the old entry behind to resurrect it.
+    if (!Object.keys(kept).length) {
+      for (const key of keys) this.conversations.delete(key);
+      return;
+    }
+    // This turn's ids come first and inherited ones after, so the tail is the
+    // stalest: a hub answering under a fresh translated id (HIVEMIND-BRIDGE-1
+    // §4) would otherwise grow one group for ever.
+    keys.length = Math.min(keys.length, ThalovantClient.MAX_CONVERSATION_ALIASES);
+    const entry = { group: [...keys], kept };
+    for (const key of keys) this.conversations.set(key, entry);
+    // A Map keeps insertion order, so the first key really is the oldest --
+    // but a whole conversation goes at once, not one of its names.
+    while (new Set([...this.conversations.values()]).size > ThalovantClient.MAX_REMEMBERED_CONVERSATIONS) {
+      const oldest = this.conversations.values().next();
+      if (oldest.done) break;
+      for (const sibling of oldest.value.group) this.conversations.delete(sibling);
+    }
+  }
+
+  /** Put the last turn's conversation state back into this turn. */
+  private continueConversation(context: EventContext, sessionId: string): EventContext {
+    const entry = this.conversations.get(sessionId);
+    if (!entry) return context;
+    const session = (context.session ?? {}) as Record<string, unknown>;
+    const carried = carryConversation(entry.kept, session);
+    if (carried === session) return context;
+    return { ...context, session: carried } as EventContext;
+  }
+
   async ask(
     text: string,
     options: RequestContextOptions & {
@@ -399,9 +585,10 @@ export class ThalovantClient {
     const lang = options.lang ?? "en-us";
     const requestId = options.requestId ?? newRequestId();
     const sessionId = options.sessionId ?? newSessionId();
-    const context = contextWithCorrelation(this.contextWithIdentityMetadata(requestContext(options.context, options) ?? {}), {
-      sessionId, siteId: this.identity.siteId, lang, requestId,
-    });
+    const context = contextWithCorrelation(
+      this.continueConversation(this.contextWithIdentityMetadata(requestContext(options.context, options) ?? {}), sessionId),
+      { sessionId, siteId: this.identity.siteId, lang, requestId },
+    );
     try {
       await this.connect(Math.max(1, deadline - performance.now()), options.signal);
     } catch (error) {
@@ -417,6 +604,9 @@ export class ThalovantClient {
     let softFailureEvent: ThalovantEvent | undefined;
     let terminal = false;
     let handled = false;
+    // Whether the hub has said what the conversation now is, and what it said.
+    let sawHandled = false;
+    let handledContext: EventContext | undefined;
     let phaseTimer: ReturnType<typeof setTimeout> | undefined;
     let phase: "empty" | "settle" | undefined;
     let finish!: () => void;
@@ -434,11 +624,26 @@ export class ThalovantClient {
     };
     const listenerContext = requestOnlyCorrelationContext(context, requestId);
     const listener = (raw: Event): void => {
-      if (terminal) return;
-      if (performance.now() >= deadline) { complete(); return; }
       const detail = (raw as CustomEvent).detail;
       const event = eventFromBusPayload(detail, detail);
       if (!eventMatchesRequiredCorrelation(event, listenerContext)) return;
+      // Ahead of every gate below. The end of the turn is the one place a hub
+      // states what the conversation now is, and whether this reply is still
+      // collecting, already settled or already failed says nothing about what
+      // the next one will need. A short settle window -- zero most of all --
+      // completes the reply before this frame arrives.
+      if (event.name === EVENT_UTTERANCE_HANDLED) {
+        sawHandled = true;
+        // Both ids in one call: a satellite reuses its own, an ordinary caller
+        // is handed the reply's. Filed separately they aged and were evicted
+        // separately, so with the cache full the second could evict the first.
+        const carryKeys = [sessionId];
+        if (event.sessionId && event.sessionId !== sessionId) carryKeys.push(event.sessionId);
+        this.rememberConversation(carryKeys, event.context);
+        handledContext = event.context;
+      }
+      if (terminal) return;
+      if (performance.now() >= deadline) { complete(); return; }
       if (!mediaBudget.accept(event)) return;
       switch (event.name) {
         case EVENT_AUDIO_QUEUE:
@@ -459,6 +664,8 @@ export class ThalovantClient {
           if (!fragments.length) startWindow("empty", emptyReplyWaitMs);
           break;
         case EVENT_UTTERANCE_HANDLED:
+          // The end of the turn is the one place a hub states what the
+          // conversation now is, and it keeps none of it for a named session.
           handled = true;
           events.push(event);
           if (!fragments.length) startWindow("empty", emptyReplyWaitMs);
@@ -520,6 +727,12 @@ export class ThalovantClient {
       clearTimeout(timer);
       clearTimeout(phaseTimer);
       options.signal?.removeEventListener("abort", onAbort);
+      // Removed unconditionally: this SDK guarantees no listener outlives an
+      // ask, and its suite checks that immediately on return. Holding one for
+      // a moment to catch a late `ovos.utterance.handled` would break that
+      // guarantee, so the remaining half of this -- a reply that settles
+      // before the hub says what the conversation now is -- needs a decision
+      // about latency, not a longer listener.
       this.transport.removeEventListener("bus", listener);
     }
   }

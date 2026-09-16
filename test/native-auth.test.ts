@@ -161,3 +161,72 @@ test("the token exchange is reachable and refuses a cleartext control plane", as
   );
   assert.equal(plane.accessToken, undefined);
 });
+
+test("the token exchange posts the code and verifier, unauthenticated, and keeps a bad token out", async () => {
+  // CodeRabbit asked for the endpoint, the body, the absence of bearer auth,
+  // and a malformed response leaving the stored token alone -- the last one
+  // matters because a client that "succeeded" with an unusable token fails on
+  // the next request instead of here.
+  const { ThalovantControlPlane } = await import("../src/control.js");
+  const original = globalThis.fetch;
+  const seen: Array<{ url: string; init: RequestInit }> = [];
+  let answer: unknown = { access_token: "issued" };
+  globalThis.fetch = async (input: any, init: any) => {
+    seen.push({ url: String(input), init });
+    return new Response(JSON.stringify(answer), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }) as any;
+  };
+  try {
+    const plane = new ThalovantControlPlane("https://control.example.test");
+    await plane.completeNativeSignIn("the-code", "the-verifier", "app", "app://auth");
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, "https://control.example.test/v1/auth/native/token");
+    assert.equal(seen[0].init.method, "POST");
+    assert.deepEqual(JSON.parse(String(seen[0].init.body)), {
+      code: "the-code",
+      code_verifier: "the-verifier",
+      client_id: "app",
+      redirect_uri: "app://auth",
+    });
+    const headers = new Headers(seen[0].init.headers as HeadersInit);
+    assert.equal(headers.get("authorization"), null, "the exchange is what issues the token");
+    assert.equal(plane.accessToken, "issued");
+
+    // A response with no usable token must not replace the one already stored.
+    for (const bad of [{}, { access_token: "" }, { access_token: 42 }, { access_token: null }]) {
+      answer = bad;
+      await assert.rejects(
+        () => plane.completeNativeSignIn("the-code", "the-verifier", "app", "app://auth"),
+        /access_token/,
+        JSON.stringify(bad),
+      );
+      assert.equal(plane.accessToken, "issued", JSON.stringify(bad));
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("an error body echoing the code or the verifier never reaches the message", async () => {
+  const { ThalovantControlPlane } = await import("../src/control.js");
+  const original = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail: "bad code the-code with verifier the-verifier" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    }) as any;
+  try {
+    const plane = new ThalovantControlPlane("https://control.example.test");
+    await plane.completeNativeSignIn("the-code", "the-verifier", "app", "app://auth").then(
+      () => assert.fail("expected a rejection"),
+      (error: Error) => {
+        assert.ok(!error.message.includes("the-code"), error.message);
+        assert.ok(!error.message.includes("the-verifier"), error.message);
+      },
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
