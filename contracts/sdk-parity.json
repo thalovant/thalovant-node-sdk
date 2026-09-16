@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/client.ts": "492a902571b2d17bd28bf42d4847b6344562ed2a83ab14ee4f91cff80d5e88ba",
+        "src/client.ts": "0c7fb4a50406872eeda13f63661b5cf1afbc1aa0ac0051403e3dc879b10c03fd",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd",
         "src/wire.ts": "51c5487f79bf79c32512aac11a919bdc1aa7dbaad64fd48a1372a7a9a6314a0c"
@@ -38,13 +38,13 @@
     },
     "conversation": {
       "implementation": {
-        "src/client.ts": "492a902571b2d17bd28bf42d4847b6344562ed2a83ab14ee4f91cff80d5e88ba",
+        "src/client.ts": "0c7fb4a50406872eeda13f63661b5cf1afbc1aa0ac0051403e3dc879b10c03fd",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
       "status": "required",
       "tests": {
-        "test/conversation-carry.test.ts": "5bf0fd7d015634b6d327b6c9535061371a2f0da89107575a78b19f6f9e98720e"
+        "test/conversation-carry.test.ts": "9e226b2e371dbc5fdc7a6004fa443bac5e8205962a11d2092b494aaff215beb5"
       },
       "vectors": {
         "conversation-vectors.json": "test/conversation-vectors.json"
@@ -95,14 +95,14 @@
     },
     "mesh": {
       "implementation": {
-        "src/client.ts": "492a902571b2d17bd28bf42d4847b6344562ed2a83ab14ee4f91cff80d5e88ba",
+        "src/client.ts": "0c7fb4a50406872eeda13f63661b5cf1afbc1aa0ac0051403e3dc879b10c03fd",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
       "tests": {
-        "test/conversation-carry.test.ts": "5bf0fd7d015634b6d327b6c9535061371a2f0da89107575a78b19f6f9e98720e"
+        "test/conversation-carry.test.ts": "9e226b2e371dbc5fdc7a6004fa443bac5e8205962a11d2092b494aaff215beb5"
       },
       "vectors": {
         "mesh-vectors.json": "test/mesh-vectors.json"
@@ -110,7 +110,7 @@
     },
     "runtime": {
       "implementation": {
-        "src/client.ts": "492a902571b2d17bd28bf42d4847b6344562ed2a83ab14ee4f91cff80d5e88ba",
+        "src/client.ts": "0c7fb4a50406872eeda13f63661b5cf1afbc1aa0ac0051403e3dc879b10c03fd",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/noise.ts": "29c37c36c0fba02a9ff408b226d651c767f8c2236dff259da4970e0e6c759ca9",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
