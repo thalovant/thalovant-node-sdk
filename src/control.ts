@@ -547,7 +547,15 @@ export class ThalovantControlPlane {
       client_id: clientId,
       redirect_uri: redirectUri,
     };
-    const token = await this.request("POST", "/v1/auth/native/token", { body, auth: false });
+    // Both halves of the exchange are scrubbed from any error the API returns:
+    // a validation body echoing the code or the verifier would otherwise land
+    // in a thrown message, and an intercepted code is redeemable by anyone who
+    // also has the verifier.
+    const token = await this.request("POST", "/v1/auth/native/token", {
+      body,
+      auth: false,
+      redactSecrets: [code, verifier],
+    });
     const accessToken = token.access_token;
     if (typeof accessToken !== "string" || !accessToken) {
       throw new ThalovantApiError("Thalovant API token response did not include access_token.");

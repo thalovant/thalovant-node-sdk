@@ -23,7 +23,7 @@
     },
     "control": {
       "implementation": {
-        "src/control.ts": "8b5f565b79d150e9752b97b015f99d099e8541b8469b2567b323ad0093437893",
+        "src/control.ts": "b6e5bbc2cd0eb96d511fe121d327f2d1d3e7008bb405da3a4bf400d027186b9c",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
         "src/native-auth.ts": "5a186664da7e4705973be0cbb31a79fb8657807080acbd7e34a0986622822a8e"
       },
@@ -33,7 +33,7 @@
         "test/control-security.test.ts": "b8e89b545dacdc117367aa277651436fa5fe47d9959d02c52a1ff76e035c1c6d",
         "test/hub-skills.test.ts": "3e5551a1195dfb7c4a13b7dc1ad7e0903a1b216b5fbe200bece925353af94634",
         "test/hubs.test.ts": "895a164d1cabe309886d2646cdd83611a7b4f58fe6944349c0fc3aab641a5c5e",
-        "test/native-auth.test.ts": "0654b625010f2a090b4d7f204130d88de1ffbcc0cea4cca38c335f482e5fefc6"
+        "test/native-auth.test.ts": "c424ace4571ca3ede8717d5c51bd86a3a92fa50af429533326d8a7cec556b9f5"
       }
     },
     "conversation": {
