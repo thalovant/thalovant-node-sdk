@@ -56,3 +56,43 @@ test("this client's own traffic is not a hive kind", () => {
     assert.ok(!(HIVE_KINDS as readonly string[]).includes(refused), refused);
   }
 });
+
+test("the carry survives whichever session id the caller sends back", async () => {
+  // A reply's `sessionId` is the first non-empty *event* session id, so when a
+  // hub answers under an id of its own the reply hands the caller an id the
+  // carry used to be filed under nothing. Both are kept now: the request's,
+  // which a satellite reuses, and the hub's, which the reply offers.
+  const { ThalovantClient } = await import("../src/client.js");
+  const { ThalovantIdentity } = await import("../src/identity.js");
+  const identity = new ThalovantIdentity({
+    accessKey: "key", password: "password", siteId: "site",
+    defaultMaster: "http://hub.local", defaultPort: 5679,
+  });
+  const client = new ThalovantClient(identity, { transport: {} as never });
+
+  const handlers = {
+    converse_handlers: [{ skill_id: "fart", activated_at: 1 }],
+  };
+  (client as never as { rememberConversation(id: string, ctx: unknown): void })
+    .rememberConversation("sat-1", { session: { ...handlers } });
+  (client as never as { rememberConversation(id: string, ctx: unknown): void })
+    .rememberConversation("hub-namespace:sat-1", { session: { ...handlers } });
+
+  const viaRequestId = (client as never as {
+    continueConversation(ctx: unknown, id: string): Record<string, never>;
+  }).continueConversation({}, "sat-1");
+  const viaReplyId = (client as never as {
+    continueConversation(ctx: unknown, id: string): Record<string, never>;
+  }).continueConversation({}, "hub-namespace:sat-1");
+
+  for (const [name, next] of [["request id", viaRequestId], ["reply id", viaReplyId]] as const) {
+    const session = (next as Record<string, Record<string, unknown>>).session;
+    assert.ok(session?.converse_handlers, `${name} lost the carry`);
+  }
+});
+
+test("an empty string is a cleared field, not conversation state", async () => {
+  const { carryConversation } = await import("../src/events.js");
+  const carried = carryConversation({ response_mode: "" }, {});
+  assert.equal(carried.response_mode, undefined, JSON.stringify(carried));
+});

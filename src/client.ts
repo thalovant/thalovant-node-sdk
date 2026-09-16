@@ -604,6 +604,13 @@ export class ThalovantClient {
           // The end of the turn is the one place a hub states what the
           // conversation now is, and it keeps none of it for a named session.
           this.rememberConversation(sessionId, event.context);
+          // And under the id the hub answered with, when it differs. A reply's
+          // `sessionId` is the first non-empty *event* session id, so a caller
+          // that passes it to the next ask() looked up a key nothing was filed
+          // under and sent no carried state at all.
+          if (event.sessionId && event.sessionId !== sessionId) {
+            this.rememberConversation(event.sessionId, event.context);
+          }
           handled = true;
           events.push(event);
           if (!fragments.length) startWindow("empty", emptyReplyWaitMs);
