@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {},
-      "reason": "A BINARY frame is WIRE-1 bitstring-encoded and this transport reads UTF-8 JSON only. No hub emits one today: hivemind-core listen never wires the audio protocol.",
+      "reason": "Partial: decodeHiveBinaryFrame reads the WIRE-1 header, but always JSON-parses the payload, so a BINARY frame carrying raw audio still fails. Surfacing bin_type and the raw bytes is the remaining work. No hub emits one today: hivemind-core listen never wires the audio protocol.",
       "status": "planned",
       "tests": {}
     },
