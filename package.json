@@ -47,7 +47,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/*.test.js"
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "record-conformance": "rm -rf contracts/conformance-results.json.parts && THALOVANT_CONFORMANCE_OUT=contracts/conformance-results.json npm test && rm -rf contracts/conformance-results.json.parts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

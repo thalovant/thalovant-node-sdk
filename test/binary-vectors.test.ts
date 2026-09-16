@@ -14,6 +14,7 @@ import test from "node:test";
 
 import { BINARY_PAYLOAD_KINDS, binaryKindName } from "../src/events.js";
 import { decodeHiveBinaryFrame } from "../src/wire.js";
+import { record } from "./conformance-record.js";
 
 const spec = JSON.parse(readFileSync(new URL("../../test/binary-vectors.json", import.meta.url), "utf8"));
 
@@ -67,6 +68,15 @@ test("every case in binary-vectors.json decodes as it says", () => {
     const message = decodeHiveBinaryFrame(frame(row.bin_type, row.metadata, clip));
     assert.equal(message.msg_type, "bin", row.name);
     const binary = message.binary!;
+    // Recorded before the assert: what this SDK produced, not a restatement of
+    // what the vector says it should have. `file_name` is the wire spelling the
+    // reference records under; `fileName` is only how this language spells it.
+    record("binary-vectors.json", row.name, {
+      kind: binary.kind,
+      utterance: binary.utterance,
+      lang: binary.lang,
+      file_name: binary.fileName,
+    });
     assert.equal(binary.kind, row.expected.kind, row.name);
     assert.equal(binary.utterance, row.expected.utterance, row.name);
     assert.equal(binary.lang, row.expected.lang, row.name);
