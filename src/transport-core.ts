@@ -18,7 +18,7 @@ import {
   pinHubKey,
   saveCachedPsk,
 } from "./noise-store.js";
-import { BusPayload, EventContext } from "./events.js";
+import { BusPayload, EventContext, type ThalovantBinary } from "./events.js";
 import { ThalovantIdentity } from "./identity.js";
 import { createPlatformWebSocket, randomUUID } from "./platform/node.js";
 import type { PlatformWebSocket } from "./platform/types.js";
@@ -29,6 +29,8 @@ const MESH_KINDS = new Set(["broadcast", "propagate", "escalate", "intercom", "r
 export interface HiveMessage {
   msg_type: string;
   payload: Record<string, unknown>;
+  /** Present only on a BINARY frame, whose payload is bytes rather than JSON. */
+  binary?: ThalovantBinary;
   metadata?: Record<string, unknown>;
   route?: unknown[];
   node?: string | null;
@@ -431,6 +433,13 @@ export class HiveMindHttpTransport extends EventTarget {
     if (!this.session) throw new ThalovantConnectionError("Application message arrived before Noise authentication.");
     if (message.msg_type === "bus") {
       this.dispatchEvent(new CustomEvent<BusPayload>("bus", { detail: message.payload as unknown as BusPayload }));
+    } else if (message.msg_type === "bin") {
+      // This is how a hub answers speak:synth -- the rendered audio itself --
+      // and how a file arrives. Decoded above; without this branch it reached
+      // nobody.
+      if (message.binary) {
+        this.dispatchEvent(new CustomEvent<ThalovantBinary>("binary", { detail: message.binary }));
+      }
     } else if (MESH_KINDS.has(message.msg_type) || message.msg_type === "query" || message.msg_type === "cascade") {
       // The five mesh kinds used to fall off the end of this chain with no
       // branch and no log line: a hub relaying them had nobody listening.

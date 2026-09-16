@@ -196,6 +196,59 @@ export function mergeContext(base?: EventContext, extra?: EventContext): EventCo
  */
 export const HIVE_KINDS = ["broadcast", "propagate", "escalate", "intercom", "rendezvous"] as const;
 
+/**
+ * Payload types a BINARY frame can carry, by their wire number.
+ *
+ * A hub answers `speak:synth` by rendering the utterance and sending one of
+ * these back, so a client with no synthesiser of its own can still speak; a
+ * file arrives the same way. The wire numbers the type, this names it.
+ */
+export const BINARY_PAYLOAD_KINDS: Record<number, string> = {
+  1: "raw_audio",
+  2: "numpy_image",
+  3: "file",
+  4: "stt_transcribe",
+  5: "stt_handle",
+  6: "tts_audio",
+};
+
+/** A payload type nobody has named still arrives, under its number. */
+export function binaryKindName(wireNumber: number): string {
+  return BINARY_PAYLOAD_KINDS[wireNumber] ?? `binary:${wireNumber}`;
+}
+
+/** A binary frame: the bytes a hub sent, and what it said about them. */
+export interface ThalovantBinary {
+  /** `tts_audio`, `file`, ... or `binary:<wire number>` for an unnamed type. */
+  readonly kind: string;
+  /** The payload itself. Never parsed, never decompressed. */
+  readonly data: Uint8Array;
+  /** Metadata as the hub sent it. */
+  readonly metadata: Record<string, unknown>;
+  /** What was said, when this is rendered speech. Absent reads as null. */
+  readonly utterance: string | null;
+  /** The language it was said in. */
+  readonly lang: string | null;
+  /** The name a file arrived under. An empty name is no name. */
+  readonly fileName: string | null;
+}
+
+/** Read a hub's metadata into the shape above; absent and empty both read null. */
+export function binaryFrame(kind: string, data: Uint8Array, metadata: Record<string, unknown>): ThalovantBinary {
+  const text = (key: string): string | null => {
+    const value = metadata[key];
+    return typeof value === "string" && value !== "" ? value : null;
+  };
+  return {
+    kind,
+    data,
+    metadata,
+    utterance: text("utterance"),
+    lang: text("lang"),
+    fileName: text("file_name"),
+  };
+}
+
 export type HiveKind = (typeof HIVE_KINDS)[number];
 
 /**

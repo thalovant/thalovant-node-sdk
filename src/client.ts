@@ -24,6 +24,7 @@ import {
   mergeContext,
   newRequestId,
   newSessionId,
+  type ThalovantBinary,
   ThalovantEvent,
   ThalovantReply,
   ReplyMediaBudget,
@@ -403,6 +404,28 @@ export class ThalovantClient {
     const listener = (event: Event) => handler((event as CustomEvent).detail);
     this.transport.addEventListener?.(kind, listener);
     return () => this.transport.removeEventListener?.(kind, listener);
+  }
+
+  /**
+   * Listen for binary frames: rendered speech, and files.
+   *
+   * This is what a hub sends back for `speak:synth` -- the audio itself, so a
+   * client with no synthesiser can still speak -- and how it hands over a
+   * file. Delivered by subscription and not on a reply, because a binary frame
+   * carries no request id: it cannot be attributed to one `ask()`. Its
+   * `utterance` is the only thread back to a turn.
+   *
+   * `handler` runs on the transport's receive path, in subscription order,
+   * like every other subscription here. A handler that blocks holds up the
+   * next frame, so hand slow work -- decoding, playback, writing to disk -- to
+   * something of your own.
+   *
+   * Returns a function that unsubscribes.
+   */
+  onBinary(handler: (frame: ThalovantBinary) => void): () => void {
+    const listener = (event: Event) => handler((event as CustomEvent<ThalovantBinary>).detail);
+    this.transport.addEventListener?.("binary", listener);
+    return () => this.transport.removeEventListener?.("binary", listener);
   }
 
   /** Send an event across the hive; every node sees it once. */

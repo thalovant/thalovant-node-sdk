@@ -1,10 +1,21 @@
 {
   "capabilities": {
     "binary": {
-      "implementation": {},
-      "reason": "Partial: decodeHiveBinaryFrame reads the WIRE-1 header, but always JSON-parses the payload, so a BINARY frame carrying raw audio still fails. Surfacing bin_type and the raw bytes is the remaining work. No hub emits one today: hivemind-core listen never wires the audio protocol.",
-      "status": "planned",
-      "tests": {}
+      "implementation": {
+        "src/client.ts": "302baf398f87b96d09ace54c5d80e78f21da69993eaf612e518b552986bd71d7",
+        "src/events.ts": "8be7d9e5e5d99c918cd65abd893e0f1066134e7d02cbb44594ddef740c8f522e",
+        "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd",
+        "src/wire.ts": "30ddb232b46f55b136dbfdce0896ff749c054446a74b690de8076c71c7012b90"
+      },
+      "reason": "decodeHiveBinaryFrame branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than a frame this SDK built for itself.",
+      "status": "required",
+      "tests": {
+        "test/binary-vectors.test.ts": "3e78869ba07d2c5491ae7cffe89be1a08168a64ae567d05ebdc7b580fbc969e3"
+      },
+      "vectors": {
+        "binary-frames.json": "test/binary-frames.json",
+        "binary-vectors.json": "test/binary-vectors.json"
+      }
     },
     "cli": {
       "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools.",
@@ -27,13 +38,16 @@
     },
     "conversation": {
       "implementation": {
-        "src/client.ts": "627f3170f12930820395a58b070b1d4b64113694c785afedeac987833c5d14ba",
-        "src/events.ts": "d3a293e363777c9860a61971418acb2154d80b47443e41381abfc6342c996a25"
+        "src/client.ts": "302baf398f87b96d09ace54c5d80e78f21da69993eaf612e518b552986bd71d7",
+        "src/events.ts": "8be7d9e5e5d99c918cd65abd893e0f1066134e7d02cbb44594ddef740c8f522e"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
       "status": "required",
       "tests": {
         "test/conversation-carry.test.ts": "af981a3c1cd72a54cf03bcae8dbbde111a38a1aa9196bf38156be7adaf363fe9"
+      },
+      "vectors": {
+        "conversation-vectors.json": "test/conversation-vectors.json"
       }
     },
     "identity": {
@@ -57,8 +71,11 @@
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
       "status": "required",
       "tests": {
-        "test/inventory-vectors.json": "4deb456540b8b08aa4b59f8366d4295318b743245e7936febbdb199eb2dcfae0",
+        "test/inventory-vectors.json": "f631ce993a84b21ae17d43f65ad4e062ebbd997ca7b9c02de4056c11ec73b1d0",
         "test/inventory.test.ts": "79316d45b310903d46e6c0bcb66ed55b97abbede769b32353d8185dea570e0a3"
+      },
+      "vectors": {
+        "inventory-vectors.json": "test/inventory-vectors.json"
       }
     },
     "listing": {
@@ -70,27 +87,33 @@
       "status": "required",
       "tests": {
         "test/listing.test.ts": "04566c94130a66194ed183c3ce45f0fd79257a1677f4e58b0fdc0ca4153b0b4e",
-        "test/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
+        "test/question-vectors.json": "a6ae21cb27eac6a33cf1026677f0c36be50f0e13faa7ce724bedc9a3b8bb8386"
+      },
+      "vectors": {
+        "question-vectors.json": "test/question-vectors.json"
       }
     },
     "mesh": {
       "implementation": {
-        "src/client.ts": "627f3170f12930820395a58b070b1d4b64113694c785afedeac987833c5d14ba",
-        "src/events.ts": "d3a293e363777c9860a61971418acb2154d80b47443e41381abfc6342c996a25",
-        "src/transport-core.ts": "e17f2a20f80de5baef967e12234bcd6f6d70434e3c6da9d9323d24325c9ab2a5"
+        "src/client.ts": "302baf398f87b96d09ace54c5d80e78f21da69993eaf612e518b552986bd71d7",
+        "src/events.ts": "8be7d9e5e5d99c918cd65abd893e0f1066134e7d02cbb44594ddef740c8f522e",
+        "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
       "tests": {
         "test/conversation-carry.test.ts": "af981a3c1cd72a54cf03bcae8dbbde111a38a1aa9196bf38156be7adaf363fe9"
+      },
+      "vectors": {
+        "mesh-vectors.json": "test/mesh-vectors.json"
       }
     },
     "runtime": {
       "implementation": {
-        "src/client.ts": "627f3170f12930820395a58b070b1d4b64113694c785afedeac987833c5d14ba",
-        "src/events.ts": "d3a293e363777c9860a61971418acb2154d80b47443e41381abfc6342c996a25",
+        "src/client.ts": "302baf398f87b96d09ace54c5d80e78f21da69993eaf612e518b552986bd71d7",
+        "src/events.ts": "8be7d9e5e5d99c918cd65abd893e0f1066134e7d02cbb44594ddef740c8f522e",
         "src/noise.ts": "29c37c36c0fba02a9ff408b226d651c767f8c2236dff259da4970e0e6c759ca9",
-        "src/transport-core.ts": "e17f2a20f80de5baef967e12234bcd6f6d70434e3c6da9d9323d24325c9ab2a5"
+        "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
       "status": "required",
@@ -98,8 +121,11 @@
         "test/ask-wait-deadlines.test.ts": "29aa6e61ce7b0ef25d987e295d80d37bc9aeca6fa5253a348446fa8203f011f7",
         "test/noise-transports.test.ts": "06ddd7ada87e9032c9c5f5de82576fdd848d555a955c143d77efb8617179c9a2",
         "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8",
-        "test/reply-claim-vectors.json": "bfcd4a649fa8ecb0cede0ccd495cdbdc1a9881760e4654cd776cf81bed558cb1",
+        "test/reply-claim-vectors.json": "45f2731589e612d5a849376d94073c57b0fef426a92e1d065c58c48442b1ffdc",
         "test/reply-claims.test.ts": "8f2071035b281cca9fcfd8a3934cc9baf7c550ce6284021a95df9b40a0c7f540"
+      },
+      "vectors": {
+        "reply-claim-vectors.json": "test/reply-claim-vectors.json"
       }
     },
     "session": {
@@ -114,26 +140,10 @@
     }
   },
   "reference_digests": [
-    "1133ac83dca463a5b7c69c980d1b5db46a1314d08151b31508982ad1cf41b6c6",
-    "c13f62bf0c5ff9a8b06808542f89481f961e7c4e24af13928055598b76e2550c",
-    "2440dd10059c468ca5012a3e4e9e057c9bd2df7ef442eba1d5dcdeb4afb3eafd",
-    "4f17f2e999105c5629defd1c1ea71a197ecf725a9b559ff7b3bf9932638645bd",
-    "676e935e66330f8614d6c23cccddd48e1c4577c3af761775f18e1ea0128b8007",
-    "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0",
-    "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
-    "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b",
-    "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107",
-    "d02b21380724ae606673f1b7e74b57f7962c2dea1b0640fe642856c2f2be97e2",
-    "8c8c6d952c7d86633eb65eee20415f06ee114389b3cd5efc138e59a858ffdbab",
-    "20cc677bf3ca8d61c32f0f2d3fbf6562899cf83f951685d57a2bdd10e8d30a45",
-    "9ef680aa6e5dd5519ade3954b16ac14219117df45a87ca7112dca961fad7486d",
-    "c4973d48241c9f14e0aaf6aab6b4b1c7e798b81099d0c5783079af7b4a138392",
-    "a6fe69439f14c75a2cf37d14a2d2ad1e2426639def8e1757a738a3ec6683af17",
-    "8669034d6987af946303913780cce419efaff2a9181de7d46fbffe7092d7be9e",
-    "c0d883e69ee7fa301c6e4c1b1a5c433ed290d63f79a3e6b397fdb0a988d111fa",
     "49bab2a8922b69b5cd886e7acadf217cdaa78bd94bfb48374e2f4b1cde85dfc0",
     "9af92bcafd77385cd7c9cfede859eeb3586f65d0b24c9dbff36352089e94821c",
-    "003cdf02562e53bd24cc58ac8eb44411cc7ac42d06ba3bbfa46e82386ea92ef7"
+    "003cdf02562e53bd24cc58ac8eb44411cc7ac42d06ba3bbfa46e82386ea92ef7",
+    "ed8b30df32ee8b385608cee8ebda39ccb04eb5079b73e8ccc23dca0c48d62449"
   ],
   "schema_version": 1
 }

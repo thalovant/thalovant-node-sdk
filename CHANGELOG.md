@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 — 2026-09-16
+
+- Carry the conversation between the turns of a named session. A hub keeps nothing for a named session -- OVOS-SESSION-2 §2.2 makes the orchestrator stateless for those -- so whatever a turn activated is discarded the moment it ends, and every follow-up fell past the converse pipeline to the fallback. `carryConversation()` and `CONVERSATION_SESSION_FIELDS` carry conversation state only, by allow-list: never `lang`, which would pin a bilingual conversation to whichever language it opened in.
+- Speak the rest of the HiveMind protocol. `onHive(kind, handler)` listens to the five mesh kinds -- `broadcast`, `propagate`, `escalate`, `intercom`, `rendezvous` -- which used to fall off the end of the dispatch chain with no branch and no log line, and `propagate()`, `escalate()` and `broadcast()` send. A refusal is a disconnection rather than an error: a hub's HELLO says nothing about what a client may do, so nothing can check first.
+- Receive binary frames. This is how a hub answers `speak:synth`: it renders the utterance and sends the audio back, so a client with no synthesiser of its own can still speak, and it is how a file arrives. `decodeHiveBinaryFrame` read the WIRE-1 header and then JSON-parsed the payload, so a frame carrying raw audio failed; it now reads the four payload-type bits and hands over the clip untouched, and `onBinary()` delivers it. Checked against `binary-frames.json` -- hivemind-bus-client's own encoder output, not a frame this SDK built for itself.
+
 ## 0.7.1 — 2026-09-13
 
 - Expose advisory reply claim status and first-seen pipeline/skill identifiers, with shared conformance for fallback, mixed stages, legacy hubs and malformed stamps. Existing reply construction remains compatible.
