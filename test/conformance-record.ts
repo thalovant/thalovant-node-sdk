@@ -17,12 +17,26 @@
  * written there when the process exits.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const results = new Map<string, Map<string, string>>();
 
 function canonicalJson(value: unknown): string {
+  if (typeof value === "number") {
+    // Refused rather than passed through. Only a whole number inside 2^53 is
+    // written the same way by every language here; 1.5 and 1e-7 have
+    // per-language spellings, and recording one would be a digest for a value
+    // nobody produced. No vector contains one, and if one ever does this
+    // should stop rather than lie.
+    if (!Number.isInteger(value) || !Number.isSafeInteger(value)) {
+      throw new Error(
+        `conformance: cannot canonicalise ${value}: only whole numbers within 2^53 are ` +
+          "spelled the same way in every language",
+      );
+    }
+    return String(value);
+  }
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
   // Built by hand rather than by stringifying a key-sorted object. JavaScript
@@ -59,57 +73,24 @@ export function record(vectorFile: string, name: string, produced: unknown): voi
 function write(): void {
   const target = process.env.THALOVANT_CONFORMANCE_OUT;
   if (!target) return;
-  // `node --test` runs a process per test file, so the binary cases and the
-  // conversation cases are computed in different processes and neither can see
-  // the other. Each writes what it has as its own shard and then rebuilds the
-  // whole file from every shard present; the last process out leaves it
-  // complete. `npm run record-conformance` clears the shard directory first,
-  // so a case that stopped running cannot survive in one.
+  // Only this process's shard, written atomically. `node --test` runs a
+  // process per test file, so the binary cases and the conversation cases are
+  // computed in different processes; aggregating them here would mean several
+  // processes reading the shard directory and writing the same file at once,
+  // and a merge that scanned before another process wrote its shard could
+  // publish an incomplete record afterwards. `scripts/record-conformance.mjs`
+  // does the aggregation once, after every test process has exited.
   const parts = `${target}.parts`;
   mkdirSync(parts, { recursive: true });
   const mine: Record<string, Record<string, string>> = {};
   for (const vectorFile of results.keys()) {
     mine[vectorFile] = Object.fromEntries(results.get(vectorFile)!);
   }
-  if (Object.keys(mine).length > 0) {
-    writeFileSync(join(parts, `${process.pid}.json`), JSON.stringify(mine), "utf8");
-  }
-
-  const merged = new Map<string, Map<string, string>>();
-  for (const name of readdirSync(parts).sort()) {
-    const shard = JSON.parse(readFileSync(join(parts, name), "utf8")) as Record<
-      string,
-      Record<string, string>
-    >;
-    for (const [vectorFile, cases] of Object.entries(shard)) {
-      let into = merged.get(vectorFile);
-      if (!into) merged.set(vectorFile, (into = new Map()));
-      for (const [caseName, digest] of Object.entries(cases)) {
-        const previous = into.get(caseName);
-        if (previous !== undefined && previous !== digest) {
-          throw new Error(`${vectorFile}/${caseName}: recorded twice with different outputs`);
-        }
-        into.set(caseName, digest);
-      }
-    }
-  }
-
-  const out: Record<string, unknown> = {};
-  for (const vectorFile of [...merged.keys()].sort()) {
-    const parsed = JSON.parse(
-      readFileSync(new URL(`../../test/${vectorFile}`, import.meta.url), "utf8"),
-    );
-    const cases: Record<string, string> = {};
-    for (const name of [...merged.get(vectorFile)!.keys()].sort()) {
-      cases[name] = merged.get(vectorFile)!.get(name)!;
-    }
-    // The parsed JSON, not the bytes: a vendored copy is allowed to differ in
-    // indentation and line endings, and the checker accepts it on the same
-    // terms.
-    out[vectorFile] = { digest: canonicalDigest(parsed), cases };
-  }
-  mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, JSON.stringify({ schema_version: 1, results: out }, null, 2) + "\n", "utf8");
+  if (Object.keys(mine).length === 0) return;
+  const shard = join(parts, `${process.pid}.json`);
+  const staging = `${shard}.writing`;
+  writeFileSync(staging, JSON.stringify(mine), "utf8");
+  renameSync(staging, shard);
 }
 
 process.on("exit", write);

@@ -10,7 +10,8 @@
       "reason": "decodeHiveBinaryFrame branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than a frame this SDK built for itself.",
       "status": "required",
       "tests": {
-        "test/binary-vectors.test.ts": "8f3bd5aa423158a2b57b4a7881eb8d29d54b2db1cc01452f4c75d217dc8273f6"
+        "test/binary-vectors.test.ts": "8f3bd5aa423158a2b57b4a7881eb8d29d54b2db1cc01452f4c75d217dc8273f6",
+        "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346"
       },
       "vectors": {
         "binary-frames.json": "test/binary-frames.json",
@@ -44,6 +45,7 @@
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
       "status": "required",
       "tests": {
+        "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/conversation-carry.test.ts": "ee12475265a9f850a8f2a198c230202fd9bb13b84e86580fe79d1bec8eb56425"
       },
       "vectors": {
@@ -102,6 +104,7 @@
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
       "tests": {
+        "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/conversation-carry.test.ts": "ee12475265a9f850a8f2a198c230202fd9bb13b84e86580fe79d1bec8eb56425"
       },
       "vectors": {
