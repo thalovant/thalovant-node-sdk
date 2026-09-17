@@ -20,6 +20,7 @@ import {
   HIVE_KINDS,
   carryConversation,
 } from "../src/events.js";
+import { record } from "./conformance-record.js";
 
 function vectors(name: string): Record<string, unknown> {
   return JSON.parse(readFileSync(new URL(`../../test/${name}`, import.meta.url), "utf8"));
@@ -27,7 +28,10 @@ function vectors(name: string): Record<string, unknown> {
 
 test("the carry matches conversation-vectors.json", () => {
   for (const row of vectors("conversation-vectors.json").cases as Array<Record<string, never>>) {
-    assert.deepEqual(carryConversation(row.previous, row.session), row.expected, row.name);
+    const carried = carryConversation(row.previous, row.session);
+    // Recorded before the assert, for the same reason as the binary vectors.
+    record("conversation-vectors.json", row.name, carried);
+    assert.deepEqual(carried, row.expected, row.name);
   }
 });
 
