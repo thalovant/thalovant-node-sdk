@@ -11,6 +11,7 @@ import {
   EVENT_SPEAK,
   EVENT_UTTERANCE_HANDLED,
 } from "./constants.js";
+import { failureError, refusalBelongsToAsk } from "./refusal.js";
 import { ThalovantConnectionError, ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
 import {
   contextWithCorrelation,
@@ -626,7 +627,19 @@ export class ThalovantClient {
     const listener = (raw: Event): void => {
       const detail = (raw as CustomEvent).detail;
       const event = eventFromBusPayload(detail, detail);
-      if (!eventMatchesRequiredCorrelation(event, listenerContext)) return;
+      if (event.name === EVENT_POLICY_DENIED) {
+        // The one reply the hub cannot correlate. A denial carries no request
+        // id, only the type it refused, and dropping it here turned a refusal
+        // the hub made at once into a full timeout: "your hub did not answer
+        // in time", about a question it had refused and explained.
+        const deniedType = event.data.denied_type;
+        if (!refusalBelongsToAsk({
+          requestId: event.requestId,
+          ownRequestId: requestId,
+          deniedType: typeof deniedType === "string" ? deniedType : undefined,
+          ...this.utterancesInFlight(),
+        })) return;
+      } else if (!eventMatchesRequiredCorrelation(event, listenerContext)) return;
       // Ahead of every gate below. The end of the turn is the one place a hub
       // states what the conversation now is, and whether this reply is still
       // collecting, already settled or already failed says nothing about what
@@ -692,7 +705,9 @@ export class ThalovantClient {
       await done;
       const effectiveFailure = failureEvent ?? (fragments.length === 0 ? softFailureEvent : undefined);
       if (effectiveFailure && fragments.length === 0) {
-        throw new ThalovantRuntimeError(effectiveFailure.text || `Hub reported ${effectiveFailure.name}.`);
+        // Typed: a refusal, a question the hub has nothing for, and a fault
+        // need three different sentences.
+        throw failureError(effectiveFailure);
       }
       if (fragments.length === 0) {
         if (handled) throw new ThalovantTimeoutError(`Hub handled the utterance but did not emit a speak reply within ${timeoutMs}ms.`);
@@ -917,6 +932,18 @@ export class ThalovantClient {
       this.transport.removeEventListener("query", listener);
       this.transport.removeEventListener("cascade", listener);
     }
+  }
+
+  /** How many asks and queries this client has out, for a denial with no request id. */
+  private utterancesInFlight(): { asksInFlight: number; queriesInFlight: number } {
+    let asksInFlight = 0;
+    let queriesInFlight = 0;
+    for (const key of this.activeReplyIds) {
+      const [namespace] = JSON.parse(key) as [string, string];
+      if (namespace === "ask") asksInFlight += 1;
+      else if (namespace === "query") queriesInFlight += 1;
+    }
+    return { asksInFlight, queriesInFlight };
   }
 
   /** Reserve only the collector's wire namespace; release after listener retirement. */
