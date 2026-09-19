@@ -7,7 +7,10 @@
 - An unmatched intent rejects with the new `ThalovantUnansweredError`: the hub understood and has nothing for it, which is not a failure.
 - `allowed` holds only non-blank, trimmed strings.
 - A fire-and-forget utterance -- `sendUtterance()`, `sendAction()`, `sendCode()`, or `emit()` of `recognizer_loop:utterance` -- counts as in flight for 10 s after it is sent, so a refusal of it cannot end an unrelated ask.
-- Quota counts are never negative: a negative limit, usage or reset time reads as 0.
+- `ThalovantUnansweredError.said` carries what the person said. Both event names put the input in the event's text; the old read of `reason`/`error` left it empty.
+- A fire-and-forget utterance whose publish never happened is dropped again, rather than suppressing a real refusal for the rest of the grace window.
+- A refusal on a quota the hub sent no numbers for says a quota has run out, rather than claiming "all questions used".
+- Quota counts are never negative and never past what a number holds exactly.
 - Declares the parity contract's new `refusal` capability, run against the Python reference's `refusal-vectors.json`.
 
 ## 0.8.0 — 2026-09-16

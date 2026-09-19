@@ -116,9 +116,14 @@ export class ThalovantUnansweredError extends ThalovantRuntimeError {
  * mean, and passing one through would have an app say "-1 of -5 questions used".
  */
 function count(value: unknown): number {
-  if (typeof value === "number") return Number.isInteger(value) ? Math.max(value, 0) : 0;
-  if (typeof value === "string" && /^\s*-?\d+\s*$/.test(value)) return Math.max(Number.parseInt(value, 10), 0);
-  return 0;
+  // Whole, non-negative, and inside what a number can hold exactly. Past that
+  // it is not a count the policy can have meant, and every other SDK's parser
+  // stops in the same place.
+  const whole = typeof value === "number" && Number.isInteger(value) ? value
+    : typeof value === "string" && /^\s*-?\d+\s*$/.test(value) ? Number.parseInt(value, 10)
+    : Number.NaN;
+  if (!Number.isSafeInteger(whole) || whole < 0) return 0;
+  return whole;
 }
 
 function refusalMessage(deniedType: string, code: string, reason: string, quota?: ThalovantQuota): string {
@@ -126,6 +131,11 @@ function refusalMessage(deniedType: string, code: string, reason: string, quota?
   // to "allow this connection to publish recognizer_loop:utterance" sent them
   // to a settings page that could not help.
   if (quota) {
+    if (!quota.limit && !quota.used && !quota.resetAfter && !quota.period) {
+      // Refused on a quota, with none of the numbers. "All questions used"
+      // would be inventing one.
+      return `The hub refused "${deniedType}": a quota has run out.`;
+    }
     const used = quota.limit ? `${quota.used} of ${quota.limit}` : "all";
     const period = quota.period ? ` ${quota.period}` : "";
     const resets = quota.resetAfter ? `; it resets in ${quota.resetAfter}s` : "";

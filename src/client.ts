@@ -332,14 +332,28 @@ export class ThalovantClient {
   }
 
   async emit(eventType: string, data: Record<string, unknown> = {}, context: EventContext = {}): Promise<void> {
-    if (eventType === EVENT_RECOGNIZER_LOOP_UTTERANCE) {
-      // A fire-and-forget utterance: nothing will wait on it, but the hub may
-      // refuse it, and that refusal carries no request id.
-      this.untrackedSends.push(performance.now());
-      if (this.untrackedSends.length > 1024) this.untrackedSends.shift();
+    if (eventType !== EVENT_RECOGNIZER_LOOP_UTTERANCE) {
+      await this.connect();
+      await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
+      return;
     }
-    await this.connect();
-    await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
+    // A fire-and-forget utterance: nothing will wait on it, but the hub may
+    // refuse it, and that refusal carries no request id. Recorded before the
+    // publish so a denial cannot beat the record, and dropped again if the
+    // publish never happened -- a send that failed to leave leaves nothing for
+    // the hub to refuse, and a phantom would suppress a real refusal for the
+    // whole grace window.
+    const sentAt = performance.now();
+    this.untrackedSends.push(sentAt);
+    if (this.untrackedSends.length > 1024) this.untrackedSends.shift();
+    try {
+      await this.connect();
+      await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
+    } catch (error) {
+      const at = this.untrackedSends.indexOf(sentAt);
+      if (at >= 0) this.untrackedSends.splice(at, 1);
+      throw error;
+    }
   }
 
   async sendUtterance(

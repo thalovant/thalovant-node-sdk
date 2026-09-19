@@ -31,6 +31,8 @@ for (const vector of spec.classification) {
     const error = failureError(eventOf(vector.event));
     if (vector.expect.kind === "unanswered") {
       assert.ok(error instanceof ThalovantUnansweredError, String(error));
+      // What the person said, which is what a caller shows.
+      assert.equal(error.said, vector.expect.said);
       return;
     }
     assert.ok(error instanceof ThalovantPolicyDeniedError, String(error));
@@ -156,5 +158,25 @@ test("an ask does not take a denial a fire-and-forget send could own", async () 
     await sdk.sendUtterance("turn the lights off");
     await assert.rejects(sdk.ask("what time is it", { timeoutMs: 300 }), ThalovantTimeoutError);
     assert.equal(hub.sends, 2);
+  } finally { await sdk.close(); }
+});
+
+test("a send that never left is not in flight", async () => {
+  // A phantom would suppress a real refusal for the whole grace window.
+  class Broken extends Hub {
+    breaking = true;
+    override async emitBus(name: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+      if (this.breaking) throw new Error("no route to the hub");
+      return super.emitBus(name, data, context);
+    }
+  }
+  const hub = new Broken();
+  const sdk = client(hub);
+  try {
+    await assert.rejects(sdk.sendUtterance("turn the lights off"));
+    hub.breaking = false;
+    hub.onSend = h => h.bus("hive.policy.denied", quotaDenial, { source: "hivemind-core" });
+    // The refusal is this ask's: nothing else is out.
+    await assert.rejects(sdk.ask("what time is it", { timeoutMs: 5000 }), ThalovantPolicyDeniedError);
   } finally { await sdk.close(); }
 });

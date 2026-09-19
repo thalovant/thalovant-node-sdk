@@ -54,8 +54,10 @@ export const UNTRACKED_UTTERANCE_GRACE_MS = 10_000;
 export function failureError(event: ThalovantEvent): ThalovantRuntimeError {
   if (event.name === EVENT_POLICY_DENIED) return ThalovantPolicyDeniedError.fromEvent(event);
   if (event.name === EVENT_INTENT_UNMATCHED || event.name === EVENT_INTENT_FAILURE) {
-    const said = event.data.reason ?? event.data.error;
-    return new ThalovantUnansweredError(typeof said === "string" ? said.trim() : "");
+    // What the person said: both names carry the input, and that is what a
+    // caller shows. `reason` is not on these events at all, so reading it left
+    // `said` empty.
+    return new ThalovantUnansweredError(event.text.trim());
   }
   return new ThalovantRuntimeError(event.text || `Hub reported ${event.name}.`);
 }
