@@ -110,10 +110,14 @@ export class ThalovantUnansweredError extends ThalovantRuntimeError {
   }
 }
 
-/** A whole count from the wire, or 0: never a boolean, never a guess. */
+/**
+ * A whole, non-negative count from the wire, or 0: never a boolean, never a
+ * guess. A negative limit, usage or reset time is not something a policy can
+ * mean, and passing one through would have an app say "-1 of -5 questions used".
+ */
 function count(value: unknown): number {
-  if (typeof value === "number") return Number.isInteger(value) ? value : 0;
-  if (typeof value === "string" && /^\s*-?\d+\s*$/.test(value)) return Number.parseInt(value, 10);
+  if (typeof value === "number") return Number.isInteger(value) ? Math.max(value, 0) : 0;
+  if (typeof value === "string" && /^\s*-?\d+\s*$/.test(value)) return Math.max(Number.parseInt(value, 10), 0);
   return 0;
 }
 

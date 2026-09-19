@@ -11,7 +11,7 @@ import {
   EVENT_SPEAK,
   EVENT_UTTERANCE_HANDLED,
 } from "./constants.js";
-import { failureError, refusalBelongsToAsk } from "./refusal.js";
+import { failureError, refusalBelongsToAsk, UNTRACKED_UTTERANCE_GRACE_MS } from "./refusal.js";
 import { ThalovantConnectionError, ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
 import {
   contextWithCorrelation,
@@ -84,6 +84,8 @@ export class ThalovantClient {
   private readonly replySettleMs: number;
   private readonly emptyReplyWaitMs: number;
   private readonly activeReplyIds = new Set<string>();
+  /** When each fire-and-forget utterance went out; see utterancesInFlight(). */
+  private readonly untrackedSends: number[] = [];
   private connected = false;
   // Retain timed-out work until both its connect and cleanup settle. A later
   // call may time out waiting here, but may never race an abandoned session.
@@ -330,6 +332,12 @@ export class ThalovantClient {
   }
 
   async emit(eventType: string, data: Record<string, unknown> = {}, context: EventContext = {}): Promise<void> {
+    if (eventType === EVENT_RECOGNIZER_LOOP_UTTERANCE) {
+      // A fire-and-forget utterance: nothing will wait on it, but the hub may
+      // refuse it, and that refusal carries no request id.
+      this.untrackedSends.push(performance.now());
+      if (this.untrackedSends.length > 1024) this.untrackedSends.shift();
+    }
     await this.connect();
     await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
   }
@@ -934,8 +942,13 @@ export class ThalovantClient {
     }
   }
 
-  /** How many asks and queries this client has out, for a denial with no request id. */
-  private utterancesInFlight(): { asksInFlight: number; queriesInFlight: number } {
+  /**
+   * How many utterances this client may still have refused, for a denial with
+   * no request id: asks and queries while they wait, and a fire-and-forget
+   * utterance for `UNTRACKED_UTTERANCE_GRACE_MS` after it was sent -- its
+   * refusal could land while an ask is waiting.
+   */
+  private utterancesInFlight(): { asksInFlight: number; queriesInFlight: number; sendsInFlight: number } {
     let asksInFlight = 0;
     let queriesInFlight = 0;
     for (const key of this.activeReplyIds) {
@@ -943,7 +956,9 @@ export class ThalovantClient {
       if (namespace === "ask") asksInFlight += 1;
       else if (namespace === "query") queriesInFlight += 1;
     }
-    return { asksInFlight, queriesInFlight };
+    const now = performance.now();
+    while (this.untrackedSends.length && now - this.untrackedSends[0]! > UNTRACKED_UTTERANCE_GRACE_MS) this.untrackedSends.shift();
+    return { asksInFlight, queriesInFlight, sendsInFlight: this.untrackedSends.length };
   }
 
   /** Reserve only the collector's wire namespace; release after listener retirement. */

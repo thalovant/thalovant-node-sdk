@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/client.ts": "bb6ada4328fd934fbb2848f595e3f518751022a9432d0f233948abacd49efb02",
+        "src/client.ts": "fcb7ef2e799bd7a81bd0920ec1d0071bbe4d09423597ff5ba26a7406dc814feb",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd",
         "src/wire.ts": "51c5487f79bf79c32512aac11a919bdc1aa7dbaad64fd48a1372a7a9a6314a0c"
@@ -39,7 +39,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/client.ts": "bb6ada4328fd934fbb2848f595e3f518751022a9432d0f233948abacd49efb02",
+        "src/client.ts": "fcb7ef2e799bd7a81bd0920ec1d0071bbe4d09423597ff5ba26a7406dc814feb",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
@@ -97,7 +97,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/client.ts": "bb6ada4328fd934fbb2848f595e3f518751022a9432d0f233948abacd49efb02",
+        "src/client.ts": "fcb7ef2e799bd7a81bd0920ec1d0071bbe4d09423597ff5ba26a7406dc814feb",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
       },
@@ -113,15 +113,15 @@
     },
     "refusal": {
       "implementation": {
-        "src/client.ts": "bb6ada4328fd934fbb2848f595e3f518751022a9432d0f233948abacd49efb02",
-        "src/errors.ts": "36f58482c60e646af95a7ef36f00dcc0d180d03acdc121fa93245458345e4bc8",
-        "src/refusal.ts": "e9583011f74a57f50eabebf80807c2491384085d29f4b3abf127b277e362c47d"
+        "src/client.ts": "fcb7ef2e799bd7a81bd0920ec1d0071bbe4d09423597ff5ba26a7406dc814feb",
+        "src/errors.ts": "44c7310123c058f38897b1df8ef96e9e22cb78aaa87321b2f46f94d719420284",
+        "src/refusal.ts": "733e0bcb81993f819d45b840eeec07725b706dc74f5da47c9c5e02b9ca2f16ea"
       },
-      "reason": "refusalBelongsToAsk() and failureError() in src/refusal.ts, used by ask() in client.ts; ThalovantPolicyDeniedError carries quota and ThalovantUnansweredError is new. Run against the shared refusal vectors, plus three end-to-end asks over a fake transport.",
+      "reason": "refusalBelongsToAsk() and failureError() in src/refusal.ts, used by ask() in client.ts, which counts asks, queries and fire-and-forget utterances inside the shared grace window; ThalovantPolicyDeniedError carries quota and ThalovantUnansweredError is new. Run against the shared refusal vectors, plus four end-to-end asks over a fake transport.",
       "status": "required",
       "tests": {
-        "test/refusal-vectors.json": "dd11ca2d799c95982e7ae026a55c31ef15a6e6c7edc5245183817dc4547411ba",
-        "test/refusal-vectors.test.ts": "7777cce247408b88f625e91ac38714f9db5598a4fb048866aec16814e602d380"
+        "test/refusal-vectors.json": "12301b6ac38137c871e80e04e2a4fc94581be47655ebe0fb87a008b33119d925",
+        "test/refusal-vectors.test.ts": "9b3027bfa8beb33a99653c2b30cc69190da10b4096f2475529a3547599b2eb91"
       },
       "vectors": {
         "refusal-vectors.json": "test/refusal-vectors.json"
@@ -129,7 +129,7 @@
     },
     "runtime": {
       "implementation": {
-        "src/client.ts": "bb6ada4328fd934fbb2848f595e3f518751022a9432d0f233948abacd49efb02",
+        "src/client.ts": "fcb7ef2e799bd7a81bd0920ec1d0071bbe4d09423597ff5ba26a7406dc814feb",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/noise.ts": "29c37c36c0fba02a9ff408b226d651c767f8c2236dff259da4970e0e6c759ca9",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
@@ -167,7 +167,7 @@
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
     "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
-    "c28f2c9cf3f28b5387fb2f4a60027b29ac745b9972015beb386f6c628c9617b7"
+    "8a58831221dc0529b40e1b336203455fad9b5d8f7d017cf04b609acbb7f9ac8c"
   ],
   "schema_version": 1
 }

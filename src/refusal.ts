@@ -23,10 +23,28 @@ export function refusalBelongsToAsk(options: {
   deniedType: string | undefined;
   asksInFlight: number;
   queriesInFlight: number;
+  /** Fire-and-forget utterances still inside UNTRACKED_UTTERANCE_GRACE_MS. */
+  sendsInFlight?: number;
 }): boolean {
   if (options.requestId) return options.requestId === options.ownRequestId;
-  return options.deniedType === EVENT_RECOGNIZER_LOOP_UTTERANCE && options.asksInFlight === 1 && options.queriesInFlight === 0;
+  return (
+    options.deniedType === EVENT_RECOGNIZER_LOOP_UTTERANCE &&
+    options.asksInFlight === 1 &&
+    options.queriesInFlight === 0 &&
+    (options.sendsInFlight ?? 0) === 0
+  );
 }
+
+/**
+ * How long a fire-and-forget utterance counts as possibly still being refused.
+ *
+ * Denials come back as fast as the hub admits a message -- milliseconds -- so
+ * this is generous on purpose: a wrong "in flight" only costs an ask the
+ * deadline it always had, where a wrong "not in flight" ends a question the hub
+ * never refused. The shared refusal vectors name it (`untracked_grace_seconds`),
+ * so every SDK uses the same window.
+ */
+export const UNTRACKED_UTTERANCE_GRACE_MS = 10_000;
 
 /**
  * The typed error an ask raises for the failure event it ended on: a refusal,

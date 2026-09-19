@@ -6,6 +6,8 @@
 - `ask()` rejects with `ThalovantPolicyDeniedError` rather than a bare `ThalovantRuntimeError`, with `quota` -- `period`, `limit`, `used`, `resetAfter` -- when the refusal is a spent `intent_quota_exceeded`, and a message that fits the refusal rather than offering allow-list advice for a spent day or for `backend_unavailable`.
 - An unmatched intent rejects with the new `ThalovantUnansweredError`: the hub understood and has nothing for it, which is not a failure.
 - `allowed` holds only non-blank, trimmed strings.
+- A fire-and-forget utterance -- `sendUtterance()`, `sendAction()`, `sendCode()`, or `emit()` of `recognizer_loop:utterance` -- counts as in flight for 10 s after it is sent, so a refusal of it cannot end an unrelated ask.
+- Quota counts are never negative: a negative limit, usage or reset time reads as 0.
 - Declares the parity contract's new `refusal` capability, run against the Python reference's `refusal-vectors.json`.
 
 ## 0.8.0 — 2026-09-16

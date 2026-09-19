@@ -15,7 +15,7 @@ import { ThalovantClient } from "../src/client.js";
 import { ThalovantPolicyDeniedError, ThalovantTimeoutError, ThalovantUnansweredError } from "../src/errors.js";
 import { ThalovantEvent, type EventContext } from "../src/events.js";
 import { ThalovantIdentity } from "../src/identity.js";
-import { failureError, refusalBelongsToAsk } from "../src/refusal.js";
+import { failureError, refusalBelongsToAsk, UNTRACKED_UTTERANCE_GRACE_MS } from "../src/refusal.js";
 
 function loadVectors(name: string): any {
   return JSON.parse(readFileSync(new URL(`../../test/${name}`, import.meta.url), "utf8"));
@@ -60,11 +60,16 @@ for (const vector of spec.correlation) {
         deniedType: vector.denied_type,
         asksInFlight: vector.asks_in_flight,
         queriesInFlight: vector.queries_in_flight,
+        sendsInFlight: vector.sends_in_flight,
       }),
       vector.taken,
     );
   });
 }
+
+test("the grace window is the one the vectors name", () => {
+  assert.equal(UNTRACKED_UTTERANCE_GRACE_MS, spec.untracked_grace_seconds * 1000);
+});
 
 test("the vectors cover every kind of refusal", () => {
   // A copy that quietly lost its quota or its unanswered case would still pass.
@@ -137,5 +142,19 @@ test("with two asks in flight an uncorrelated denial fails neither", async () =>
     const outcomes = await Promise.all([first, second]);
     assert.equal(hub.sends, 2);
     for (const outcome of outcomes) assert.ok(outcome instanceof ThalovantTimeoutError, String(outcome));
+  } finally { await sdk.close(); }
+});
+
+test("an ask does not take a denial a fire-and-forget send could own", async () => {
+  // sendUtterance() has no reply and no id, but the hub can refuse it, and that
+  // refusal names only the type. Arriving while an ask waits, it could be
+  // either message's -- so the ask is left to its own deadline.
+  const hub = new Hub();
+  hub.onSend = (h, send) => { if (send === 2) h.bus("hive.policy.denied", quotaDenial, { source: "hivemind-core" }); };
+  const sdk = client(hub);
+  try {
+    await sdk.sendUtterance("turn the lights off");
+    await assert.rejects(sdk.ask("what time is it", { timeoutMs: 300 }), ThalovantTimeoutError);
+    assert.equal(hub.sends, 2);
   } finally { await sdk.close(); }
 });
