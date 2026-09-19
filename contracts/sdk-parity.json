@@ -117,7 +117,7 @@
         "src/errors.ts": "44c7310123c058f38897b1df8ef96e9e22cb78aaa87321b2f46f94d719420284",
         "src/refusal.ts": "733e0bcb81993f819d45b840eeec07725b706dc74f5da47c9c5e02b9ca2f16ea"
       },
-      "reason": "refusalBelongsToAsk() and failureError() in src/refusal.ts, used by ask() in client.ts, which counts asks, queries and fire-and-forget utterances inside the shared grace window; ThalovantPolicyDeniedError carries quota and ThalovantUnansweredError is new. Run against the shared refusal vectors, plus four end-to-end asks over a fake transport.",
+      "reason": "refusalBelongsToAsk() and failureError() in src/refusal.ts, used by ask() in client.ts, which counts asks, queries and fire-and-forget utterances inside the shared grace window; ThalovantPolicyDeniedError carries quota and ThalovantUnansweredError is new. Both helpers are exported, so thalovant-mcp -- which delegates its ask to this SDK -- can run the same vectors against the version it resolves. Run against the shared refusal vectors, plus four end-to-end asks over a fake transport.",
       "status": "required",
       "tests": {
         "test/refusal-vectors.json": "12301b6ac38137c871e80e04e2a4fc94581be47655ebe0fb87a008b33119d925",
