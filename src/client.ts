@@ -11,6 +11,7 @@ import {
   EVENT_SPEAK,
   EVENT_UTTERANCE_HANDLED,
 } from "./constants.js";
+import { failureError, refusalBelongsToAsk, UNTRACKED_UTTERANCE_GRACE_MS } from "./refusal.js";
 import { ThalovantConnectionError, ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
 import {
   contextWithCorrelation,
@@ -83,6 +84,8 @@ export class ThalovantClient {
   private readonly replySettleMs: number;
   private readonly emptyReplyWaitMs: number;
   private readonly activeReplyIds = new Set<string>();
+  /** When each fire-and-forget utterance went out; see utterancesInFlight(). */
+  private readonly untrackedSends: number[] = [];
   private connected = false;
   // Retain timed-out work until both its connect and cleanup settle. A later
   // call may time out waiting here, but may never race an abandoned session.
@@ -329,7 +332,26 @@ export class ThalovantClient {
   }
 
   async emit(eventType: string, data: Record<string, unknown> = {}, context: EventContext = {}): Promise<void> {
+    if (eventType !== EVENT_RECOGNIZER_LOOP_UTTERANCE) {
+      await this.connect();
+      await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
+      return;
+    }
+    // A fire-and-forget utterance: nothing will wait on it, but the hub may
+    // refuse it, and that refusal carries no request id.
+    //
+    // Recorded once the connection is up and immediately before the publish.
+    // Connecting can wait on a transport and its handshake, and starting the
+    // window there would spend the grace on it -- leaving a denial to land
+    // after it, where an unrelated ask would take it. A connect that fails
+    // publishes nothing, so it records nothing.
+    //
+    // A publish that rejects keeps its record: a transport can fail after the
+    // hub already holds the frame, and the hub refuses what it holds. A record
+    // that need not have been there costs an ask its deadline; a missing one
+    // ends a question the hub never refused.
     await this.connect();
+    this.recordUntrackedSend();
     await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
   }
 
@@ -626,7 +648,19 @@ export class ThalovantClient {
     const listener = (raw: Event): void => {
       const detail = (raw as CustomEvent).detail;
       const event = eventFromBusPayload(detail, detail);
-      if (!eventMatchesRequiredCorrelation(event, listenerContext)) return;
+      if (event.name === EVENT_POLICY_DENIED) {
+        // The one reply the hub cannot correlate. A denial carries no request
+        // id, only the type it refused, and dropping it here turned a refusal
+        // the hub made at once into a full timeout: "your hub did not answer
+        // in time", about a question it had refused and explained.
+        const deniedType = event.data.denied_type;
+        if (!refusalBelongsToAsk({
+          requestId: event.requestId,
+          ownRequestId: requestId,
+          deniedType: typeof deniedType === "string" ? deniedType : undefined,
+          ...this.utterancesInFlight(),
+        })) return;
+      } else if (!eventMatchesRequiredCorrelation(event, listenerContext)) return;
       // Ahead of every gate below. The end of the turn is the one place a hub
       // states what the conversation now is, and whether this reply is still
       // collecting, already settled or already failed says nothing about what
@@ -692,7 +726,9 @@ export class ThalovantClient {
       await done;
       const effectiveFailure = failureEvent ?? (fragments.length === 0 ? softFailureEvent : undefined);
       if (effectiveFailure && fragments.length === 0) {
-        throw new ThalovantRuntimeError(effectiveFailure.text || `Hub reported ${effectiveFailure.name}.`);
+        // Typed: a refusal, a question the hub has nothing for, and a fault
+        // need three different sentences.
+        throw failureError(effectiveFailure);
       }
       if (fragments.length === 0) {
         if (handled) throw new ThalovantTimeoutError(`Hub handled the utterance but did not emit a speak reply within ${timeoutMs}ms.`);
@@ -917,6 +953,43 @@ export class ThalovantClient {
       this.transport.removeEventListener("query", listener);
       this.transport.removeEventListener("cascade", listener);
     }
+  }
+
+  /**
+   * How many utterances this client may still have refused, for a denial with
+   * no request id: asks and queries while they wait, and a fire-and-forget
+   * utterance for `UNTRACKED_UTTERANCE_GRACE_MS` after it was sent -- its
+   * refusal could land while an ask is waiting.
+   */
+  /**
+   * Notes a fire-and-forget utterance, pruning as it goes: a client that only
+   * ever sends and never asks would otherwise keep one entry per send for as
+   * long as it lives.
+   */
+  private recordUntrackedSend(): void {
+    this.untrackedSends.push(performance.now());
+    this.pruneUntrackedSends();
+  }
+
+  /** Drops what is past the grace window, and any excess beyond the cap. */
+  private pruneUntrackedSends(): void {
+    const now = performance.now();
+    while (this.untrackedSends.length && now - this.untrackedSends[0]! > UNTRACKED_UTTERANCE_GRACE_MS) {
+      this.untrackedSends.shift();
+    }
+    while (this.untrackedSends.length > 1024) this.untrackedSends.shift();
+  }
+
+  private utterancesInFlight(): { asksInFlight: number; queriesInFlight: number; sendsInFlight: number } {
+    let asksInFlight = 0;
+    let queriesInFlight = 0;
+    for (const key of this.activeReplyIds) {
+      const [namespace] = JSON.parse(key) as [string, string];
+      if (namespace === "ask") asksInFlight += 1;
+      else if (namespace === "query") queriesInFlight += 1;
+    }
+    this.pruneUntrackedSends();
+    return { asksInFlight, queriesInFlight, sendsInFlight: this.untrackedSends.length };
   }
 
   /** Reserve only the collector's wire namespace; release after listener retirement. */

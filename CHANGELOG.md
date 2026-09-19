@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.2 — 2026-09-18
+
+- A refusal ends an `ask()` at once instead of letting it run to the deadline. The hub sends `hive.policy.denied` the instant it refuses, with no request id, and the correlation gate discarded it: the ask waited out its budget and a caller told somebody their hub "did not answer in time" about a question it had refused and explained. A denial with no request id is taken when it names the type this ask sent and this ask is the only utterance the client has out; with a second ask or a query in flight either could be the one refused, so neither takes it.
+- `ask()` rejects with `ThalovantPolicyDeniedError` rather than a bare `ThalovantRuntimeError`, with `quota` -- `period`, `limit`, `used`, `resetAfter` -- when the refusal is a spent `intent_quota_exceeded`, and a message that fits the refusal rather than offering allow-list advice for a spent day or for `backend_unavailable`.
+- An unmatched intent rejects with the new `ThalovantUnansweredError`: the hub understood and has nothing for it, which is not a failure.
+- `allowed` holds only non-blank, trimmed strings.
+- A fire-and-forget utterance -- `sendUtterance()`, `sendAction()`, `sendCode()`, or `emit()` of `recognizer_loop:utterance` -- counts as in flight for 10 s after it is sent, so a refusal of it cannot end an unrelated ask.
+- `ThalovantUnansweredError.said` carries what the person said. Both event names put the input in the event's text; the old read of `reason`/`error` left it empty.
+- A fire-and-forget utterance is recorded once the connection is up and immediately before the publish, so the grace window is not spent on a handshake; a connect that fails records nothing, and a publish that rejects keeps its record, because a transport can fail after the hub already holds the frame. The list is pruned as entries are added, so a client that only ever sends does not keep them for its lifetime.
+- A refusal on a quota the hub sent no numbers for says a quota has run out, rather than claiming "all questions used".
+- Quota counts are never negative and never past what a number holds exactly.
+- Declares the parity contract's new `refusal` capability, run against the Python reference's `refusal-vectors.json`.
+
 ## 0.8.0 — 2026-09-16
 
 - Carry the conversation between the turns of a named session. A hub keeps nothing for a named session -- OVOS-SESSION-2 §2.2 makes the orchestrator stateless for those -- so whatever a turn activated is discarded the moment it ends, and every follow-up fell past the converse pipeline to the fallback. `carryConversation()` and `CONVERSATION_SESSION_FIELDS` carry conversation state only, by allow-list: never `lang`, which would pin a bilingual conversation to whichever language it opened in.

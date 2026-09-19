@@ -5,6 +5,9 @@ export * from "./context.js";
 export * from "./noise.js";
 export * from "./noise-store.js";
 export * from "./errors.js";
+// The shared refusal rule, so a consumer that delegates its ask to this SDK
+// -- thalovant-mcp does -- can run the same vectors against it.
+export * from "./refusal.js";
 export * from "./events.js";
 export * from "./hubs.js";
 export * from "./identity.js";
