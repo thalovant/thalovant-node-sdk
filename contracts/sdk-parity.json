@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/client.ts": "85a592278fe40cad36c088e13ca6c89a1f499f68e16b4d8ce0bde0c98695a4d9",
+        "src/client.ts": "887ad9c2c45ef88b539f52901634ff59610d2962259a37c2ac292e78b75e274b",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd",
         "src/wire.ts": "51c5487f79bf79c32512aac11a919bdc1aa7dbaad64fd48a1372a7a9a6314a0c"
@@ -39,7 +39,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/client.ts": "85a592278fe40cad36c088e13ca6c89a1f499f68e16b4d8ce0bde0c98695a4d9",
+        "src/client.ts": "887ad9c2c45ef88b539f52901634ff59610d2962259a37c2ac292e78b75e274b",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
@@ -97,7 +97,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/client.ts": "85a592278fe40cad36c088e13ca6c89a1f499f68e16b4d8ce0bde0c98695a4d9",
+        "src/client.ts": "887ad9c2c45ef88b539f52901634ff59610d2962259a37c2ac292e78b75e274b",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
       },
@@ -113,15 +113,15 @@
     },
     "refusal": {
       "implementation": {
-        "src/client.ts": "85a592278fe40cad36c088e13ca6c89a1f499f68e16b4d8ce0bde0c98695a4d9",
+        "src/client.ts": "887ad9c2c45ef88b539f52901634ff59610d2962259a37c2ac292e78b75e274b",
         "src/errors.ts": "2c90bd1c3bc12003d4619db5697d124f08abee2d588ea2d7b679580ea2168c3f",
         "src/refusal.ts": "b691a17793e8e837e59fb7301f0dad20797e297e9104e59b80be4b5b08aca235"
       },
-      "reason": "refusalBelongsToAsk() and failureError() in src/refusal.ts, used by ask() in client.ts, which counts asks, queries and fire-and-forget utterances inside the shared grace window and drops a send whose publish never happened; both helpers are exported so thalovant-mcp can run the same vectors against the version it resolves. Run against the shared refusal vectors plus five end-to-end asks over a fake transport.",
+      "reason": "refusalBelongsToAsk() and failureError() in src/refusal.ts, used by ask() in client.ts, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish rejects. Both helpers are exported so thalovant-mcp can run the same vectors against the version it resolves. Run against the shared refusal vectors plus five end-to-end asks over a fake transport.",
       "status": "required",
       "tests": {
-        "test/refusal-vectors.json": "8795fcd9d8b5ac790176c13ea077b701a5dc1fd584a717ed08744bcab8d21c82",
-        "test/refusal-vectors.test.ts": "a8d25efe58744818ecf56425d3f23d755a798bec216a2f33d3f5c191f3ea2a1b"
+        "test/refusal-vectors.json": "08a55b252514427ea7123294685f1f6dd72306ee274cff77013590870d8fde7e",
+        "test/refusal-vectors.test.ts": "ade5ad2e1ed4243cea0c1653a944078965a150c87edcdd8f21cc268699371df7"
       },
       "vectors": {
         "refusal-vectors.json": "test/refusal-vectors.json"
@@ -129,7 +129,7 @@
     },
     "runtime": {
       "implementation": {
-        "src/client.ts": "85a592278fe40cad36c088e13ca6c89a1f499f68e16b4d8ce0bde0c98695a4d9",
+        "src/client.ts": "887ad9c2c45ef88b539f52901634ff59610d2962259a37c2ac292e78b75e274b",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/noise.ts": "29c37c36c0fba02a9ff408b226d651c767f8c2236dff259da4970e0e6c759ca9",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
@@ -167,7 +167,7 @@
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
     "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
-    "4c7780ced5bb3e011d10a0ac502bba61c08eaebfd27de6c827c5d47351ac2b4e"
+    "e0de5ebc373fcec60d083651e4001e22da8978419ad0d24a24d326db1e4e8e2a"
   ],
   "schema_version": 1
 }

@@ -161,22 +161,17 @@ test("an ask does not take a denial a fire-and-forget send could own", async () 
   } finally { await sdk.close(); }
 });
 
-test("a send that never left is not in flight", async () => {
-  // A phantom would suppress a real refusal for the whole grace window.
-  class Broken extends Hub {
-    breaking = true;
-    override async emitBus(name: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
-      if (this.breaking) throw new Error("no route to the hub");
-      return super.emitBus(name, data, context);
-    }
+test("a publish that errored still counts, because the hub may hold it", async () => {
+  // The transport can fail after the hub already has the frame, and the hub
+  // refuses what it holds. Forgetting the send would leave the next ask as the
+  // only candidate for a denial that was never its own.
+  class Lossy extends Hub {
+    override async emitBus(): Promise<void> { throw new Error("the write reported a failure"); }
   }
-  const hub = new Broken();
+  const hub = new Lossy();
   const sdk = client(hub);
   try {
     await assert.rejects(sdk.sendUtterance("turn the lights off"));
-    hub.breaking = false;
-    hub.onSend = h => h.bus("hive.policy.denied", quotaDenial, { source: "hivemind-core" });
-    // The refusal is this ask's: nothing else is out.
-    await assert.rejects(sdk.ask("what time is it", { timeoutMs: 5000 }), ThalovantPolicyDeniedError);
+    assert.equal(sdk["utterancesInFlight"]().sendsInFlight, 1);
   } finally { await sdk.close(); }
 });

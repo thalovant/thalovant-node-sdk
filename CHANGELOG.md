@@ -8,7 +8,7 @@
 - `allowed` holds only non-blank, trimmed strings.
 - A fire-and-forget utterance -- `sendUtterance()`, `sendAction()`, `sendCode()`, or `emit()` of `recognizer_loop:utterance` -- counts as in flight for 10 s after it is sent, so a refusal of it cannot end an unrelated ask.
 - `ThalovantUnansweredError.said` carries what the person said. Both event names put the input in the event's text; the old read of `reason`/`error` left it empty.
-- A fire-and-forget utterance whose publish never happened is dropped again, rather than suppressing a real refusal for the rest of the grace window.
+- A fire-and-forget utterance is recorded once the connection is up and immediately before the publish, so the grace window is not spent on a handshake; a connect that fails records nothing, and a publish that rejects keeps its record, because a transport can fail after the hub already holds the frame. The list is pruned as entries are added, so a client that only ever sends does not keep them for its lifetime.
 - A refusal on a quota the hub sent no numbers for says a quota has run out, rather than claiming "all questions used".
 - Quota counts are never negative and never past what a number holds exactly.
 - Declares the parity contract's new `refusal` capability, run against the Python reference's `refusal-vectors.json`.
