@@ -116,9 +116,11 @@ export class ThalovantUnansweredError extends ThalovantRuntimeError {
  * mean, and passing one through would have an app say "-1 of -5 questions used".
  */
 function count(value: unknown): number {
-  // Whole, non-negative, and inside what a number can hold exactly. Past that
-  // it is not a count the policy can have meant, and every other SDK's parser
-  // stops in the same place.
+  // Whole, non-negative, and no larger than 2**53-1 -- the largest whole
+  // number every JSON decoder carries exactly, and the contract's ceiling.
+  // Above it a decoder backed by a double can no longer tell one whole number
+  // from the next, so two SDKs would report different allowances for the same
+  // denial.
   const whole = typeof value === "number" && Number.isInteger(value) ? value
     : typeof value === "string" && /^\s*-?\d+\s*$/.test(value) ? Number.parseInt(value, 10)
     : Number.NaN;
