@@ -277,6 +277,7 @@ export class HubIntentInventory {
   asObject(): Record<string, unknown> {
     return {
       languages: [...this.languages],
+      listed_in: [...this.listedIn],
       source: this.source,
       denied: [...this.denied],
       fallbacks: this.fallbacks.map(fallback => fallback.asObject()),
