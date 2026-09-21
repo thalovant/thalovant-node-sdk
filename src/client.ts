@@ -1026,7 +1026,7 @@ export class ThalovantClient {
    */
   async intents(
     languages?: Iterable<string>,
-    options: { timeoutMs?: number; describe?: boolean; fallback?: boolean } = {},
+    options: { timeoutMs?: number; describe?: boolean; fallback?: boolean; nearest?: boolean } = {},
   ): Promise<HubIntentInventory> {
     const chosen = typeof languages === "string" ? (languages.trim() ? [languages] : []) : languages ? [...languages] : [];
     return intentQueries.intentInventory(this, chosen.length > 0 ? chosen : ["en-us"], options);

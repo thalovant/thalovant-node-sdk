@@ -15,7 +15,7 @@ export interface ListingData {
 }
 
 import { closestLanguage } from "./language-matching.js";
-export { closestLanguage } from "./language-matching.js";
+export { closestLanguage, usualForm } from "./language-matching.js";
 
 function pattern(expression: string): RegExp {
   // Python data permits leading global flags. Compile each rule independently.
