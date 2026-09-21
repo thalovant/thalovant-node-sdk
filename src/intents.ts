@@ -28,6 +28,7 @@
  * the fallback for a hub allowed for those alone.
  */
 import { closestLanguage, defaultListing, type ListingRules } from "./listing.js";
+import { usualForm } from "./language-matching.js";
 import type { ThalovantClient } from "./client.js";
 import {
   EVENT_ADAPT_MANIFEST,
@@ -233,6 +234,11 @@ export class HubIntentInventory {
   readonly fallbacks: readonly HubFallback[];
   /** False means the optional probe was unsupported, denied or unanswered. */
   readonly fallbacksKnown: boolean;
+  /** The tag the hub actually listed each language under, in `languages` order.
+   * Equal to `languages` unless a listing came back empty and the language's
+   * usual form answered instead. Callers rendering sentences must read them
+   * from the tag that answered. */
+  readonly listedIn: readonly string[];
 
   constructor(options: {
     languages: readonly string[];
@@ -241,6 +247,7 @@ export class HubIntentInventory {
     denied?: readonly string[];
     fallbacks?: readonly HubFallback[];
     fallbacksKnown?: boolean;
+    listedIn?: readonly string[];
   }) {
     this.languages = [...options.languages];
     this.skills = [...options.skills];
@@ -248,6 +255,7 @@ export class HubIntentInventory {
     this.denied = [...(options.denied ?? [])];
     this.fallbacks = [...(options.fallbacks ?? [])];
     this.fallbacksKnown = options.fallbacksKnown ?? false;
+    this.listedIn = [...(options.listedIn ?? options.languages)];
   }
 
   /** Every intent across skills. */
@@ -650,7 +658,7 @@ function inventoryFromNames(names: Record<string, string[]>, languages: readonly
 export async function intentInventory(
   client: ThalovantClient,
   languages: Iterable<string>,
-  options: { timeoutMs?: number; describe?: boolean; fallback?: boolean } = {},
+  options: { timeoutMs?: number; describe?: boolean; fallback?: boolean; nearest?: boolean } = {},
 ): Promise<HubIntentInventory> {
   const describe = options.describe ?? true;
   const fallback = options.fallback ?? true;
@@ -664,9 +672,31 @@ export async function intentInventory(
   if (asked.length === 0) throw new Error("intentInventory() requires at least one language.");
 
   const listed = new Map<string, IntentRegistration[]>();
+  const answered = new Map<string, string>();
+  const nearest = options.nearest ?? true;
   try {
     for (const lang of asked) {
-      listed.set(lang, await listIntents(client, lang, { timeoutMs: options.timeoutMs, includeDefinitions: describe }));
+      const listingOptions = { timeoutMs: options.timeoutMs, includeDefinitions: describe };
+      let rows = await listIntents(client, lang, listingOptions);
+      let tag = lang;
+      if (rows.length === 0 && nearest) {
+        // Listing and asking do not agree about languages. The hub matches an
+        // utterance to the closest language it knows, so a phone set to en-CA
+        // is understood by skills registered under en-US; the manifest is
+        // keyed by exact tag, so the same hub lists nothing for en-CA -- and a
+        // person is shown an empty hub by the hub that is answering them.
+        //
+        // Once only, and only on an empty listing: a hub that answered is
+        // never asked twice, and a language whose usual form is itself has
+        // nothing to retry with.
+        const usual = usualForm(lang);
+        if (usual !== undefined) {
+          const retried = await listIntents(client, usual, listingOptions);
+          if (retried.length > 0) { rows = retried; tag = usual; }
+        }
+      }
+      listed.set(tag, rows);
+      answered.set(lang, tag);
     }
   } catch (error) {
     const refused = error instanceof ThalovantPolicyDeniedError && error.deniedType === EVENT_INTENT_LIST;
@@ -714,7 +744,12 @@ export async function intentInventory(
     intents.push(new HubIntent(intent));
     bySkill.set(intent.skillId, intents);
   }
-  return withFallbacks(client, new HubIntentInventory({ languages: asked, skills: skillsFrom(bySkill), source: SOURCE_MANIFEST }), options.timeoutMs);
+  return withFallbacks(client, new HubIntentInventory({
+    languages: asked,
+    skills: skillsFrom(bySkill),
+    source: SOURCE_MANIFEST,
+    listedIn: asked.map(lang => answered.get(lang) ?? lang),
+  }), options.timeoutMs);
 }
 
 /** @internal The optional runtime fallback catalogue; null means unknown. */

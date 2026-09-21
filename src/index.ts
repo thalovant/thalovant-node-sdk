@@ -34,7 +34,7 @@ export * from "./rich.js";
 export * from "./transport.js";
 export * from "./wire.js";
 
-export { asSentence, closestLanguage, defaultListing, ListingRules, type ListingData, type ListingLanguage } from "./listing.js";
+export { asSentence, closestLanguage, usualForm, defaultListing, ListingRules, type ListingData, type ListingLanguage } from "./listing.js";
 
 export * from "./session.js";
 
