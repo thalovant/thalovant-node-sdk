@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/client.ts": "887ad9c2c45ef88b539f52901634ff59610d2962259a37c2ac292e78b75e274b",
+        "src/client.ts": "296f1a251912dbd195d0e6aa817f8140751c4daa993f169fd2bf5947acf4b8b6",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd",
         "src/wire.ts": "51c5487f79bf79c32512aac11a919bdc1aa7dbaad64fd48a1372a7a9a6314a0c"
@@ -39,7 +39,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/client.ts": "887ad9c2c45ef88b539f52901634ff59610d2962259a37c2ac292e78b75e274b",
+        "src/client.ts": "296f1a251912dbd195d0e6aa817f8140751c4daa993f169fd2bf5947acf4b8b6",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
@@ -82,8 +82,8 @@
     },
     "listing": {
       "implementation": {
-        "src/intents.ts": "3c047ceab8fe7b562621be0578dc5c69d82517a3c62de74e06ef20c98c30bd71",
-        "src/listing.ts": "1034ceed4d20ab80b19438f142498ad953fd6f58880c2e4cc1bee31e3402317f"
+        "src/intents.ts": "ea78cb2c82ed3081c4167a95c921bd21f931f3908a91bd144ccc197a7210c63c",
+        "src/listing.ts": "defbeb95769a0a2140b056b4e969afe3b4c1b46fdaaf8f7773e2a54827f688f2"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
       "status": "required",
@@ -97,7 +97,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/client.ts": "887ad9c2c45ef88b539f52901634ff59610d2962259a37c2ac292e78b75e274b",
+        "src/client.ts": "296f1a251912dbd195d0e6aa817f8140751c4daa993f169fd2bf5947acf4b8b6",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
       },
@@ -113,7 +113,7 @@
     },
     "refusal": {
       "implementation": {
-        "src/client.ts": "887ad9c2c45ef88b539f52901634ff59610d2962259a37c2ac292e78b75e274b",
+        "src/client.ts": "296f1a251912dbd195d0e6aa817f8140751c4daa993f169fd2bf5947acf4b8b6",
         "src/errors.ts": "84cc0d4b271e3a437474e9ef0fe6232e7ea342ed216f5a7da7f9f3d3c0fc8486",
         "src/refusal.ts": "b691a17793e8e837e59fb7301f0dad20797e297e9104e59b80be4b5b08aca235"
       },
@@ -129,7 +129,7 @@
     },
     "runtime": {
       "implementation": {
-        "src/client.ts": "887ad9c2c45ef88b539f52901634ff59610d2962259a37c2ac292e78b75e274b",
+        "src/client.ts": "296f1a251912dbd195d0e6aa817f8140751c4daa993f169fd2bf5947acf4b8b6",
         "src/events.ts": "e5580ecd33a1692807e1f3ebcaa9045d9fce82a02da534499800b0b4ac3466e7",
         "src/noise.ts": "29c37c36c0fba02a9ff408b226d651c767f8c2236dff259da4970e0e6c759ca9",
         "src/transport-core.ts": "73b614370086f70476edc945e35274e71b2612bfd0f0fc067aa06beba5838bbd"
@@ -167,7 +167,8 @@
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
     "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
-    "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486"
+    "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486",
+    "76bc1eb9957da5a6fdf03e89f3905f8d37d3ef2fe7c841ba751718105ca30a45"
   ],
   "schema_version": 1
 }
