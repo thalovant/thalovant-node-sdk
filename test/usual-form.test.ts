@@ -23,9 +23,12 @@ test("a regional tag becomes the form skills actually register", () => {
 test("a tag already in its usual form has nothing to retry with", () => {
   // undefined rather than the same tag, so a caller can tell "already right"
   // from "no idea", and a hub that answered is never asked twice.
-  assert.equal(usualForm("en-US"), undefined);
+  // Only byte-for-byte. The capital spelling is a different string to a
+  // manifest keyed `en-us`, and suppressing its retry was the bug.
+  assert.equal(usualForm("en-US"), "en-us");
+  assert.equal(usualForm("fr-FR"), "fr-fr");
   assert.equal(usualForm("en-us"), undefined);
-  assert.equal(usualForm("fr-FR"), undefined);
+  assert.equal(usualForm("fr-fr"), undefined);
 });
 
 test("a language nobody has heard of is undefined and not a guess", () => {

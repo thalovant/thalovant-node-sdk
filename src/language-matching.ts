@@ -89,7 +89,8 @@ export function usualForm(tag: string): string | undefined {
   if (!get(data.likely, base)) return undefined;
   const likely = maximize({language: base} as Tag);
   const usual = (likely.region ? `${likely.language}-${likely.region}` : likely.language).toLowerCase();
-  return usual === tag.trim().toLowerCase().replace(/_/g, "-") ? undefined : usual;
+  // Byte comparison, NOT sameLanguage. They are not the same test, and the difference is the whole point: the canonical spelling is en-US, the manifest is keyed en-us, and sameLanguage calls those equal -- so the retry that exists for exactly this case suppressed itself.
+  return usual === tag.trim() ? undefined : usual;
 }
 
 /** Nearest OVOS-compatible language, with a maximum distance of ten.
