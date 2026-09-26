@@ -24,7 +24,7 @@
     },
     "control": {
       "implementation": {
-        "src/control.ts": "b6e5bbc2cd0eb96d511fe121d327f2d1d3e7008bb405da3a4bf400d027186b9c",
+        "src/control.ts": "8b954aa4104b605cf1e09de4c5bb3926f435054e84a28c1789d80c61bfcc55d0",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
         "src/native-auth.ts": "5a186664da7e4705973be0cbb31a79fb8657807080acbd7e34a0986622822a8e"
       },
