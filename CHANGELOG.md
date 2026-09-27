@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.7 — 2026-09-26
+
+- `ThalovantApiError` carries what the API said, not only the line built from it. `problem` is the whole error body parsed, when it is a JSON object; `code` is its machine-readable code; `detail` is its sentence whole, exactly as sent. The message was the only place any of this reached a caller, and it is cut at 160 characters: a `platform_image_required` refusal names every image each refused key may be instead, which is longer than that, so the list a caller needed was the part cut off -- and `refused_images`, `allowed_images` and `allowed_repositories` never reached anybody at all. The same held for every structured refusal, `plan_limit`'s `resource`, `limit` and `used` included. The message itself is unchanged, and still never repeats a value the body echoed back from the request.
+- `code` and `detail` are also read from inside a `detail` that is itself an object -- FastAPI's own envelope, which the API's Problem+JSON handler normally lifts.
+- `problem` is not enumerable, so `console.log(error)`, `util.inspect` and `JSON.stringify` of the error leave out whatever the body echoed from the request; `error.problem` still reads it. Credentials the SDK generated and sent are replaced with `[redacted]` in `problem` and `detail`, as they already were in the message.
+- Passing `problem` alone to the constructor derives `code` and `detail`; an explicit `code` or `detail` wins. An error built the old way has all three undefined.
+- Declares the parity contract's new `api-errors` capability, run against the Python reference's `api-error-vectors.json`: thirteen responses, from the image and plan refusals the API sends to a body that is HTML, empty, or JSON that is not an object, each served by a loopback HTTP peer and read back through `getHub()`.
+
 ## 0.8.2 — 2026-09-18
 
 - A refusal ends an `ask()` at once instead of letting it run to the deadline. The hub sends `hive.policy.denied` the instant it refuses, with no request id, and the correlation gate discarded it: the ask waited out its budget and a caller told somebody their hub "did not answer in time" about a question it had refused and explained. A denial with no request id is taken when it names the type this ask sent and this ask is the only utterance the client has out; with a second ask or a query in flight either could be the one refused, so neither takes it.
