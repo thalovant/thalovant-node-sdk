@@ -892,7 +892,7 @@ it before resending. Per-plan limits are listed in the dashboard and at
 - `controlPlane.createHub(payload, options)` with optional `idempotencyKey`
 - `controlPlane.updateHub(hubId, payload, { etag })` — `etag` required, sent as `If-Match`
 - `controlPlane.deleteHub(hubId, { etag })` — `etag` required, sent as `If-Match`
-- `controlPlane.releaseHub(hubId, options)` with optional `channel`, `mode`, `version`, `images`, and `reason`
+- `controlPlane.releaseHub(hubId, options)` with optional `channel`, `mode`, `version`, `images`, and `reason` — `images` must be platform images unless you are a platform administrator; anything else is refused with HTTP 403 `platform_image_required`
 - `controlPlane.setHubRating(hubId, rating)`
 - `controlPlane.clearHubRating(hubId)`
 - `controlPlane.getHubRuntimeCapabilities(hubId)`
