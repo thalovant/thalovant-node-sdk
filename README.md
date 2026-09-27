@@ -169,7 +169,7 @@ routes need a **paid plan** and a token with the **`hubs:write`** scope
 ("Create and update your hubs" on the dashboard's API Tokens page). A free-plan
 token fails with HTTP 402 `API access requires a paid plan.`, and a token
 without the scope fails with HTTP 403 `Insufficient scopes`. Both surface as
-`ThalovantApiError`.
+`ThalovantApiError` (see [Reading An API Error](#reading-an-api-error)).
 
 ```ts
 const api = new ThalovantControlPlane(undefined, {
@@ -349,7 +349,7 @@ answers HTTP 409 `skill_version_already_installed` for the same version,
 HTTP 404 `hub_without_runtime_group` when the hub has no runtime group yet
 (a plain 404 for an unknown hub or a skill that is not installed), and HTTP
 422 for an unresolvable `"latest"` or an invalid version; the problem `code`
-is appended to the error message, for example
+is the error's `code` and is appended to the error message, for example
 `HTTP 409: Skill version already installed. (skill_version_already_installed)`.
 Listing needs `hubs:inspect` (`hubs:read` implies it); the writes need
 `hubs:write` and a paid plan. Hub-restricted tokens are honoured.
@@ -874,10 +874,51 @@ registration as the skill made it.
   next UTC day or month boundary.
 
 Both 429s apply to token-authenticated control-plane calls and surface as
-`ThalovantApiError`, whose message embeds the status and the response body.
+`ThalovantApiError` with `statusCode` 429, the `code`, and every field of the
+body in `problem`.
 The SDK does not retry automatically: `Retry-After` is authoritative, so honor
 it before resending. Per-plan limits are listed in the dashboard and at
 <https://docs.thalovant.com/developers/sdks/node/>.
+
+## Reading An API Error
+
+A refused control-plane request rejects with `ThalovantApiError`. Its message
+is one line for display and can be shortened, so read what the API said from
+the error itself:
+
+- `statusCode`: the HTTP status.
+- `code`: the machine-readable code, such as `platform_image_required` or
+  `plan_limit`, or `undefined`.
+- `detail`: the API's whole sentence, exactly as sent, or `undefined`.
+- `problem`: the whole error body as an object when it is a JSON object, or
+  `undefined`. Every structured field the API sends is here, including ones
+  added after this SDK was released.
+
+```ts
+import { ThalovantApiError } from "@thalovant/sdk";
+
+try {
+  await api.releaseRuntimeGroup(runtimeGroupId, { images: { core: "docker.io/me/ovos-core:dev" } });
+} catch (error) {
+  if (!(error instanceof ThalovantApiError)) throw error;
+  if (error.code === "platform_image_required") {
+    console.log(error.detail);
+    console.log(error.problem?.allowed_images);       // per image key
+    console.log(error.problem?.allowed_repositories); // any tag or digest of these
+  } else if (error.code === "plan_limit") {
+    console.log(error.problem?.resource, error.problem?.used, error.problem?.limit);
+  } else {
+    throw error;
+  }
+}
+```
+
+A value the body echoes back from your request (a validation error repeats
+what it was sent) is only ever in `problem`, never in the message. `problem`
+is not enumerable, so `console.log(error)`, `util.inspect` and
+`JSON.stringify` leave it out; read it as `error.problem`. Credentials the SDK
+generated and sent, such as the ones `createClientIdentity()` creates, are
+replaced with `[redacted]` in `detail` and `problem` too.
 
 ## API Shape
 
@@ -892,7 +933,7 @@ it before resending. Per-plan limits are listed in the dashboard and at
 - `controlPlane.createHub(payload, options)` with optional `idempotencyKey`
 - `controlPlane.updateHub(hubId, payload, { etag })` — `etag` required, sent as `If-Match`
 - `controlPlane.deleteHub(hubId, { etag })` — `etag` required, sent as `If-Match`
-- `controlPlane.releaseHub(hubId, options)` with optional `channel`, `mode`, `version`, `images`, and `reason` — `images` must be platform images unless you are a platform administrator; anything else is refused with HTTP 403 `platform_image_required`
+- `controlPlane.releaseHub(hubId, options)` with optional `channel`, `mode`, `version`, `images`, and `reason` — unless you are a platform administrator, each image must be a catalog pin of the stable or alpha channel, the hub's current, recommended or release-policy image, the platform's default image, or for `listener` any tag or digest of `ghcr.io/thalovant/hivemind-listener`; anything else is refused with HTTP 403 `platform_image_required`
 - `controlPlane.setHubRating(hubId, rating)`
 - `controlPlane.clearHubRating(hubId)`
 - `controlPlane.getHubRuntimeCapabilities(hubId)`
@@ -902,7 +943,7 @@ it before resending. Per-plan limits are listed in the dashboard and at
 - `controlPlane.updateRuntimeGroup(runtimeGroupId, payload)`
 - `controlPlane.getRuntimeGroupConfig(runtimeGroupId)`
 - `controlPlane.updateRuntimeGroupConfig(runtimeGroupId, config, options)` with optional `personas`
-- `controlPlane.releaseRuntimeGroup(runtimeGroupId, options)`
+- `controlPlane.releaseRuntimeGroup(runtimeGroupId, options)` — the same rule for `images`, except that `core` accepts any tag or digest of `ghcr.io/thalovant/ovos-core` and `bus` only the images the platform releases for it
 - `controlPlane.deleteRuntimeGroup(runtimeGroupId)`
 - `controlPlane.installRuntimeGroupSkill(runtimeGroupId, skillId, options)` with optional `marketplaceSkillId`, `sourceType`, `sourceRef`, `versionPin`, and `active`
 - `controlPlane.uninstallRuntimeGroupSkill(runtimeGroupId, skillId)`

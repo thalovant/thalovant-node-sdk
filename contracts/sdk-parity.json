@@ -1,5 +1,21 @@
 {
   "capabilities": {
+    "api-errors": {
+      "implementation": {
+        "src/control.ts": "b4a9cb292dbfa38c405d05c64080023bddf7a2ecf1ef31b19f305ae11b8f5526",
+        "src/errors.ts": "915dff383c26b4c8471344100a76a5656720a2643e4c4bb596a47d83cc483460"
+      },
+      "reason": "ThalovantApiError in src/errors.ts carries statusCode, code, detail and a non-enumerable problem, filled by apiError() in src/control.ts for every failed control-plane response, device-flow polling included; the message is unchanged. Run against the shared api-error vectors, each served by a loopback node:http peer and read back through getHub(), plus a device sign-in poll and a createClientIdentity() whose generated secrets stay redacted.",
+      "status": "required",
+      "tests": {
+        "test/api-error-vectors.json": "f0d2d8e6e153811f071dac6e0611f00f3c32ed772b751ccccb31904d7dc936ec",
+        "test/api-error-vectors.test.ts": "5ac2531ff667672601ca111c838b3cffa2ea1b2cc1dda692ee676eaa62d5576a",
+        "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346"
+      },
+      "vectors": {
+        "api-error-vectors.json": "test/api-error-vectors.json"
+      }
+    },
     "binary": {
       "implementation": {
         "src/client.ts": "296f1a251912dbd195d0e6aa817f8140751c4daa993f169fd2bf5947acf4b8b6",
@@ -24,7 +40,7 @@
     },
     "control": {
       "implementation": {
-        "src/control.ts": "8b954aa4104b605cf1e09de4c5bb3926f435054e84a28c1789d80c61bfcc55d0",
+        "src/control.ts": "b4a9cb292dbfa38c405d05c64080023bddf7a2ecf1ef31b19f305ae11b8f5526",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
         "src/native-auth.ts": "5a186664da7e4705973be0cbb31a79fb8657807080acbd7e34a0986622822a8e"
       },
@@ -114,7 +130,7 @@
     "refusal": {
       "implementation": {
         "src/client.ts": "296f1a251912dbd195d0e6aa817f8140751c4daa993f169fd2bf5947acf4b8b6",
-        "src/errors.ts": "84cc0d4b271e3a437474e9ef0fe6232e7ea342ed216f5a7da7f9f3d3c0fc8486",
+        "src/errors.ts": "915dff383c26b4c8471344100a76a5656720a2643e4c4bb596a47d83cc483460",
         "src/refusal.ts": "b691a17793e8e837e59fb7301f0dad20797e297e9104e59b80be4b5b08aca235"
       },
       "reason": "refusalBelongsToAsk() and failureError() in src/refusal.ts, used by ask() in client.ts, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish rejects. Both helpers are exported so thalovant-mcp can run the same vectors against the version it resolves. Run against the shared refusal vectors plus five end-to-end asks over a fake transport.",
@@ -169,7 +185,8 @@
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
     "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486",
     "76bc1eb9957da5a6fdf03e89f3905f8d37d3ef2fe7c841ba751718105ca30a45",
-    "34a21f2ad875b220a571613e25b6a6e5f3d8de1a776f4949a7ab63ba93e07b16"
+    "34a21f2ad875b220a571613e25b6a6e5f3d8de1a776f4949a7ab63ba93e07b16",
+    "f79d99e9acd2fe299e3b313102541e47b366751defe5fa0dcfa44053aa7f007d"
   ],
   "schema_version": 1
 }

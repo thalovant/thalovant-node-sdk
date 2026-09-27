@@ -200,10 +200,14 @@ export interface RuntimeGroupPayload {
  *
  * Every option is optional; omitted fields fall back to the workspace release
  * policy. Passing `images` switches to `custom` mode unless `mode` is also set.
- * Unless the caller is a platform administrator, `images` may name only
- * platform images: a catalog, current or recommended image, or any tag or
- * digest of the platform's own repository for that key. The API refuses
- * anything else with HTTP 403 `platform_image_required`.
+ * Unless the caller is a platform administrator, each image must be one the
+ * platform releases for its key: a catalog pin of the stable or alpha channel,
+ * the resource's current, recommended or release-policy image, or the
+ * platform's default image. Runtime `core` and hub `listener` also accept any
+ * tag or digest of the platform's own repository
+ * (`ghcr.io/thalovant/ovos-core`, `ghcr.io/thalovant/hivemind-listener`); `bus`
+ * and `preview_bridge` take only the listed images. The API refuses anything
+ * else with HTTP 403 `platform_image_required`.
  */
 export interface ReleaseOptions {
   channel?: string;
@@ -684,7 +688,7 @@ export class ThalovantControlPlane {
             "Call loginWithBrowser() again to request a new code.", { statusCode: response.status },
         );
       } else if (error !== "authorization_pending") {
-        throw new ThalovantApiError(apiErrorMessage(response.status, text), { statusCode: response.status });
+        throw apiError(response.status, text);
       }
       const remaining = deadline - now();
       if (remaining <= 0) {
@@ -836,10 +840,13 @@ export class ThalovantControlPlane {
    *
    * Every option is optional; omitted fields fall back to the workspace release
    * policy. Passing `images` switches the hub to `custom` mode unless you also
-   * pass `mode`. Unless you are a platform administrator, those must be
-   * platform images: a catalog, current or recommended image, or any tag or
-   * digest of `ghcr.io/thalovant/hivemind-listener` for `listener`. The API
-   * refuses anything else with HTTP 403 `platform_image_required`.
+   * pass `mode`. Unless you are a platform administrator, each image must be
+   * one the platform releases for its key: a catalog pin of the stable or alpha
+   * channel, the hub's current, recommended or release-policy image, or the
+   * platform's default image. `listener` also accepts any tag or digest of
+   * `ghcr.io/thalovant/hivemind-listener`; `preview_bridge` takes only those
+   * images. The API refuses anything else with HTTP 403
+   * `platform_image_required`.
    *
    * Requires a paid plan and a token with the `hubs:write` scope.
    */
@@ -980,9 +987,9 @@ export class ThalovantControlPlane {
   /**
    * Apply a runtime image policy and return the updated runtime group.
    *
-   * Options behave like `releaseHub()`, including the platform-image rule;
-   * here any tag or digest of `ghcr.io/thalovant/ovos-core` is accepted for
-   * `core`.
+   * Options behave like `releaseHub()`, including the platform-image rule:
+   * `core` also accepts any tag or digest of `ghcr.io/thalovant/ovos-core`, and
+   * `bus` takes only the images the platform releases for it.
    *
    * Requires a paid plan and a token with the `hubs:write` scope.
    */
@@ -1183,7 +1190,8 @@ export class ThalovantControlPlane {
    * an update. The API answers HTTP 409 `skill_version_already_installed`
    * for the same version, HTTP 404 `hub_without_runtime_group` when the hub
    * has no runtime group yet, and HTTP 422 for an unresolvable `"latest"` or
-   * an invalid version; the problem `code` is appended to the error message.
+   * an invalid version; the problem `code` is appended to the error message
+   * and is the error's `code`.
    *
    * Requires a paid plan and a token with the `hubs:write` scope; the scope
    * is checked first, so a free-plan API token sees HTTP 403, never 402.
@@ -1397,7 +1405,7 @@ export class ThalovantControlPlane {
   ): Promise<JsonRecord> {
     const response = await this.send(method, path, options);
     if (!response.ok) {
-      throw new ThalovantApiError(apiErrorMessage(response.status, await response.text(), options.redactSecrets), { statusCode: response.status });
+      throw apiError(response.status, await response.text(), options.redactSecrets);
     }
     const text = await response.text();
     if (!text.trim()) {
@@ -1562,44 +1570,66 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 /**
+ * The error for a response the API answered with a failure status.
+ *
+ * Any secrets the SDK itself generated and sent (`redactSecrets`) are scrubbed
+ * from the body text first, so they reach neither the message nor `problem`.
+ * The body is then parsed once: the message is built from it, and when it is a
+ * JSON object it rides on the error whole, as `problem`, with its `code` and
+ * its unshortened `detail` read out of it by the error itself.
+ */
+function apiError(status: number, bodyText: string, redactSecrets?: ReadonlyArray<string | undefined>): ThalovantApiError {
+  const safeBody = redactSecrets?.length ? redactSecretsInText(bodyText, redactSecrets) : bodyText;
+  const body = parseJsonBody(safeBody);
+  return new ThalovantApiError(apiErrorMessage(status, safeBody, body), {
+    statusCode: status,
+    problem: body && isRecord(body.value) ? body.value : undefined,
+  });
+}
+
+/** The body parsed as JSON, boxed so a body that is `null` is still JSON; undefined when it is not JSON. */
+function parseJsonBody(text: string): { value: unknown } | undefined {
+  try {
+    return { value: JSON.parse(text) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Build a thrown-error message from an HTTP status and response body without
  * ever embedding the raw body: bodies can echo request secrets (for example
- * `POST /v1/clients` validation errors repeating the sent spec). Any secrets
- * the SDK itself generated and sent (`redactSecrets`) are scrubbed from the
- * body first — before bounding, so a truncated secret cannot survive. Then
- * structured JSON keeps only a short string detail field, and non-JSON bodies
- * keep a newline-stripped snippet bounded to {@link MAX_ERROR_DETAIL_LENGTH}.
+ * `POST /v1/clients` validation errors repeating the sent spec). The body text
+ * is already redacted (see {@link apiError}) — before bounding, so a truncated
+ * secret cannot survive. Then structured JSON keeps only a short string detail
+ * field, and non-JSON bodies keep a newline-stripped snippet bounded to
+ * {@link MAX_ERROR_DETAIL_LENGTH}. What the API said in full is on the error
+ * itself, as `code`, `detail` and `problem`.
  */
-function apiErrorMessage(status: number, bodyText: string, redactSecrets?: ReadonlyArray<string | undefined>): string {
-  const safeBody = redactSecrets?.length ? redactSecretsInText(bodyText, redactSecrets) : bodyText;
-  const detail = apiErrorDetail(safeBody);
+function apiErrorMessage(status: number, bodyText: string, body: { value: unknown } | undefined): string {
+  const detail = apiErrorDetail(bodyText, body);
   return detail
     ? `Thalovant API request failed with HTTP ${status}: ${detail}`
     : `Thalovant API request failed with HTTP ${status}.`;
 }
 
-function apiErrorDetail(bodyText: string): string {
+function apiErrorDetail(bodyText: string, body: { value: unknown } | undefined): string {
   let detail: string | undefined;
   let code: string | undefined;
-  let isJsonBody = false;
-  try {
-    const parsed: unknown = JSON.parse(bodyText);
-    isJsonBody = true;
-    if (isRecord(parsed)) {
-      for (const key of ["detail", "error_description", "message", "error", "title", "code"]) {
-        detail = detailString(parsed[key]);
-        if (detail) break;
-      }
-      if (typeof parsed.code === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(parsed.code)) {
-        code = parsed.code;
-      }
+  const parsed = body?.value;
+  if (isRecord(parsed)) {
+    for (const key of ["detail", "error_description", "message", "error", "title", "code"]) {
+      detail = detailString(parsed[key]);
+      if (detail) break;
     }
-  } catch {
-    // Not JSON; fall through to the bounded plain-text snippet.
+    if (typeof parsed.code === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(parsed.code)) {
+      code = parsed.code;
+    }
   }
   // A JSON body without a recognized string detail is dropped entirely rather
   // than quoted: unknown JSON shapes are exactly where echoed secrets hide.
-  const source = detail ?? (isJsonBody ? "" : bodyText);
+  // Anything that is not JSON falls through to the bounded plain-text snippet.
+  const source = detail ?? (body ? "" : bodyText);
   const compact = source.replace(/\s+/g, " ").trim();
   const bounded = compact.length > MAX_ERROR_DETAIL_LENGTH
     ? `${compact.slice(0, MAX_ERROR_DETAIL_LENGTH)}…`
