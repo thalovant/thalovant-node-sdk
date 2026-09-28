@@ -243,6 +243,41 @@ test("revoking needs a token id, and revoking another token keeps the one in use
   });
 });
 
+test("every sign-in replaces the token id, and a token that revokes itself twice is not refused", async () => {
+  const answers: Array<{ status: number; body?: unknown }> = [
+    { status: 200, body: { access_token: "tvt_device", token_id: "t-device" } },
+    { status: 200, body: { access_token: "tvt_password" } },
+    { status: 200, body: { access_token: "tvt_device2", token_id: "t-2" } },
+    { status: 204 },
+    { status: 200, body: { access_token: "tvt_device3", token_id: "t-3" } },
+    { status: 401, body: { detail: "Could not validate credentials" } },
+    { status: 401, body: { detail: "Could not validate credentials" } },
+  ];
+  await serving(() => answers.shift()!, async (url, sent) => {
+    const api = new ThalovantControlPlane(url);
+    await api.pollDeviceLogin("dc");
+    assert.equal(api.tokenId, "t-device");
+    // A password sign-in without an id must not keep the device token's.
+    await api.login("person@example.invalid", "pw");
+    assert.equal(api.accessToken, "tvt_password");
+    assert.equal(api.tokenId, undefined);
+    await assert.rejects(api.revokeApiToken(), /No API token id/);
+
+    await api.pollDeviceLogin("dc2");
+    await api.revokeApiToken();
+    assert.equal(api.accessToken, undefined);
+    // Revoked already (from the dashboard, or a first sign-out): still signed out.
+    await api.pollDeviceLogin("dc3");
+    await api.revokeApiToken();
+    assert.equal(api.accessToken, undefined);
+    assert.equal(api.tokenId, undefined);
+    // Another token's 401 is still the refusal it is.
+    api.accessToken = "tvt_other";
+    await assert.rejects(api.revokeApiToken("t-someone"), ThalovantAuthError);
+    assert.equal(sent.filter((line) => line.startsWith("DELETE")).length, 3);
+  });
+});
+
 test("an injected fetch carries every request, and the global one is never touched", async (t) => {
   t.mock.method(globalThis, "fetch", async () => assert.fail("the global fetch was used"));
   const seen: string[] = [];
@@ -291,13 +326,29 @@ test("a connection of a kind: the spec carries it, the result names it, and asOb
 });
 
 test("a 422 about another field is an ordinary error, and a failed clean-up says so", async () => {
-  await serving(() => ({ status: 422, body: { detail: "name is too long", code: "schema_validation_failed" } }), async (url) => {
+  // The API echoes the spec it was sent, connection_type included, beside a
+  // refusal that is about something else.
+  const refusals: Json[] = [
+    { detail: "name is too long", code: "schema_validation_failed", input: { spec: { connection_type: "home_assistant" } } },
+    { detail: [{ loc: ["body", "name"], msg: "String should have at most 128 characters", input: { connection_type: "home_assistant" } }] },
+  ];
+  await serving(() => ({ status: 422, body: refusals.shift() }), async (url) => {
     const api = new ThalovantControlPlane(url, { accessToken: "t" });
-    const error = await api.createClientIdentity({ id: "hub-1" }, { name: "x", connectionType: "home_assistant" }).then(
-      () => assert.fail("resolved"),
-      (caught: unknown) => caught,
+    for (let refusal = 0; refusal < 2; refusal += 1) {
+      const error = await api.createClientIdentity({ id: "hub-1" }, { name: "x", connectionType: "home_assistant" }).then(
+        () => assert.fail("resolved"),
+        (caught: unknown) => caught,
+      );
+      assert.ok(error instanceof ThalovantApiError && !(error instanceof ThalovantUnsupportedConnectionTypeError), String(error));
+    }
+  });
+  // FastAPI's own list naming the field is the kind the API does not know.
+  await serving(() => ({ status: 422, body: { detail: [{ loc: ["body", "spec", "connection_type"], msg: "Input should be 'voice_satellite'" }] } }), async (url) => {
+    const api = new ThalovantControlPlane(url, { accessToken: "t" });
+    await assert.rejects(
+      api.createClientIdentity({ id: "hub-1" }, { name: "x", connectionType: "home_assistant" }),
+      ThalovantUnsupportedConnectionTypeError,
     );
-    assert.ok(error instanceof ThalovantApiError && !(error instanceof ThalovantUnsupportedConnectionTypeError));
   });
   await serving(({ method }) => (method === "POST"
     ? { status: 201, body: { id: "c1", etag: "e1", spec: { version: "1" } } }
@@ -353,18 +404,41 @@ const requested = (status: string, extra: Json = {}) => ({
 });
 
 test("admission follows a create's result, a bare id or a path, and stops on an abort", async () => {
-  const statuses = ["committed", "ready", "ready", "ready"];
+  const statuses = ["committed", "ready", "ready", "ready", "ready"];
   await serving(() => ({ status: 200, body: requested(statuses.shift() ?? "committed") }), async (url, sent) => {
     const api = new ThalovantControlPlane(url, { accessToken: "t" });
     await api.waitForAdmission("op-1", { pollIntervalMs: 1 });
     await api.waitForAdmission("/v1/operations/op-1?x=1", { pollIntervalMs: 1 });
     await api.waitForAdmission({ links: { self: `${url}/v1/operations/op-1` } }, { pollIntervalMs: 1 });
-    assert.deepEqual(sent, Array(4).fill("GET /v1/operations/op-1"));
+    // Slashes around the id are trimmed in one pass, however many there are.
+    const started = performance.now();
+    await api.waitForAdmission(`/v1/operations/${"/".repeat(50_000)}op-1${"/".repeat(50_000)}`, { pollIntervalMs: 1 });
+    assert.ok(performance.now() - started < 1_000);
+    assert.deepEqual(sent, Array(5).fill("GET /v1/operations/op-1"));
     const controller = new AbortController();
     const waiting = api.waitForAdmission("op-1", { pollIntervalMs: 50, signal: controller.signal });
     setTimeout(() => controller.abort(), 20);
     await assert.rejects(waiting, { name: "AbortError" });
     await assert.rejects(api.waitForAdmission("op-1", { signal: AbortSignal.abort() }), { name: "AbortError" });
+  });
+});
+
+test("admission waits out a 429 for as long as the API asks, and no longer than its own deadline", async () => {
+  const limited = { status: 429, body: { detail: { detail: { code: "token_rate_limited", message: "Slow down.", retry_after_seconds: 1 } } } };
+  const answers = [limited, { status: 200, body: requested("ready") }];
+  const stamps: number[] = [];
+  await serving(() => { stamps.push(performance.now()); return answers.shift()!; }, async (url) => {
+    const api = new ThalovantControlPlane(url, { accessToken: "t" });
+    await api.waitForAdmission("op-1", { pollIntervalMs: 10, timeoutMs: 5_000 });
+    assert.equal(stamps.length, 2);
+    assert.ok(stamps[1] - stamps[0] >= 950, `asked again after ${stamps[1] - stamps[0]}ms`);
+  });
+  const lifted = { status: 429, body: { code: "token_quota_exceeded", retry_after_seconds: 3_600 } };
+  stamps.length = 0;
+  await serving(() => { stamps.push(performance.now()); return lifted; }, async (url) => {
+    const api = new ThalovantControlPlane(url, { accessToken: "t" });
+    await assert.rejects(api.waitForAdmission("op-1", { pollIntervalMs: 10, timeoutMs: 300 }), ThalovantAdmissionTimeoutError);
+    assert.equal(stamps.length, 1, "no read the API said would be refused");
   });
 });
 
@@ -735,6 +809,43 @@ test("a close before the hub's HELLO is a refusal only with a refusing code", as
     });
     await client.close();
   }
+});
+
+test("a hub that holds another password for this connection is a refusal, and a contradicted pin is not", async (t) => {
+  const identity = await hubServer(t, (socket) => {
+    const hub = createV3HubPeer("not-this-password", (data, binary) => socket.send(data, { binary }));
+    socket.on("message", (data: Buffer, isBinary: boolean) => hub.onMessage(isBinary ? new Uint8Array(data) : data.toString()));
+    hub.start();
+  });
+  const client = new ThalovantClient(identity, { protocol: "wss", noiseStateDir: await noiseDir(t) });
+  await assert.rejects(client.connect(8000), (error: unknown) => {
+    assert.ok(error instanceof ThalovantHubRefusedError, String(error));
+    assert.match((error as Error).message, /authentication failed/);
+    return true;
+  });
+  await client.close();
+
+  // A hub that answers with another static key than the one pinned is not
+  // refusing anything: that is the connection error it always was.
+  let key = 7;
+  const pinned = await hubServer(t, (socket) => {
+    const hub = createV3HubPeer("secret", (data, binary) => socket.send(data, { binary }), {
+      staticPrivateKey: new Uint8Array(32).fill(key),
+    });
+    socket.on("message", (data: Buffer, isBinary: boolean) => hub.onMessage(isBinary ? new Uint8Array(data) : data.toString()));
+    hub.start();
+  });
+  const dir = await noiseDir(t);
+  const first = new ThalovantClient(pinned, { protocol: "wss", noiseStateDir: dir });
+  await first.connect(8000);
+  await first.close();
+  key = 9;
+  const second = new ThalovantClient(pinned, { protocol: "wss", noiseStateDir: dir });
+  await assert.rejects(second.connect(8000), (error: unknown) => {
+    assert.ok(error instanceof ThalovantConnectionError && !(error instanceof ThalovantHubRefusedError), String(error));
+    return true;
+  });
+  await second.close();
 });
 
 test("a hub that closes right after the handshake is a refusal to a kept link", async (t) => {

@@ -510,14 +510,19 @@ keeps it on the control plane, or rejects with
 the device code nor the token appears in an error or in `console.log` of these
 objects; `JSON.stringify` keeps them, so a sign-in can be stored as a secret and
 resumed with `DeviceAuthorization.fromGrant()`. `revokeApiToken()` revokes the
-token the SDK signed in with (a token may always revoke itself) and forgets it.
+token the SDK signed in with (a token may always revoke itself) and forgets it;
+a token already revoked (a 401 on its own revoke) counts as revoked. Every
+sign-in -- device, password or native -- replaces `tokenId`, so an earlier
+token's id never outlives it.
 `HOME_ASSISTANT_SCOPES` is `hubs:read`, `clients:read` and `clients:write`,
 which is also all a Free plan can approve.
 
 **Creating the connection.** `connectionType` is sent as
 `spec.connection_type`. When the answer does not repeat it, the API made an
 ordinary satellite instead: the SDK deletes it and rejects with
-`ThalovantUnsupportedConnectionTypeError`, as it does for a 422 about the field.
+`ThalovantUnsupportedConnectionTypeError`, as it does for a 422 about the field
+(read from the problem's sentence and its validation entries, never from the
+spec the API echoes back, so a 422 about another field stays what it is).
 The result carries `clientId`, `connectionType` and the `operation` that admits
 it. Each refusal has a class to branch on, all of them `ThalovantApiError` with
 `statusCode`, `code` and `detail`:
@@ -536,7 +541,8 @@ reading the etag first when none is given, retrying once on 412, and counting
 **Admission.** `waitForAdmission(result, { timeoutMs, pollIntervalMs, signal })`
 follows the operation: `ready` resolves, `failed` and `timed_out` reject with
 `ThalovantAdmissionFailedError` (its `errorCode` is the operation's), and a 404
-or no operation at all resolves at once. A 5xx is ridden out. When `timeoutMs`
+or no operation at all resolves at once. A 5xx is ridden out, and a 429 no
+sooner than the `retry_after_seconds` it names. When `timeoutMs`
 (default 180000) passes first it rejects with `ThalovantAdmissionTimeoutError`,
 which is both a `ThalovantConnectionError` and a `ThalovantTimeoutError`: the
 connection may still be admitted later. A `links.self` on another origin than
@@ -562,7 +568,8 @@ stops waiting for it.
 within a second), retries a failed attempt after 10 seconds doubling to 120, and
 treats a close within `settleSeconds` (0.75) of the handshake as the hub
 refusing the credentials, since a hub that does not know a connection's key says
-so only by closing. Refusals count as "not admitted yet" for
+so only by closing; a handshake that fails to authenticate (a password the hub
+does not hold) is a refusal too. Refusals count as "not admitted yet" for
 `refusalGraceSeconds` (600), then `run()` rejects with
 `ThalovantHubRefusedError`. `session.onStateChange(up => ...)` reports the link
 coming up and going down.

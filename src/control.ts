@@ -808,6 +808,9 @@ export class ThalovantControlPlane {
       throw new ThalovantApiError("Thalovant API token response did not include access_token.");
     }
     this.accessToken = accessToken;
+    // A new sign-in replaces the token, so the id of an earlier one must not
+    // outlive it: revokeApiToken() would send the new token to revoke the old.
+    this.tokenId = tokenIdOf(token);
     return token;
   }
 
@@ -849,6 +852,7 @@ export class ThalovantControlPlane {
       throw new ThalovantApiError("Thalovant API token response did not include access_token.");
     }
     this.accessToken = accessToken;
+    this.tokenId = tokenIdOf(token);
     return token;
   }
 
@@ -961,8 +965,16 @@ export class ThalovantControlPlane {
     if (!target) {
       throw new ThalovantApiError("No API token id to revoke: pass tokenId, or sign in with a device login first.");
     }
-    await this.request("DELETE", `/v1/auth/api-tokens/${encodeURIComponent(target)}`);
-    if (target === this.tokenId) {
+    const own = target === this.tokenId;
+    try {
+      await this.request("DELETE", `/v1/auth/api-tokens/${encodeURIComponent(target)}`);
+    } catch (error) {
+      // A token revoking itself that the API no longer accepts (401) is
+      // already revoked -- what was asked for -- so a second sign-out, or one
+      // after a revoke from the dashboard, succeeds rather than failing.
+      if (!(own && error instanceof ThalovantApiError && error.statusCode === 401)) throw error;
+    }
+    if (own) {
       this.accessToken = undefined;
       this.tokenId = undefined;
     }
@@ -970,6 +982,7 @@ export class ThalovantControlPlane {
 
   private acceptToken(token: ApiToken): void {
     this.accessToken = token.accessToken;
+    // Always set, never kept: an earlier sign-in's id must not outlive its token.
     this.tokenId = token.tokenId ?? undefined;
   }
 
@@ -1910,6 +1923,7 @@ export class ThalovantControlPlane {
     const deadline = performance.now() + timeoutMs;
     for (;;) {
       let current: OperationResource | undefined;
+      let retryAfterMs = 0;
       try {
         current = await this.getOperation(operationId, { signal });
       } catch (error) {
@@ -1918,7 +1932,9 @@ export class ThalovantControlPlane {
         // No longer tracked: the API keeps an operation only so long, and one
         // it has forgotten carried its connection through long ago.
         if (error.statusCode === 404) return;
-        if (error.statusCode === undefined || error.statusCode < 500) throw error;
+        // Rate limited: ridden out like a 5xx, but no sooner than the API asked.
+        if (error.statusCode === 429) retryAfterMs = retryAfterSeconds(error.problem) * 1000;
+        else if (error.statusCode === undefined || error.statusCode < 500) throw error;
       }
       if (current?.status === "ready") return;
       if (current && (current.status === "failed" || current.status === "timed_out")) {
@@ -1928,13 +1944,18 @@ export class ThalovantControlPlane {
           { errorCode: typeof current.error_code === "string" && current.error_code ? current.error_code : undefined },
         );
       }
+      const timedOut = () => new ThalovantAdmissionTimeoutError(
+        `The hub did not admit the connection within ${timeoutMs}ms; it may still.`,
+      );
       const remaining = deadline - performance.now();
-      if (remaining <= 0) {
-        throw new ThalovantAdmissionTimeoutError(
-          `The hub did not admit the connection within ${timeoutMs}ms; it may still.`,
-        );
+      if (remaining <= 0) throw timedOut();
+      // Asked to come back after the deadline: asking sooner would be refused
+      // again, so the wait ends here.
+      if (retryAfterMs > remaining) {
+        await abortableSleep(remaining, signal);
+        throw timedOut();
       }
-      await abortableSleep(Math.min(intervalMs, remaining), signal);
+      await abortableSleep(Math.min(Math.max(intervalMs, retryAfterMs), remaining), signal);
     }
   }
 
@@ -2163,6 +2184,26 @@ function apiError(status: number, bodyText: string, redactSecrets?: ReadonlyArra
   return error;
 }
 
+/** The id a token answer names, or undefined: never an earlier token's. */
+function tokenIdOf(token: JsonRecord): string | undefined {
+  return typeof token.token_id === "string" && token.token_id ? token.token_id : undefined;
+}
+
+/**
+ * The `retry_after_seconds` a 429 names, read wherever the problem carries it:
+ * at the top, or inside FastAPI's `detail` envelope (once or twice). A
+ * non-negative number of seconds; 0 when there is none.
+ */
+function retryAfterSeconds(problem: JsonRecord | undefined): number {
+  let level: unknown = problem;
+  for (let depth = 0; depth < 3 && isRecord(level); depth += 1) {
+    const value = level.retry_after_seconds;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+    level = level.detail;
+  }
+  return 0;
+}
+
 /** The connection that holds a link, as a 409 names it. */
 function linkedClientId(problem: JsonRecord | undefined): string | undefined {
   if (!problem) return undefined;
@@ -2176,11 +2217,25 @@ function linkedClientId(problem: JsonRecord | undefined): string | undefined {
   return undefined;
 }
 
-/** A 422 whose problem is about `connection_type`. */
+/**
+ * A 422 whose problem is about `connection_type`.
+ *
+ * Only the parts that describe the error are read: the problem's sentence, and
+ * each entry's `loc` and `msg` when it is FastAPI's validation list. The whole
+ * body is not, because `/v1/clients` echoes the spec it was sent -- which holds
+ * `connection_type` whenever a kind was asked for -- so a 422 about the name
+ * would otherwise read as the API not knowing the kind.
+ */
 function refusesConnectionType(error: ThalovantApiError): boolean {
   if (error.statusCode !== 422) return false;
-  const text = error.problem ? JSON.stringify(error.problem) : error.message;
-  return text.includes("connection_type") || text.includes("connectionType");
+  const names = (text: unknown): boolean =>
+    typeof text === "string" && (text.includes("connection_type") || text.includes("connectionType"));
+  if (names(error.detail)) return true;
+  const detail = error.problem?.detail;
+  if (Array.isArray(detail)) {
+    return detail.some((entry) => isRecord(entry) && ((Array.isArray(entry.loc) && entry.loc.some(names)) || names(entry.msg)));
+  }
+  return !error.problem && names(error.message);
 }
 
 /** The operation a create answered with, when it is one. */
@@ -2205,7 +2260,7 @@ function admissionOperationId(operation: OperationResource | JsonRecord | string
   text = text.trim();
   const marker = "/v1/operations/";
   const at = text.lastIndexOf(marker);
-  if (at >= 0) text = text.slice(at + marker.length).split(/[?#]/, 1)[0].replace(/^\/+|\/+$/g, "");
+  if (at >= 0) text = trimSlashes(text.slice(at + marker.length).split(/[?#]/, 1)[0]);
   if (!text) throw new ThalovantApiError("An operation needs an id to wait on.");
   // Decoded because getOperation() encodes it again; a segment that is not
   // valid percent-encoding is taken as it is.
@@ -2214,6 +2269,15 @@ function admissionOperationId(operation: OperationResource | JsonRecord | string
   } catch {
     return text;
   }
+}
+
+/** `text` without leading or trailing slashes, in one linear pass rather than a backtracking pattern. */
+function trimSlashes(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && text[start] === "/") start += 1;
+  while (end > start && text[end - 1] === "/") end -= 1;
+  return text.slice(start, end);
 }
 
 /**
