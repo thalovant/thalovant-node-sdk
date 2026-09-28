@@ -29,7 +29,9 @@ export class HiveMindMqttTransport extends HiveMindHttpTransport {
 
   /** Coalesce callers while one broker admission and Noise exchange is active. */
   override async connect(timeoutMs = 20000): Promise<void> {
-    return this.connectOnce(() => this.connectMqtt(timeoutMs, Date.now() + timeoutMs));
+    return this.connectOnce(() =>
+      this.withXxFallback((budget) => this.connectMqtt(budget, Date.now() + budget), timeoutMs),
+    );
   }
 
   /** Admit and authenticate within one budget, including broker acknowledgements. */

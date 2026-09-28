@@ -8,8 +8,94 @@ export interface ThalovantDisplayItem {
   silent?: boolean;
 }
 
+/**
+ * Remove markup: tags, comments and processing instructions. Only real markup
+ * goes, so "5 < 6 and 7 > 3" survives whole; entities are left as they are.
+ *
+ * A tag is `<` or `</` immediately followed by an ASCII letter, then
+ * everything up to the next `>` that is not inside a quoted attribute value.
+ * A comment is `<!--` to `-->`, a processing instruction `<?` to `?>`. Any
+ * other `<` is text, and so is a construct that never closes. Linear in the
+ * length of the text, whatever it holds: the text comes off the network.
+ */
 export function stripSsml(text: string): string {
-  return text.replace(/<{1}\/?[^>]*>{1}/g, "");
+  if (!text.includes("<")) return text;
+  let ends: Int32Array | undefined;
+  // Once a closer is missing from some point on, it is missing from every
+  // later point too: remember where it was found, or that it was not.
+  const closers = new Map<string, number>();
+  const closerAfter = (closer: string, from: number): number => {
+    const known = closers.get(closer);
+    if (known !== undefined && (known === -1 || known >= from)) return known;
+    const found = text.indexOf(closer, from);
+    closers.set(closer, found);
+    return found;
+  };
+  let out = "";
+  let index = 0;
+  while (index < text.length) {
+    const at = text.indexOf("<", index);
+    if (at < 0) {
+      out += text.slice(index);
+      break;
+    }
+    out += text.slice(index, at);
+    let end = -1;
+    if (text.startsWith("<!--", at)) {
+      const close = closerAfter("-->", at + 4);
+      end = close < 0 ? -1 : close + 3;
+    } else if (text.startsWith("<?", at)) {
+      const close = closerAfter("?>", at + 2);
+      end = close < 0 ? -1 : close + 2;
+    } else {
+      const name = text[at + 1] === "/" ? at + 2 : at + 1;
+      if (isAsciiLetter(text.charCodeAt(name))) {
+        ends ??= tagEnds(text);
+        const close = ends[name];
+        end = close < 0 ? -1 : close + 1;
+      }
+    }
+    if (end < 0) {
+      out += "<";
+      index = at + 1;
+    } else {
+      index = end;
+    }
+  }
+  return out;
+}
+
+function isAsciiLetter(code: number): boolean {
+  return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
+}
+
+/**
+ * For every position, where a tag's `>` is when scanning from there, or -1.
+ *
+ * Scanning a tag's inside: a `>` ends it, a quote skips to its partner (a
+ * quote with none ends the scan with no tag), anything else moves on. So the
+ * answer from one position is the answer from the next, or from just past the
+ * partner quote, and one pass from the end computes all of them. Scanning
+ * from each `<` instead is quadratic on many unclosed tags.
+ */
+function tagEnds(text: string): Int32Array {
+  const ends = new Int32Array(text.length + 1).fill(-1);
+  let nextDouble = -1;
+  let nextSingle = -1;
+  for (let index = text.length - 1; index >= 0; index -= 1) {
+    const char = text[index];
+    if (char === ">") {
+      ends[index] = index;
+    } else if (char === '"' || char === "'") {
+      const partner = char === '"' ? nextDouble : nextSingle;
+      ends[index] = partner < 0 ? -1 : ends[partner + 1];
+      if (char === '"') nextDouble = index;
+      else nextSingle = index;
+    } else {
+      ends[index] = ends[index + 1];
+    }
+  }
+  return ends;
 }
 
 export function richMediaFromData(data: Record<string, unknown>): Record<string, unknown> {

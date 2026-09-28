@@ -22,7 +22,7 @@ import { gcm } from "@noble/ciphers/aes.js";
 import { x25519 } from "@noble/curves/ed25519.js";
 
 import { bytesToHex, concatBytes, utf8Encode } from "./bytes.js";
-import { ThalovantConnectionError } from "./errors.js";
+import { ThalovantConnectionError, ThalovantHubKeyChangedError, ThalovantHubRefusedError } from "./errors.js";
 
 /** HiveMind protocol version that switches the handshake to Noise. */
 export const PROTOCOL_V3 = 3;
@@ -551,7 +551,7 @@ export class NoiseHandshake {
             const length = this.symmetric.cipher.hasKey() ? KEY_LENGTH + TAG_LENGTH : KEY_LENGTH;
             const learned = this.symmetric.decryptAndHash(take(length).slice());
             if (this.remoteStatic && !equalBytes(this.remoteStatic, learned)) {
-              throw new ThalovantConnectionError(
+              throw new ThalovantHubKeyChangedError(
                 "The hub presented a static key that contradicts the pinned one.",
               );
             }
@@ -570,7 +570,11 @@ export class NoiseHandshake {
       return payload;
     } catch (error) {
       if (error instanceof ThalovantConnectionError) throw error;
-      throw new ThalovantConnectionError(
+      // The hub's message did not authenticate under this connection's key: a
+      // password the hub does not hold for it, which is the hub turning the
+      // credentials away. A static key that contradicts the pin is not this --
+      // it is thrown above as the plain connection error it is.
+      throw new ThalovantHubRefusedError(
         `Noise handshake authentication failed (wrong password or tampered negotiation): ${
           error instanceof Error ? error.message : String(error)
         }`,

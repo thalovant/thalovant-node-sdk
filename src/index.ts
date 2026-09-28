@@ -10,6 +10,8 @@ export * from "./errors.js";
 export * from "./refusal.js";
 export * from "./events.js";
 export * from "./hubs.js";
+// The Home Assistant link's data-plane half: answer thalovant.home.request.
+export * from "./home.js";
 export * from "./identity.js";
 // The intent models and constants only. The wire helpers behind them
 // (`requestReply`, `describeMany`, ...) stay package-internal and are reached
@@ -37,5 +39,15 @@ export * from "./wire.js";
 export { asSentence, closestLanguage, usualForm, defaultListing, ListingRules, type ListingData, type ListingLanguage } from "./listing.js";
 
 export * from "./session.js";
+// HubSessionPolicy comes from ./session.js, as it always did.
+export {
+  CLOSE_CODE_GRACE_MS,
+  closeRefuses,
+  LinkSupervisor,
+  REFUSAL_CLOSE_CODES,
+  REFUSAL_SETTLE_MS,
+  type LinkDecision,
+  type LinkOutcome,
+} from "./link-keeping.js";
 
 export * from "./inventory.js";

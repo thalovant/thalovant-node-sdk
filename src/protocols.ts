@@ -1,3 +1,5 @@
+import { trimSlashes, trimTrailingSlashes } from "./slashes.js";
+
 export type HubProtocol = "wss" | "https" | "mqtt";
 export const DEFAULT_PROTOCOL_PREFERENCE: HubProtocol[] = ["wss", "https", "mqtt"];
 
@@ -140,7 +142,7 @@ export function selectDataPlaneEndpoint(
 }
 
 export function endpointFromDomain(domain: string, protocol: HubProtocol): string {
-  const normalized = domain.trim().replace(/\/+$/, "");
+  const normalized = trimTrailingSlashes(domain.trim());
   if (protocol === "wss") {
     if (/^wss?:\/\//i.test(normalized)) return normalizeEndpoint(normalized) ?? "";
     if (/^https?:\/\//i.test(normalized)) {
@@ -167,7 +169,7 @@ export function endpointBase(master: string, defaultPort: number, defaultPath: s
       url.port = String(defaultPort);
     }
     const path = [url.pathname, defaultPath]
-      .map(part => part.replace(/^\/+|\/+$/g, ""))
+      .map(part => trimSlashes(part))
       .filter(Boolean)
       .join("/");
     url.pathname = path ? `/${path}` : "";
@@ -175,7 +177,7 @@ export function endpointBase(master: string, defaultPort: number, defaultPath: s
     url.hash = "";
     return url.toString().replace(/\/$/, "");
   } catch {
-    return `${master.replace(/\/+$/, "")}:${defaultPort}${defaultPath}`;
+    return `${trimTrailingSlashes(master)}:${defaultPort}${defaultPath}`;
   }
 }
 

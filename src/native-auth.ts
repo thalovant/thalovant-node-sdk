@@ -135,8 +135,10 @@ export async function beginNativeSignIn(options: BeginNativeSignInOptions): Prom
   // Not `replace(/\/+$/, "")`: CodeQL is right that a trailing-run regex on a
   // caller-supplied string backtracks polynomially, and this one is handed a
   // URL from outside. Trimming in a loop is linear and does the same thing.
-  let dashboard = options.dashboardUrl ?? DEFAULT_DASHBOARD_URL;
-  while (dashboard.endsWith("/")) dashboard = dashboard.slice(0, -1);
+  const given = options.dashboardUrl ?? DEFAULT_DASHBOARD_URL;
+  let end = given.length;
+  while (end > 0 && given.charCodeAt(end - 1) === 0x2f) end -= 1;
+  const dashboard = given.slice(0, end);
   const query = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
@@ -216,7 +218,12 @@ export function assertSecureTokenExchange(apiUrl: string): void {
 function origin(url: string): string | null {
   try {
     const parsed = new URL(url);
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, "")}`.toLowerCase();
+    // One backward scan and one slice: the trailing-run regex backtracks on a
+    // path of slashes, and slicing per slash copies the path each time.
+    const path = parsed.pathname;
+    let end = path.length;
+    while (end > 0 && path.charCodeAt(end - 1) === 0x2f) end -= 1;
+    return `${parsed.protocol}//${parsed.host}${path.slice(0, end)}`.toLowerCase();
   } catch {
     return null;
   }

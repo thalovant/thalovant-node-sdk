@@ -12,7 +12,13 @@ import {
   EVENT_UTTERANCE_HANDLED,
 } from "./constants.js";
 import { failureError, refusalBelongsToAsk, UNTRACKED_UTTERANCE_GRACE_MS } from "./refusal.js";
-import { ThalovantConnectionError, ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
+import {
+  ThalovantConnectionError,
+  ThalovantHubRefusedError,
+  ThalovantRuntimeError,
+  ThalovantTimeoutError,
+  ThalovantUnsupportedProtocolError,
+} from "./errors.js";
 import {
   contextWithCorrelation,
   carryConversation,
@@ -25,6 +31,7 @@ import {
   mergeContext,
   newRequestId,
   newSessionId,
+  replyContextFor,
   type ThalovantBinary,
   ThalovantEvent,
   ThalovantReply,
@@ -43,6 +50,7 @@ import {
   HiveMindRuntimeTransport,
   HiveMindWSSTransport,
   HiveMessage,
+  type SendOptions,
   TransportConnectionInfo,
   TransportHealth,
 } from "./transport.js";
@@ -186,6 +194,14 @@ export class ThalovantClient {
             resolve();
             return;
           }
+          const closed = this.closedWhileConnecting();
+          if (closed) {
+            // The hub closed the link between the end of the handshake and
+            // this connect returning -- which is how a hub that does not know
+            // this key refuses it. Not a link to wait on until the deadline.
+            stop(closed);
+            return;
+          }
           await sleep(Math.min(20, Math.max(1, deadline - performance.now())));
         }
       } catch (error) {
@@ -203,6 +219,23 @@ export class ThalovantClient {
     });
     this.lifecycle = operation.catch(() => undefined);
     return result;
+  }
+
+  /** Why the link a connect just opened is already gone, or undefined while it is up. */
+  private closedWhileConnecting(): ThalovantConnectionError | undefined {
+    let info: TransportConnectionInfo;
+    try {
+      info = this.connectionInfo();
+    } catch {
+      return undefined;
+    }
+    if (info.phase !== "closed" && info.phase !== "error") return undefined;
+    if (info.refused) {
+      return new ThalovantHubRefusedError(
+        "The hub closed the link right after the handshake: it does not accept these credentials, or not yet.",
+      );
+    }
+    return new ThalovantConnectionError("The hub closed the link right after the handshake.");
   }
 
   async connectWithInfo(timeoutMs?: number): Promise<TransportConnectionInfo> {
@@ -331,10 +364,23 @@ export class ThalovantClient {
     }
   }
 
-  async emit(eventType: string, data: Record<string, unknown> = {}, context: EventContext = {}): Promise<void> {
+  /**
+   * Send a bus message. `options.signal` withdraws it while it has not gone
+   * out yet: while the connection is being made (which carries on for other
+   * callers), or while it waits behind other frames. A frame already being
+   * written is finished.
+   */
+  async emit(
+    eventType: string,
+    data: Record<string, unknown> = {},
+    context: EventContext = {},
+    options: SendOptions = {},
+  ): Promise<void> {
+    if (options.signal?.aborted) throw operationAbortedError();
     if (eventType !== EVENT_RECOGNIZER_LOOP_UTTERANCE) {
       await this.connect();
-      await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
+      if (options.signal?.aborted) throw operationAbortedError();
+      await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context), options);
       return;
     }
     // A fire-and-forget utterance: nothing will wait on it, but the hub may
@@ -351,8 +397,33 @@ export class ThalovantClient {
     // that need not have been there costs an ask its deadline; a missing one
     // ends a question the hub never refused.
     await this.connect();
+    if (options.signal?.aborted) throw operationAbortedError();
     this.recordUntrackedSend();
-    await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
+    await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context), options);
+  }
+
+  /**
+   * Answer a message the hub sent, back along the route it came.
+   *
+   * The reply carries a deep copy of the request's context -- its session, its
+   * request id, everything a skill waiting on it matches -- with `source` and
+   * `destination` turned round (OVOS-MSG-1 §5.2; see {@link replyContext}), so
+   * the hub routes it to the peer that asked. `event` is the delivered
+   * {@link ThalovantEvent} or a bus payload `{ type, data, context }`;
+   * `context` entries are laid over the request's before the route is turned.
+   * `options.signal` withdraws the reply while it has not gone out yet, as
+   * {@link emit} does.
+   */
+  async reply(
+    event: ThalovantEvent | BusPayload | { context?: EventContext | null },
+    msgType: string,
+    data: Record<string, unknown> = {},
+    context?: EventContext,
+    options: SendOptions = {},
+  ): Promise<void> {
+    const type = typeof msgType === "string" ? msgType.trim() : "";
+    if (!type) throw new TypeError("A reply needs a non-empty message type.");
+    await this.emit(type, data, replyContextFor(event, context), options);
   }
 
   async sendUtterance(

@@ -3,8 +3,47 @@ import type { ThalovantEvent } from "./events.js";
 export class ThalovantError extends Error {}
 export class ThalovantIdentityError extends ThalovantError {}
 export class ThalovantConnectionError extends ThalovantError {}
-export class ThalovantTimeoutError extends ThalovantError {}
+export class ThalovantTimeoutError extends ThalovantError {
+  /**
+   * A class has one parent, and a hub that has not admitted a connection yet
+   * is two things at once: the connection is not usable, and waiting longer
+   * may still succeed. {@link ThalovantAdmissionTimeoutError} extends
+   * {@link ThalovantConnectionError} and answers `instanceof` for this class as
+   * well, so a caller can catch it as either. Every other value is judged by
+   * its prototype chain, as `instanceof` always does.
+   */
+  static [Symbol.hasInstance](value: unknown): boolean {
+    if (Function.prototype[Symbol.hasInstance].call(this, value)) return true;
+    return this === ThalovantTimeoutError && Function.prototype[Symbol.hasInstance].call(ThalovantAdmissionTimeoutError, value);
+  }
+}
 export class ThalovantRuntimeError extends ThalovantError {}
+
+/**
+ * A hub turned this connection's credentials away.
+ *
+ * A hub closes the socket without a status, with 1000, or with 1008 for an
+ * access key it does not know, refuses the WebSocket upgrade with 401 or 403,
+ * and aborts the Noise handshake for a wrong password. None of those clears up
+ * on its own the way a dropped network does: the connection was deleted, its
+ * secret changed, or -- for a connection created a moment ago -- its hub has
+ * not admitted it yet. {@link HubSession.run} retries through refusals for a
+ * grace period for that last reason, then gives up with this error.
+ */
+export class ThalovantHubRefusedError extends ThalovantConnectionError {}
+
+/**
+ * A hub answered with another Noise static key than the one pinned for it.
+ *
+ * The first connection to a hub pins its key; every later one must present
+ * the same. A different one is either the hub being replaced or somebody in
+ * between, and the SDK cannot tell which, so it never connects and never
+ * replaces the pin by itself. It is a connection error rather than a refusal
+ * -- the hub did not turn the credentials away -- and retrying changes
+ * nothing: {@link HubSession.run} stops on it at once. Drop the pin with
+ * `forgetNoisePin` only once the new key is known to be the hub's.
+ */
+export class ThalovantHubKeyChangedError extends ThalovantConnectionError {}
 
 /**
  * A control-plane request failed.
@@ -39,6 +78,13 @@ export class ThalovantApiError extends ThalovantError {
   /** The API's whole sentence, exactly as sent: never trimmed or shortened. */
   readonly detail?: string;
   /**
+   * How long the API asked the caller to wait before trying again, in seconds,
+   * when it said: a 429's `retry_after_seconds` (at the top of the problem or
+   * inside its `detail` object), else its `Retry-After` or `RateLimit-Reset`
+   * header. Undefined otherwise.
+   */
+  readonly retryAfterSeconds?: number;
+  /**
    * The whole error body when it is a JSON object. Not enumerable, so logging
    * the error never prints what the body echoed back from the request.
    */
@@ -51,6 +97,8 @@ export class ThalovantApiError extends ThalovantError {
       code?: string;
       detail?: string;
       problem?: Record<string, unknown>;
+      /** Seconds to wait, when the answer's headers said; the problem's own number wins. */
+      retryAfterSeconds?: number;
     },
   ) {
     super(message, options);
@@ -63,8 +111,32 @@ export class ThalovantApiError extends ThalovantError {
     const read = problemFields(problem);
     this.code = options?.code ?? read.code;
     this.detail = options?.detail ?? read.detail;
+    this.retryAfterSeconds = problemRetryAfter(problem) ?? options?.retryAfterSeconds;
   }
 }
+
+/**
+ * A problem's `retry_after_seconds`, at its top or inside a `detail` object:
+ * the API's per-token 429 is FastAPI's envelope around a structured refusal,
+ * so the number sits inside `detail`, as `code` does.
+ */
+function problemRetryAfter(problem: Record<string, unknown> | undefined): number | undefined {
+  if (!problem) return undefined;
+  for (const source of [problem, isRecord(problem.detail) ? problem.detail : {}]) {
+    const value = source.retry_after_seconds;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  }
+  return undefined;
+}
+
+/**
+ * The control-plane API could not be reached: the request never got an
+ * answer (a refused connection, a failed name lookup, a reset, a redirect the
+ * SDK will not follow). That says nothing about what the API would have
+ * answered, so a wait that meets it reports it as it is rather than as the
+ * API refusing anything. `statusCode` is undefined.
+ */
+export class ThalovantApiUnreachableError extends ThalovantApiError {}
 
 /** A string with something in it, exactly as sent; anything else is absent. */
 function problemText(value: unknown): string | undefined {
@@ -91,6 +163,128 @@ function problemFields(problem: Record<string, unknown> | undefined): { code?: s
 }
 
 export class ThalovantUnsupportedProtocolError extends ThalovantError {}
+
+/** The options every API error subclass takes, as {@link ThalovantApiError} does. */
+type ApiErrorOptions = ConstructorParameters<typeof ThalovantApiError>[1];
+
+/**
+ * The control plane rejected the API token itself.
+ *
+ * A 401 (the token is unknown, expired or revoked), a 423 (the account is
+ * locked), or a 403 whose detail is `Insufficient scopes`. Signing in again is
+ * the way out of each, which is true of no other refusal.
+ */
+export class ThalovantAuthError extends ThalovantApiError {}
+
+/**
+ * The account's plan does not allow the request.
+ *
+ * A 402, or a 403 whose code is `plan_limit`; `problem` carries the
+ * `resource`, `limit` and `used` the API reported.
+ */
+export class ThalovantPlanError extends ThalovantApiError {}
+
+/**
+ * A hub already has the one connection of this kind it allows.
+ *
+ * A 409 `home_assistant_already_linked`: a hub takes one Home Assistant
+ * connection. `clientId` names the connection that holds the link, when the
+ * API said which.
+ */
+export class ThalovantAlreadyLinkedError extends ThalovantApiError {
+  readonly clientId?: string;
+
+  constructor(message?: string, options?: ApiErrorOptions & { clientId?: string }) {
+    super(message, options);
+    this.clientId = options?.clientId;
+  }
+}
+
+/**
+ * The API does not know the connection type asked for.
+ *
+ * A 422 naming `connection_type`, or a created connection whose type did not
+ * come back as asked: an API that silently ignored the field would hand out an
+ * ordinary connection instead. The SDK deletes such a connection before it
+ * throws, and then `statusCode` is undefined.
+ */
+export class ThalovantUnsupportedConnectionTypeError extends ThalovantApiError {}
+
+/**
+ * One device sign-in poll found nobody had decided yet.
+ *
+ * Poll again after `interval` seconds (`intervalMs` milliseconds), which a
+ * `slow_down` from the API has already lengthened -- for good, for every later
+ * poll of the same code.
+ */
+export class ThalovantDeviceLoginPendingError extends ThalovantApiError {
+  /** Seconds to wait before the next poll. */
+  readonly interval: number;
+
+  constructor(message?: string, options?: ApiErrorOptions & { interval?: number }) {
+    super(message, options);
+    this.interval = options?.interval ?? 5;
+  }
+
+  /** The same wait in milliseconds, for `setTimeout`. */
+  get intervalMs(): number {
+    return this.interval * 1000;
+  }
+}
+
+/** The device code expired before anybody approved it; begin a new sign-in. */
+export class ThalovantDeviceLoginExpiredError extends ThalovantApiError {}
+
+/** The person declined the device sign-in in the browser. */
+export class ThalovantDeviceLoginDeniedError extends ThalovantApiError {}
+
+/**
+ * A hub has not admitted a new connection within the wait.
+ *
+ * Both a connection error and a timeout -- `instanceof` answers true for
+ * {@link ThalovantConnectionError} and {@link ThalovantTimeoutError} -- because
+ * the connection exists and may still be admitted: waiting longer, or
+ * connecting later, can succeed.
+ */
+export class ThalovantAdmissionTimeoutError extends ThalovantConnectionError {}
+
+/**
+ * A new connection will not be admitted.
+ *
+ * Either the operation that admits it failed or timed out on the platform --
+ * `errorCode` is the operation's own code, and `statusCode` is undefined -- or
+ * the API refused the wait itself, and then `statusCode`, `code`, `detail` and
+ * `problem` keep what it answered, as a `ThalovantApiError` does. An
+ * authentication refusal is not this: it is thrown as the API's own error.
+ */
+export class ThalovantAdmissionFailedError extends ThalovantConnectionError {
+  readonly errorCode?: string;
+  readonly statusCode?: number;
+  readonly code?: string;
+  readonly detail?: string;
+  /** The whole body of the API's refusal, when it was a JSON object. Not enumerable. */
+  declare readonly problem?: Record<string, unknown>;
+
+  constructor(
+    message?: string,
+    options?: ErrorOptions & {
+      errorCode?: string;
+      statusCode?: number;
+      code?: string;
+      detail?: string;
+      problem?: Record<string, unknown>;
+    },
+  ) {
+    super(message, options);
+    this.errorCode = options?.errorCode;
+    this.statusCode = options?.statusCode;
+    const problem = isRecord(options?.problem) ? { ...options.problem } : undefined;
+    Object.defineProperty(this, "problem", { value: problem, enumerable: false, writable: false, configurable: false });
+    const read = problemFields(problem);
+    this.code = options?.code ?? read.code;
+    this.detail = options?.detail ?? read.detail;
+  }
+}
 
 /**
  * The numbers behind a refusal that is a spent allowance, not a policy.
