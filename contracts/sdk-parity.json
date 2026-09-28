@@ -48,7 +48,7 @@
       "tests": {
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/connection-admission-vectors.json": "41eb4a83835bd50390d000fa7396b7067dafa24f3023b34985e6b254cf5fc259",
-        "test/home-link-vectors.test.ts": "90fffe0400f0d97309acbaab25066da9860a3c071587acb8af7e8bfd24e0d314",
+        "test/home-link-vectors.test.ts": "016a75f49fa8585ee328d0d29ea1bc8c476786c09d98effc15cc3e9c6af4f0be",
         "test/home-link.test.ts": "2981eaeea8d4ee5da59adbabf9424ff060cda345ed31b501ad942886ded10bc5"
       },
       "vectors": {
@@ -65,7 +65,7 @@
       "tests": {
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/connection-kinds-vectors.json": "2baef508194472279ff2446105a1408e381b2f9e4bfc03e5f96d9c6529ddf604",
-        "test/home-link-vectors.test.ts": "90fffe0400f0d97309acbaab25066da9860a3c071587acb8af7e8bfd24e0d314",
+        "test/home-link-vectors.test.ts": "016a75f49fa8585ee328d0d29ea1bc8c476786c09d98effc15cc3e9c6af4f0be",
         "test/home-link.test.ts": "2981eaeea8d4ee5da59adbabf9424ff060cda345ed31b501ad942886ded10bc5"
       },
       "vectors": {
@@ -114,7 +114,7 @@
       "tests": {
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/device-login-vectors.json": "8a2257cd80b5d2dfa9553420b51617c697b1ad4e6af60ba83e980e1731fa7854",
-        "test/home-link-vectors.test.ts": "90fffe0400f0d97309acbaab25066da9860a3c071587acb8af7e8bfd24e0d314",
+        "test/home-link-vectors.test.ts": "016a75f49fa8585ee328d0d29ea1bc8c476786c09d98effc15cc3e9c6af4f0be",
         "test/home-link.test.ts": "2981eaeea8d4ee5da59adbabf9424ff060cda345ed31b501ad942886ded10bc5"
       },
       "vectors": {
@@ -140,7 +140,7 @@
       "tests": {
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/home-link-vectors.json": "3dc3d38020f3d1b7a2df61d0048fb13685a5361d2dff82710c1e1833cccc576f",
-        "test/home-link-vectors.test.ts": "90fffe0400f0d97309acbaab25066da9860a3c071587acb8af7e8bfd24e0d314",
+        "test/home-link-vectors.test.ts": "016a75f49fa8585ee328d0d29ea1bc8c476786c09d98effc15cc3e9c6af4f0be",
         "test/home-link.test.ts": "2981eaeea8d4ee5da59adbabf9424ff060cda345ed31b501ad942886ded10bc5",
         "test/link-keeping-vectors.json": "b3be27131c051c527d7b917dd6d7d24692920a0f59694b1031f009724e3de4bc",
         "test/link-keeping-vectors.test.ts": "9a0f7132e8f4a5741cd220e9a514f748050e737584f2c26ecad31b82a6a37b06",

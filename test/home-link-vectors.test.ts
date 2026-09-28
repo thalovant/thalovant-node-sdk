@@ -18,7 +18,7 @@ import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer as createNetServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -355,13 +355,16 @@ for (const vector of KINDS.cases) {
 
 // -- admission --------------------------------------------------------------------
 
-/** A loopback port nothing listens on: bound, then released. */
-async function closedPort(): Promise<number> {
-  const probe = createServer();
-  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-  const { port } = probe.address() as AddressInfo;
-  await new Promise<void>((resolve) => probe.close(() => resolve()));
-  return port;
+/**
+ * A loopback port where the API is out of reach: a listener that resets every
+ * connection at once. A port nothing listens on would do on Linux, but
+ * Windows takes about 2 s to refuse a connect, the whole budget of the case.
+ */
+async function unreachablePort(t: test.TestContext): Promise<number> {
+  const listener = createNetServer((socket) => socket.resetAndDestroy());
+  await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => listener.close(() => resolve())));
+  return (listener.address() as AddressInfo).port;
 }
 
 /** The case's operation with {api_host} and {api_port} filled in. */
@@ -375,10 +378,10 @@ function placed(value: unknown, host: string, port: string): unknown {
 }
 
 for (const vector of ADMISSION.cases) {
-  test(`connection admission: ${vector.name}`, async () => {
+  test(`connection admission: ${vector.name}`, async (t) => {
     const call = vector.call as { operation: Json | null; timeout_ms: number; poll_interval_ms: number; api?: string };
     const expect = vector.expect as Json;
-    const unreachable = call.api === "unreachable" ? await closedPort() : undefined;
+    const unreachable = call.api === "unreachable" ? await unreachablePort(t) : undefined;
     const { produced, api } = await scripted(vector.exchanges, async (api) => {
       const { port } = new URL(api.url);
       const url = unreachable === undefined ? api.url : `http://127.0.0.1:${unreachable}`;
