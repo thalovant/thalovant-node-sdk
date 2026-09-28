@@ -1004,3 +1004,35 @@ test("no poll starts once the wait has nothing left: its answer would come to no
     assert.equal(sent.length, 1);
   });
 });
+
+test("a reply withdrawn by its own signal keeps the link, held or dialled for it", async () => {
+  // A client whose send waits in its queue until the signal withdraws it.
+  const queued = (state: { phase: string; closed: number }) => ({
+    connectionInfo: () => ({ phase: state.phase }),
+    close: async () => { state.closed += 1; state.phase = "closed"; },
+    ask: async () => ({ text: "ok" }),
+    emit: async () => {},
+    on: () => new ThalovantSubscription(() => {}),
+    reply: (_event: unknown, _type: string, _data: Json, _context?: unknown, options?: { signal?: AbortSignal }) =>
+      new Promise<void>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new DOMException("withdrawn", "AbortError")), { once: true });
+      }),
+  }) as unknown as HubSessionClient;
+  const state = { phase: "ready", closed: 0 };
+  let dials = 0;
+  const session = new HubSession(async () => { dials += 1; return queued(state); }, { warm: false });
+  // No link yet: the reply dials, then is withdrawn while queued.
+  const late = new AbortController();
+  setTimeout(() => late.abort(), 20);
+  await assert.rejects(session.reply({ context: {} }, HOME_RESPONSE, {}, undefined, { signal: late.signal }), { name: "AbortError" });
+  assert.ok(session.held);
+  // On the held link: withdrawn again, and still held.
+  const again = new AbortController();
+  setTimeout(() => again.abort(), 20);
+  await assert.rejects(session.reply({ context: {} }, HOME_RESPONSE, {}, undefined, { signal: again.signal }), { name: "AbortError" });
+  await assert.rejects(session.reply({ context: {} }, HOME_RESPONSE, {}, undefined, { signal: AbortSignal.abort() }), { name: "AbortError" });
+  assert.ok(session.held);
+  assert.equal(state.closed, 0);
+  assert.equal(dials, 1);
+  await session.close();
+});

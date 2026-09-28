@@ -49,7 +49,7 @@
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/connection-admission-vectors.json": "41eb4a83835bd50390d000fa7396b7067dafa24f3023b34985e6b254cf5fc259",
         "test/home-link-vectors.test.ts": "90fffe0400f0d97309acbaab25066da9860a3c071587acb8af7e8bfd24e0d314",
-        "test/home-link.test.ts": "5335ce08f329a5a8110bdd8b931a13a79dbf27e9b3d0c51fb5df69f59c476b48"
+        "test/home-link.test.ts": "2981eaeea8d4ee5da59adbabf9424ff060cda345ed31b501ad942886ded10bc5"
       },
       "vectors": {
         "connection-admission-vectors.json": "test/connection-admission-vectors.json"
@@ -66,7 +66,7 @@
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/connection-kinds-vectors.json": "2baef508194472279ff2446105a1408e381b2f9e4bfc03e5f96d9c6529ddf604",
         "test/home-link-vectors.test.ts": "90fffe0400f0d97309acbaab25066da9860a3c071587acb8af7e8bfd24e0d314",
-        "test/home-link.test.ts": "5335ce08f329a5a8110bdd8b931a13a79dbf27e9b3d0c51fb5df69f59c476b48"
+        "test/home-link.test.ts": "2981eaeea8d4ee5da59adbabf9424ff060cda345ed31b501ad942886ded10bc5"
       },
       "vectors": {
         "connection-kinds-vectors.json": "test/connection-kinds-vectors.json"
@@ -76,7 +76,7 @@
       "implementation": {
         "src/control.ts": "3d5f16ebebcc9abb5f57be0d1333375c0eefa68c326498610ee21023abdb79a2",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
-        "src/native-auth.ts": "352f2ef326b846eee5b5df2de347bf88889122ba29edf22ff4f003e7e4cc0322",
+        "src/native-auth.ts": "0ae7a17915f31a23c25d9d551cc7ce018a7f499921777741c1fa3855875e185d",
         "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
@@ -115,7 +115,7 @@
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/device-login-vectors.json": "8a2257cd80b5d2dfa9553420b51617c697b1ad4e6af60ba83e980e1731fa7854",
         "test/home-link-vectors.test.ts": "90fffe0400f0d97309acbaab25066da9860a3c071587acb8af7e8bfd24e0d314",
-        "test/home-link.test.ts": "5335ce08f329a5a8110bdd8b931a13a79dbf27e9b3d0c51fb5df69f59c476b48"
+        "test/home-link.test.ts": "2981eaeea8d4ee5da59adbabf9424ff060cda345ed31b501ad942886ded10bc5"
       },
       "vectors": {
         "device-login-vectors.json": "test/device-login-vectors.json"
@@ -131,7 +131,7 @@
         "src/noise-store.ts": "e56db747fe6d1262b501ed0f3724ad7cf38cf38b6a044bce6d6afbcfb2c73822",
         "src/noise.ts": "859754e8db0a40f932d146eca48ec7e5f52f8444847f5b8396291473fda9fc26",
         "src/rich.ts": "436de27a83020c00a3e14b024f27e04950845415c6158d044bcc06a08b886f65",
-        "src/session.ts": "14d070c94774332890a05a2d7c389641e1889594ad7e6501f9e7f0d153cd46fb",
+        "src/session.ts": "762b054dbc4e3013ca8960bfe02a44f26b25e6f839ce290cb9a38839e17d297d",
         "src/transport-core.ts": "0b0d9cf5eab88405c3e8d965e6633adc7a73f0f4a43c25274eb438007dcd5200",
         "src/transport-mqtt.ts": "3ed2a66626af3ffe7ff27d154a4d1ab5d203f78fa94cf362f6227471ac7166db"
       },
@@ -141,7 +141,7 @@
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/home-link-vectors.json": "3dc3d38020f3d1b7a2df61d0048fb13685a5361d2dff82710c1e1833cccc576f",
         "test/home-link-vectors.test.ts": "90fffe0400f0d97309acbaab25066da9860a3c071587acb8af7e8bfd24e0d314",
-        "test/home-link.test.ts": "5335ce08f329a5a8110bdd8b931a13a79dbf27e9b3d0c51fb5df69f59c476b48",
+        "test/home-link.test.ts": "2981eaeea8d4ee5da59adbabf9424ff060cda345ed31b501ad942886ded10bc5",
         "test/link-keeping-vectors.json": "b3be27131c051c527d7b917dd6d7d24692920a0f59694b1031f009724e3de4bc",
         "test/link-keeping-vectors.test.ts": "9a0f7132e8f4a5741cd220e9a514f748050e737584f2c26ecad31b82a6a37b06",
         "test/v3-hub.ts": "6431050e3575bd8796c6f7f93287849a631c51413369014247047038073ef880"
@@ -251,12 +251,12 @@
     "session": {
       "implementation": {
         "src/link-keeping.ts": "d2a3ba87257c3747780ebb5bf140a950a78fce51811737fce08d126a941f6943",
-        "src/session.ts": "14d070c94774332890a05a2d7c389641e1889594ad7e6501f9e7f0d153cd46fb"
+        "src/session.ts": "762b054dbc4e3013ca8960bfe02a44f26b25e6f839ce290cb9a38839e17d297d"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The connected-client factory owns failed connection cleanup; Python performs that dial internally and retains failed retirement before replacement. HubSession.run() keeps the link by the policy (HubSessionPolicy, now defined in src/link-keeping.ts beside LinkSupervisor, whose decisions run() follows: probe cadence, retry ladder, a settle window that reads a close right after the handshake as a refusal, refusalGraceSeconds before ThalovantHubRefusedError, and a stop at once on ThalovantHubKeyChangedError), exercised in test/home-link.test.ts and test/link-keeping-vectors.test.ts.",
       "status": "required",
       "tests": {
-        "test/home-link.test.ts": "5335ce08f329a5a8110bdd8b931a13a79dbf27e9b3d0c51fb5df69f59c476b48",
+        "test/home-link.test.ts": "2981eaeea8d4ee5da59adbabf9424ff060cda345ed31b501ad942886ded10bc5",
         "test/link-keeping-vectors.test.ts": "9a0f7132e8f4a5741cd220e9a514f748050e737584f2c26ecad31b82a6a37b06",
         "test/session.test.ts": "c5c7b84ec471163f5079bc2dfee231a610a8cc434f68f8aa370cbfe9cd122a67"
       }

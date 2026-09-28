@@ -336,13 +336,29 @@ export class HubSession {
         ? client.reply(event, msgType, data, context, options)
         : client.emit(msgType, data, replyContextFor(event, context), options);
     };
+    // A reply withdrawn by its own signal says nothing about the link: the
+    // frame never went out, so the session's cipher state has not moved and
+    // the client stays. Only a failure of the link itself drops it.
+    const withdrawn = (error: unknown): boolean =>
+      options.signal?.aborted === true && error instanceof Error && error.name === "AbortError";
     const client = this.client;
-    if (!client || this.closed || !alive(client))
-      return this.call((c) => send(c as ReplyingClient));
+    if (!client || this.closed || !alive(client)) {
+      let withdrawal: unknown;
+      await this.call(async (c) => {
+        try {
+          await send(c as ReplyingClient);
+        } catch (error) {
+          if (!withdrawn(error)) throw error;
+          withdrawal = error;
+        }
+      });
+      if (withdrawal !== undefined) throw withdrawal;
+      return;
+    }
     try {
       await send(client as ReplyingClient);
     } catch (error) {
-      if (!(error instanceof ThalovantRuntimeError))
+      if (!(error instanceof ThalovantRuntimeError) && !withdrawn(error))
         await this.exclusive(async () => {
           if (this.client === client) await this.drop();
         });
