@@ -10,6 +10,8 @@ export * from "./errors.js";
 export * from "./refusal.js";
 export * from "./events.js";
 export * from "./hubs.js";
+// The Home Assistant link's data-plane half: answer thalovant.home.request.
+export * from "./home.js";
 export * from "./identity.js";
 // The intent models and constants only. The wire helpers behind them
 // (`requestReply`, `describeMany`, ...) stay package-internal and are reached

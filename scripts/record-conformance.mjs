@@ -19,12 +19,25 @@ import { dirname, join, resolve } from "node:path";
 const target = resolve(process.env.THALOVANT_CONFORMANCE_OUT ?? "contracts/conformance-results.json");
 const parts = `${target}.parts`;
 
+/**
+ * The canonical JSON the Python reference digests a vector file with.
+ *
+ * Whole numbers within 2^53 only, as everywhere else -- except that a vector
+ * file may carry fractional seconds (`poll_interval_seconds: 0.01`), and the
+ * reference digests the file as it parses. Python's `repr` and JavaScript's
+ * `String` both write a double's shortest round-trip digits, and both write
+ * them in fixed notation for magnitudes from 1e-4 up to 1e16, so inside that
+ * band the spelling agrees digit for digit. Outside it one writes `1e-05` and
+ * the other `0.00001`, so that is still refused rather than guessed.
+ */
 function canonicalJson(value) {
   if (typeof value === "number") {
-    if (!Number.isInteger(value) || !Number.isSafeInteger(value)) {
-      throw new Error(`conformance: cannot canonicalise ${value}`);
+    if (Number.isSafeInteger(value)) return String(value);
+    const magnitude = Math.abs(value);
+    if (Number.isFinite(value) && !Number.isInteger(value) && magnitude >= 1e-4 && magnitude < 1e16) {
+      return String(value);
     }
-    return String(value);
+    throw new Error(`conformance: cannot canonicalise ${value}`);
   }
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
@@ -32,6 +45,8 @@ function canonicalJson(value) {
   return "{" + keys.map((key) => JSON.stringify(key) + ":" + canonicalJson(value[key])).join(",") + "}";
 }
 
+// Only ever applied to a vector file here. What the SDK produced is digested by
+// test/conformance-record.ts, which still takes whole numbers alone.
 const digestOf = (value) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 
 // A shard left by an earlier run must not be counted as this one's output.

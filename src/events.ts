@@ -188,6 +188,63 @@ export function mergeContext(base?: EventContext, extra?: EventContext): EventCo
 }
 
 /**
+ * The context of a reply to a message that carried `context` (OVOS-MSG-1 §5.2).
+ *
+ * A deep copy, so the reply keeps the request's session, its request id and
+ * everything else it said, with the routing turned round: the reply goes to
+ * whoever sent the request (`destination` becomes the old `source`) and comes
+ * from whoever it was sent to (`source` becomes the old `destination`, its
+ * first entry when that is a list). A hub routes the answer back to the peer
+ * that asked this way, across bridges and NAT. A context with no routing keeps
+ * none; the argument is never changed.
+ */
+export function replyContext(context: EventContext | Record<string, unknown> | null | undefined): EventContext {
+  const swapped = copyJson(context ?? {}) as EventContext;
+  const source = swapped.source;
+  const destination = swapped.destination;
+  if (destination !== undefined && destination !== null) {
+    swapped.source = Array.isArray(destination) && destination.length ? destination[0] : destination;
+  }
+  if (source !== undefined && source !== null) swapped.destination = source;
+  return swapped;
+}
+
+/**
+ * The context of a reply to `event`, with `overlay` laid over the request's
+ * context before the route is turned round.
+ *
+ * The SDK delivers a hub's message with its context exactly as the hub sent
+ * it, so this reads that context directly: `event` is a delivered
+ * {@link ThalovantEvent}, or a bus payload `{ type, data, context }`.
+ *
+ * @internal
+ */
+export function replyContextFor(
+  event: ThalovantEvent | BusPayload | { context?: EventContext | null } | null | undefined,
+  overlay?: EventContext,
+): EventContext {
+  const context = event && typeof event === "object" && isPlainRecord(event.context) ? event.context : {};
+  return replyContext({ ...context, ...(overlay ?? {}) });
+}
+
+/**
+ * A deep copy of JSON-shaped data: arrays and plain objects are copied, every
+ * other value is kept as it is. `Object.fromEntries` defines each key as an own
+ * property, so a `__proto__` key off the wire stays a key.
+ */
+function copyJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(copyJson);
+  if (isPlainRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copyJson(item)]));
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
  * The hive's own frame kinds, which a client may subscribe to.
  *
  * `query` and `cascade` are deliberately absent: they are this client's own

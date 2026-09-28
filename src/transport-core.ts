@@ -1,6 +1,6 @@
 import { base64FromUtf8, base64ToBytes, bytesToBase64, bytesToHex, hexToBytes, utf8Decode, utf8Encode } from "./bytes.js";
 import { DEFAULT_USER_AGENT } from "./constants.js";
-import { ThalovantConnectionError, ThalovantRuntimeError } from "./errors.js";
+import { ThalovantConnectionError, ThalovantHubRefusedError, ThalovantRuntimeError } from "./errors.js";
 import {
   buildPrologue,
   canonicalJson,
@@ -25,6 +25,14 @@ import type { PlatformWebSocket } from "./platform/types.js";
 import { decodeHiveBinaryFrame } from "./wire.js";
 
 const MESH_KINDS = new Set(["broadcast", "propagate", "escalate", "intercom", "rendezvous"]);
+
+/**
+ * WebSocket close codes a hub refuses credentials with: 1000, 1005 (no status)
+ * and 1008 (policy). A hub that does not know a client's static key says so
+ * only by closing, so these read as a refusal right after the handshake and a
+ * drop any other time.
+ */
+const REFUSAL_CLOSE_CODES: ReadonlySet<number> = new Set([1000, 1005, 1008]);
 
 export interface HiveMessage {
   msg_type: string;
@@ -58,6 +66,14 @@ export interface TransportConnectionInfo {
   handshakeMs?: number;
   connectMs?: number;
   lastError?: string;
+  /** The WebSocket close code, when the hub closed an established link. */
+  closeCode?: number;
+  /**
+   * Whether the hub closed the last link the way it refuses credentials (no
+   * status, 1000 or 1008). Only a close right after the handshake is a verdict;
+   * the same code later is an ordinary drop. `HubSession.run()` reads it.
+   */
+  refused?: boolean;
 }
 
 export interface HiveMindRuntimeTransport extends EventTarget {
@@ -328,7 +344,12 @@ export class HiveMindHttpTransport extends EventTarget {
         ...init, headers, signal: controller.signal, credentials: "include", redirect: "error",
       });
       this.assertConnection(epoch);
-      if (!response.ok) throw new ThalovantConnectionError(`HiveMind HTTP request failed (${response.status}).`);
+      if (!response.ok) {
+        if (path === "/connect" && (response.status === 401 || response.status === 403)) {
+          throw new ThalovantHubRefusedError(`The hub refused this connection's credentials (HTTP ${response.status}).`);
+        }
+        throw new ThalovantConnectionError(`HiveMind HTTP request failed (${response.status}).`);
+      }
       const cookieValues = response.headers?.getSetCookie?.() ?? [response.headers?.get("set-cookie") ?? ""];
       for (const value of cookieValues) {
         const cookie = value.split(";", 1)[0];
@@ -703,6 +724,27 @@ export class HiveMindHttpTransport extends EventTarget {
     };
   }
 
+  /** The hub closed an established link with `code`. */
+  protected markClosedBy(code: number): void {
+    this.currentConnection = {
+      ...this.currentConnection,
+      phase: "closed",
+      closeCode: code,
+      refused: REFUSAL_CLOSE_CODES.has(code),
+    };
+  }
+
+  /**
+   * How far a handshake still in progress has come: waiting for the hub's
+   * HELLO, holding it before this client has answered (`offer`), or answered.
+   * A close in the `offer` step is not a verdict on the credentials, which the
+   * hub has not seen yet.
+   */
+  protected handshakeStep(): "hello" | "offer" | "response" {
+    if (this.noiseHandshake || this.session) return "response";
+    return this.serverHello ? "offer" : "hello";
+  }
+
   protected async sendCleartext(message: HiveMessage): Promise<void> {
     await this.httpRequest("/send_message", {
       method: "POST", body: new URLSearchParams({ message: JSON.stringify(message) }),
@@ -799,11 +841,15 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
       this.connected = false;
       if (!this.handshakeComplete) {
         const suffix = reason ? `: ${reason}` : "";
-        this.rejectHandshake(new ThalovantConnectionError(`HiveMind WSS closed before handshake completed (${code})${suffix}.`));
+        this.rejectHandshake(
+          REFUSAL_CLOSE_CODES.has(code) && this.handshakeStep() !== "offer"
+            ? new ThalovantHubRefusedError(`The hub refused this connection's credentials (${code}).`)
+            : new ThalovantConnectionError(`HiveMind WSS closed before handshake completed (${code})${suffix}.`),
+        );
       } else {
         this.handshakeComplete = false;
         this.clearNoiseState();
-        this.markClosed();
+        this.markClosedBy(code);
       }
     });
     socket.onError(error => {
@@ -905,7 +951,14 @@ function waitForSocketOpen(socket: PlatformWebSocket, timeoutMs: number): Promis
       settle(() => reject(new ThalovantConnectionError("HiveMind WSS connect timed out.")));
     }, timeoutMs);
     socket.onOpen(() => settle(resolve));
-    socket.onError(error => settle(() => reject(new ThalovantConnectionError(`HiveMind WSS connect failed: ${error.message}`))));
+    socket.onError(error => settle(() => {
+      // The `ws` package names a refused upgrade by its status and nothing
+      // else; a browser WebSocket cannot see the status at all.
+      const status = /^Unexpected server response: (\d{3})$/.exec(error.message)?.[1];
+      reject(status === "401" || status === "403"
+        ? new ThalovantHubRefusedError(`The hub refused this connection's credentials (HTTP ${status}).`)
+        : new ThalovantConnectionError(`HiveMind WSS connect failed: ${error.message}`));
+    }));
     socket.onClose((code, reason) => {
       const suffix = reason ? `: ${reason}` : "";
       settle(() => reject(new ThalovantConnectionError(`HiveMind WSS closed before opening (${code})${suffix}.`)));

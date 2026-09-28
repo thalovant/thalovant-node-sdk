@@ -1,6 +1,19 @@
 import { assertSecureTokenExchange } from "./native-auth.js";
 import { bytesToBase64Url, bytesToHex } from "./bytes.js";
-import { ThalovantApiError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
+import {
+  ThalovantAdmissionFailedError,
+  ThalovantAdmissionTimeoutError,
+  ThalovantAlreadyLinkedError,
+  ThalovantApiError,
+  ThalovantAuthError,
+  ThalovantDeviceLoginDeniedError,
+  ThalovantDeviceLoginExpiredError,
+  ThalovantDeviceLoginPendingError,
+  ThalovantPlanError,
+  ThalovantTimeoutError,
+  ThalovantUnsupportedConnectionTypeError,
+  ThalovantUnsupportedProtocolError,
+} from "./errors.js";
 import { ThalovantIdentity } from "./identity.js";
 import { openExternalUrl, randomBytes, randomUUID } from "./platform/node.js";
 import {
@@ -22,6 +35,28 @@ const DEFAULT_CONTROL_USER_AGENT = USER_AGENT;
 const DEFAULT_DEVICE_POLL_INTERVAL_MS = 5_000;
 const DEVICE_SLOW_DOWN_STEP_MS = 5_000;
 const DEFAULT_DEVICE_LOGIN_TIMEOUT_MS = 900_000;
+/** Seconds a device sign-in poll waits when the API names no interval. */
+const DEFAULT_DEVICE_POLL_INTERVAL_SECONDS = 5;
+/** Seconds a device code lives when the API does not say. */
+const DEFAULT_DEVICE_CODE_LIFETIME_SECONDS = 900;
+/** Device codes whose poll interval is remembered at once; the oldest goes first. */
+const MAX_REMEMBERED_DEVICE_CODES = 64;
+
+/**
+ * The scopes a Home Assistant link asks for at sign-in: reading hubs, and
+ * reading and writing its own connection. They are also all a Free plan can
+ * approve.
+ */
+export const HOME_ASSISTANT_SCOPES: readonly string[] = Object.freeze(["hubs:read", "clients:read", "clients:write"]);
+/** `spec.connection_type` of a Home Assistant link. */
+export const CONNECTION_TYPE_HOME_ASSISTANT = "home_assistant";
+/** Milliseconds between two reads of an operation the caller is waiting on. */
+export const DEFAULT_OPERATION_POLL_INTERVAL_MS = 2_000;
+/**
+ * How long `waitForAdmission()` waits by default, in milliseconds: a hub
+ * admits a new connection in about ninety seconds.
+ */
+export const DEFAULT_ADMISSION_TIMEOUT_MS = 180_000;
 
 /**
  * Node's `util.inspect` extension point (used by `console.log`). Registered
@@ -68,6 +103,15 @@ export interface BootstrapIdentityResult {
   client: JsonRecord;
   endpoint?: SelectedHubEndpoint;
   selectedProtocol?: HubProtocol;
+  /** The new connection's id, when the API returned one. */
+  clientId?: string;
+  /** The connection type the API recorded (`spec.connection_type`), when it recorded one. */
+  connectionType?: string;
+  /**
+   * The operation that carries the new connection to its hub, when the API
+   * returned one. `waitForAdmission()` follows it.
+   */
+  operation?: OperationResource;
   asObject(options?: { includeSecrets?: boolean }): Record<string, unknown>;
 }
 
@@ -79,6 +123,221 @@ export interface CreateClientIdentityOptions {
   active?: boolean;
   preferredProtocols?: readonly HubProtocol[];
   idempotencyKey?: string;
+  /**
+   * The kind of connection: `voice_satellite`, `web_chat`, `developer`,
+   * `embedded`, `home_assistant` ({@link CONNECTION_TYPE_HOME_ASSISTANT}). Sent
+   * as `spec.connection_type`; the kind decides what the connection may send
+   * and receive. The API must answer with the same kind, or the connection it
+   * made is deleted and the call throws
+   * {@link ThalovantUnsupportedConnectionTypeError}.
+   */
+  connectionType?: string;
+}
+
+/** Options for `listClients`. */
+export interface ClientListOptions {
+  /** Sent as `hub_id`: only this hub's connections. */
+  hubId?: string;
+  /** Page size; the API default applies when omitted. Default 100. */
+  limit?: number;
+  cursor?: string;
+  /** Sent as `owner_id`. Admin tokens only. */
+  ownerId?: string;
+  /** False asks the API to leave each connection's `spec` out. Default true. */
+  includeSpec?: boolean;
+}
+
+/** Options for `deleteClient`. */
+export interface ClientDeleteOptions {
+  /**
+   * The connection's current `etag`, sent as `If-Match`. When omitted the SDK
+   * reads it first with `getClient()`.
+   */
+  etag?: string | null;
+}
+
+/** Options for `waitForAdmission`. */
+export interface AdmissionWaitOptions {
+  /** How long to wait, in milliseconds. Default 180000. */
+  timeoutMs?: number;
+  /** Milliseconds between two reads of the operation. Default 2000. */
+  pollIntervalMs?: number;
+  /** Stops the wait; it rejects with an `AbortError`. */
+  signal?: AbortSignal;
+}
+
+/** Options for `beginDeviceLogin`. */
+export interface DeviceLoginOptions {
+  /**
+   * Scopes the token will carry. Omitted when not given, and the API applies
+   * its default. A Home Assistant link asks for {@link HOME_ASSISTANT_SCOPES}.
+   */
+  scopes?: readonly string[];
+  /** The name the dashboard shows for the token and on the approval page. */
+  clientName?: string;
+}
+
+/**
+ * A started device sign-in: what to show a person, and what to poll with.
+ *
+ * `deviceCode` is the secret half and never needs showing; printing the object
+ * with `console.log` or `util.inspect` leaves it out. `JSON.stringify` keeps it,
+ * in the API's own field names, so the sign-in can be stored and resumed in
+ * another process with {@link DeviceAuthorization.fromGrant}: store it as the
+ * secret it is.
+ */
+export class DeviceAuthorization {
+  readonly deviceCode: string;
+  /** The short code the person types at `verificationUri`. */
+  readonly userCode: string;
+  readonly verificationUri: string;
+  /** The URL with the code already in it, when the API sent one. */
+  readonly verificationUriComplete: string | null;
+  /** Seconds between two polls. */
+  readonly interval: number;
+  /** Seconds the device code lives. */
+  readonly expiresIn: number;
+
+  private constructor(fields: {
+    deviceCode: string;
+    userCode: string;
+    verificationUri: string;
+    verificationUriComplete: string | null;
+    interval: number;
+    expiresIn: number;
+  }) {
+    this.deviceCode = fields.deviceCode;
+    this.userCode = fields.userCode;
+    this.verificationUri = fields.verificationUri;
+    this.verificationUriComplete = fields.verificationUriComplete;
+    this.interval = fields.interval;
+    this.expiresIn = fields.expiresIn;
+  }
+
+  /**
+   * Read a `POST /v1/auth/device/authorize` answer, or a stored one.
+   *
+   * Both verification URLs are about to be opened in a browser, so one that is
+   * not http(s), has no host, or carries credentials is refused.
+   */
+  static fromGrant(payload: Record<string, unknown>): DeviceAuthorization {
+    const deviceCode = payload.device_code;
+    const userCode = payload.user_code;
+    const verificationUri = payload.verification_uri;
+    for (const value of [deviceCode, userCode, verificationUri]) {
+      if (typeof value !== "string" || !value) {
+        throw new ThalovantApiError("Thalovant API device authorization response was incomplete.");
+      }
+    }
+    const complete = payload.verification_uri_complete;
+    for (const value of [verificationUri, complete]) {
+      if (value !== undefined && value !== null) assertSafeBrowserUrl(value);
+    }
+    const interval = payload.interval;
+    const expiresIn = payload.expires_in;
+    return new DeviceAuthorization({
+      deviceCode: deviceCode as string,
+      userCode: userCode as string,
+      verificationUri: verificationUri as string,
+      verificationUriComplete: typeof complete === "string" && complete ? complete : null,
+      interval: typeof interval === "number" && Number.isFinite(interval) && interval >= 0
+        ? interval
+        : DEFAULT_DEVICE_POLL_INTERVAL_SECONDS,
+      expiresIn: typeof expiresIn === "number" && Number.isInteger(expiresIn)
+        ? expiresIn
+        : DEFAULT_DEVICE_CODE_LIFETIME_SECONDS,
+    });
+  }
+
+  /** The API's field names, `device_code` included. */
+  toJSON(): Record<string, unknown> {
+    return {
+      device_code: this.deviceCode,
+      user_code: this.userCode,
+      verification_uri: this.verificationUri,
+      verification_uri_complete: this.verificationUriComplete,
+      interval: this.interval,
+      expires_in: this.expiresIn,
+    };
+  }
+
+  toString(): string {
+    return `DeviceAuthorization ${JSON.stringify({ ...this.toJSON(), device_code: REDACTED })}`;
+  }
+
+  [customInspect](): string {
+    return this.toString();
+  }
+}
+
+/**
+ * An API token the API minted, and what it may do.
+ *
+ * There is no refresh token: a device-login token lives a year. Keep `tokenId`
+ * to revoke it later with `revokeApiToken()`. `accessToken` is left out of
+ * `console.log` and `util.inspect`; `JSON.stringify` keeps it, for storing as
+ * the secret it is.
+ */
+export class ApiToken {
+  readonly accessToken: string;
+  readonly tokenType: string;
+  readonly scopes: readonly string[];
+  /** When the token stops working, exactly as the API wrote it (ISO 8601), or null. */
+  readonly expiresAt: string | null;
+  /** The token's id, for `revokeApiToken()`; null when the API did not send one. */
+  readonly tokenId: string | null;
+
+  private constructor(fields: {
+    accessToken: string;
+    tokenType: string;
+    scopes: readonly string[];
+    expiresAt: string | null;
+    tokenId: string | null;
+  }) {
+    this.accessToken = fields.accessToken;
+    this.tokenType = fields.tokenType;
+    this.scopes = Object.freeze([...fields.scopes]);
+    this.expiresAt = fields.expiresAt;
+    this.tokenId = fields.tokenId;
+  }
+
+  /** Read a token answer; one without an `access_token` is an error. */
+  static fromResponse(payload: Record<string, unknown>): ApiToken {
+    const accessToken = payload.access_token;
+    if (typeof accessToken !== "string" || !accessToken) {
+      throw new ThalovantApiError("Thalovant API token response did not include access_token.");
+    }
+    const scopes = Array.isArray(payload.scopes)
+      ? payload.scopes.filter((scope): scope is string => typeof scope === "string")
+      : [];
+    const text = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
+    return new ApiToken({
+      accessToken,
+      tokenType: text(payload.token_type) ?? "bearer",
+      scopes,
+      expiresAt: text(payload.expires_at),
+      tokenId: text(payload.token_id),
+    });
+  }
+
+  /** The API's field names, `access_token` included. */
+  toJSON(): Record<string, unknown> {
+    return {
+      access_token: this.accessToken,
+      token_type: this.tokenType,
+      scopes: [...this.scopes],
+      expires_at: this.expiresAt,
+      token_id: this.tokenId,
+    };
+  }
+
+  toString(): string {
+    return `ApiToken ${JSON.stringify({ ...this.toJSON(), access_token: REDACTED })}`;
+  }
+
+  [customInspect](): string {
+    return this.toString();
+  }
 }
 
 export interface AnalyticsOverviewOptions {
@@ -485,15 +744,36 @@ export interface DevicePollOptions {
   now?: () => number;
 }
 
+/** Options for the {@link ThalovantControlPlane} constructor. */
+export interface ControlPlaneOptions {
+  accessToken?: string;
+  userAgent?: string;
+  /**
+   * The `fetch` to send every request with, such as one bound to a host's own
+   * HTTP agent or a test double. Defaults to the global `fetch`, looked up per
+   * request.
+   */
+  fetch?: typeof fetch;
+}
+
 export class ThalovantControlPlane {
   readonly apiUrl: string;
   accessToken?: string;
+  /**
+   * The id of the API token in `accessToken`, when the SDK minted it (a device
+   * login): what `revokeApiToken()` revokes by default.
+   */
+  tokenId?: string;
   readonly userAgent: string;
+  private readonly fetchImpl?: typeof fetch;
+  /** Each device code's poll interval in seconds, lengthened by every slow_down. */
+  private readonly deviceIntervals = new Map<string, number>();
 
-  constructor(apiUrl = DEFAULT_CONTROL_API_URL, options: { accessToken?: string; userAgent?: string } = {}) {
+  constructor(apiUrl = DEFAULT_CONTROL_API_URL, options: ControlPlaneOptions = {}) {
     this.apiUrl = normalizeControlApiUrl(apiUrl);
     this.accessToken = options.accessToken;
     this.userAgent = options.userAgent ?? DEFAULT_CONTROL_USER_AGENT;
+    this.fetchImpl = options.fetch;
   }
 
   /**
@@ -591,25 +871,12 @@ export class ThalovantControlPlane {
     if (options.clientName) body.client_name = options.clientName;
     const grant = await this.request("POST", "/v1/auth/device/authorize", { body, auth: false });
 
-    const deviceCode = grant.device_code;
-    const userCode = grant.user_code;
-    const verificationUri = grant.verification_uri;
-    for (const value of [deviceCode, userCode, verificationUri]) {
-      if (typeof value !== "string" || !value) {
-        throw new ThalovantApiError("Thalovant API device authorization response was incomplete.");
-      }
-    }
-    for (const value of [verificationUri, grant.verification_uri_complete]) {
-      if (value === undefined || value === null) continue;
-      try {
-        const authority = typeof value === "string" ? value.match(/^https?:\/\/([^/?#]*)/i)?.[1] : undefined;
-        if (!authority || authority.includes("@") || /[\s\u0000-\u0020\u007f-\u009f]/u.test(String(value))) throw new Error("unsafe URL");
-        const parsed = typeof value === "string" ? new URL(value) : undefined;
-        if (!parsed || !["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("unsafe URL");
-      } catch {
-        throw new ThalovantApiError("Device verification URLs must use HTTP or HTTPS without embedded credentials.");
-      }
-    }
+    // Parsed for its checks: the fields are there, and neither URL a browser
+    // is about to open carries credentials or leaves http(s).
+    const authorization = DeviceAuthorization.fromGrant(grant);
+    const deviceCode = authorization.deviceCode;
+    const userCode = authorization.userCode;
+    const verificationUri = authorization.verificationUri;
     const rawInterval = grant.interval;
     const intervalMs =
       typeof rawInterval === "number" && Number.isFinite(rawInterval) && rawInterval >= 0
@@ -632,16 +899,143 @@ export class ThalovantControlPlane {
       }
     }
 
-    const token = await this.pollDeviceToken(deviceCode as string, {
+    const token = await this.pollDeviceToken(deviceCode, {
       intervalMs,
       timeoutMs: options.timeoutMs ?? DEFAULT_DEVICE_LOGIN_TIMEOUT_MS,
     });
-    const accessToken = token.access_token;
-    if (typeof accessToken !== "string" || !accessToken) {
-      throw new ThalovantApiError("Thalovant API token response did not include access_token.");
-    }
-    this.accessToken = accessToken;
+    this.acceptToken(ApiToken.fromResponse(token));
     return token;
+  }
+
+  /**
+   * Start a device sign-in (RFC 8628): a code for a person to approve in a
+   * browser, one step at a time.
+   *
+   * For a caller that runs its own loop -- a Home Assistant config flow shows
+   * the code, then polls on its own schedule. Show the person
+   * `verificationUri` and `userCode` (or `verificationUriComplete`, which
+   * carries the code), then call `pollDeviceLogin()` every `interval` seconds.
+   * `loginWithBrowser()` runs the whole loop instead.
+   */
+  async beginDeviceLogin(options: DeviceLoginOptions = {}): Promise<DeviceAuthorization> {
+    const body: JsonRecord = {};
+    if (options.scopes !== undefined) body.scopes = [...options.scopes];
+    if (options.clientName) body.client_name = options.clientName;
+    const grant = await this.request("POST", "/v1/auth/device/authorize", { body, auth: false });
+    const authorization = DeviceAuthorization.fromGrant(grant);
+    this.rememberDeviceInterval(authorization.deviceCode, authorization.interval);
+    return authorization;
+  }
+
+  /**
+   * Ask once whether a device sign-in was approved.
+   *
+   * Resolves with the token and keeps it on this client (`accessToken` and
+   * `tokenId`). Otherwise rejects with {@link ThalovantDeviceLoginPendingError}
+   * -- poll again after its `interval`, which a `slow_down` has already
+   * lengthened -- {@link ThalovantDeviceLoginExpiredError} or
+   * {@link ThalovantDeviceLoginDeniedError}, all of them `ThalovantApiError`.
+   * Any other failure is an ordinary `ThalovantApiError`. Neither the device
+   * code nor the token ever appears in an error.
+   */
+  async pollDeviceLogin(authorization: DeviceAuthorization | string): Promise<ApiToken> {
+    const deviceCode = typeof authorization === "string" ? authorization : authorization.deviceCode;
+    if (typeof authorization !== "string" && !this.deviceIntervals.has(deviceCode)) {
+      this.rememberDeviceInterval(deviceCode, authorization.interval);
+    }
+    const response = await this.deviceTokenOnce(deviceCode);
+    const token = ApiToken.fromResponse(response);
+    this.acceptToken(token);
+    return token;
+  }
+
+  /**
+   * Revoke an API token; by default the one this client signed in with.
+   *
+   * A token may always revoke itself (`DELETE /v1/auth/api-tokens/{id}`),
+   * whatever its scopes. Revoking the token in use forgets it here too, so a
+   * later call fails locally rather than with a 401.
+   */
+  async revokeApiToken(tokenId?: string): Promise<void> {
+    const target = tokenId || this.tokenId;
+    if (!target) {
+      throw new ThalovantApiError("No API token id to revoke: pass tokenId, or sign in with a device login first.");
+    }
+    await this.request("DELETE", `/v1/auth/api-tokens/${encodeURIComponent(target)}`);
+    if (target === this.tokenId) {
+      this.accessToken = undefined;
+      this.tokenId = undefined;
+    }
+  }
+
+  private acceptToken(token: ApiToken): void {
+    this.accessToken = token.accessToken;
+    this.tokenId = token.tokenId ?? undefined;
+  }
+
+  private rememberDeviceInterval(deviceCode: string, interval: number): void {
+    this.deviceIntervals.delete(deviceCode);
+    this.deviceIntervals.set(deviceCode, interval);
+    // A sign-in somebody walked away from is never answered, so its entry
+    // would otherwise stay for the life of the process.
+    while (this.deviceIntervals.size > MAX_REMEMBERED_DEVICE_CODES) {
+      const oldest = this.deviceIntervals.keys().next();
+      if (oldest.done) break;
+      this.deviceIntervals.delete(oldest.value);
+    }
+  }
+
+  /**
+   * One `POST /v1/auth/device/token`: the token answer, or why there is none.
+   *
+   * 400 `authorization_pending` and `slow_down` are pending -- a `slow_down`
+   * adds five seconds to this code's interval, for good (RFC 8628 §3.5) --
+   * `expired_token` and `access_denied` end the sign-in, and anything else is
+   * the API error it is.
+   */
+  private async deviceTokenOnce(deviceCode: string): Promise<JsonRecord> {
+    const response = await this.send("POST", "/v1/auth/device/token", {
+      body: { device_code: deviceCode },
+      auth: false,
+    });
+    const text = await response.text();
+    const parsed = parseJsonBody(text)?.value;
+    if (response.ok) {
+      if (!isRecord(parsed)) {
+        throw new ThalovantApiError("Thalovant API returned an unexpected response shape.", { statusCode: response.status });
+      }
+      this.deviceIntervals.delete(deviceCode);
+      return parsed;
+    }
+    const problem = isRecord(parsed) ? parsed : undefined;
+    const error = response.status === 400 ? problem?.error : undefined;
+    let interval = this.deviceIntervals.get(deviceCode) ?? DEFAULT_DEVICE_POLL_INTERVAL_SECONDS;
+    if (error === "slow_down") {
+      interval += DEVICE_SLOW_DOWN_STEP_MS / 1000;
+      this.rememberDeviceInterval(deviceCode, interval);
+    }
+    if (error === "slow_down" || error === "authorization_pending") {
+      throw new ThalovantDeviceLoginPendingError("The device sign-in has not been approved yet.", {
+        statusCode: response.status,
+        problem,
+        interval,
+      });
+    }
+    if (error === "access_denied") {
+      this.deviceIntervals.delete(deviceCode);
+      throw new ThalovantDeviceLoginDeniedError("The device sign-in request was denied in the browser.", {
+        statusCode: response.status,
+        problem,
+      });
+    }
+    if (error === "expired_token") {
+      this.deviceIntervals.delete(deviceCode);
+      throw new ThalovantDeviceLoginExpiredError(
+        "The device sign-in code expired before it was approved. Begin a new sign-in to get a new code.",
+        { statusCode: response.status, problem },
+      );
+    }
+    throw apiError(response.status, text);
   }
 
   /**
@@ -677,15 +1071,19 @@ export class ThalovantControlPlane {
         }
         return parsed;
       }
-      const error = response.status === 400 && isRecord(parsed) ? parsed.error : undefined;
+      const problem = isRecord(parsed) ? parsed : undefined;
+      const error = response.status === 400 ? problem?.error : undefined;
       if (error === "slow_down") {
         waitMs += DEVICE_SLOW_DOWN_STEP_MS;
       } else if (error === "access_denied") {
-        throw new ThalovantApiError("The device sign-in request was denied in the browser.", { statusCode: response.status });
+        throw new ThalovantDeviceLoginDeniedError("The device sign-in request was denied in the browser.", {
+          statusCode: response.status,
+          problem,
+        });
       } else if (error === "expired_token") {
-        throw new ThalovantApiError(
+        throw new ThalovantDeviceLoginExpiredError(
           "The device sign-in code expired before it was approved. " +
-            "Call loginWithBrowser() again to request a new code.", { statusCode: response.status },
+            "Call loginWithBrowser() again to request a new code.", { statusCode: response.status, problem },
         );
       } else if (error !== "authorization_pending") {
         throw apiError(response.status, text);
@@ -711,10 +1109,11 @@ export class ThalovantControlPlane {
     return this.request("GET", `/v1/public/hubs?${params.toString()}`, { auth: false });
   }
 
-  async getOperation(operationId: string): Promise<OperationResource> {
+  async getOperation(operationId: string, options: { signal?: AbortSignal } = {}): Promise<OperationResource> {
     return (await this.request(
       "GET",
       `/v1/operations/${encodeURIComponent(operationId)}`,
+      { signal: options.signal },
     )) as unknown as OperationResource;
   }
 
@@ -1311,9 +1710,11 @@ export class ThalovantControlPlane {
     const callerSpec = Object.fromEntries(Object.entries(options.spec ?? {}).filter(
       ([key]) => key.toLowerCase().replace(/[_-]/g, "") !== "cryptokey",
     ));
+    const connectionType = options.connectionType;
     const spec: JsonRecord = {
       ...callerSpec,
       version: String(options.spec?.version ?? "1"),
+      ...(connectionType !== undefined ? { connection_type: connectionType } : {}),
       apiKey,
       password,
       siteId,
@@ -1329,11 +1730,23 @@ export class ThalovantControlPlane {
     // Send POST /v1/clients directly (rather than via createClient) so the
     // generated apiKey/password/cryptoKey can be scrubbed from any thrown
     // error: this route echoes the sent spec on validation failures.
-    const client = await this.request("POST", "/v1/clients", {
-      body: payload,
-      headers: { "Idempotency-Key": options.idempotencyKey ?? randomUUID() },
-      redactSecrets: [apiKey, password],
-    });
+    let client: JsonRecord;
+    try {
+      client = await this.request("POST", "/v1/clients", {
+        body: payload,
+        headers: { "Idempotency-Key": options.idempotencyKey ?? randomUUID() },
+        redactSecrets: [apiKey, password],
+      });
+    } catch (error) {
+      if (connectionType !== undefined && error instanceof ThalovantApiError && refusesConnectionType(error)) {
+        throw new ThalovantUnsupportedConnectionTypeError(
+          `The Thalovant API cannot create a ${JSON.stringify(connectionType)} connection yet.`,
+          { statusCode: error.statusCode, problem: error.problem, cause: error },
+        );
+      }
+      throw error;
+    }
+    if (connectionType !== undefined) await this.requireConnectionType(client, connectionType);
     const protocols = HubProtocolSettings.from(hubResource);
     const endpoints = HubDataPlaneEndpoints.fromHub(hubResource);
     const endpoint = selectDataPlaneEndpoint(
@@ -1355,12 +1768,17 @@ export class ThalovantControlPlane {
       data_plane_endpoints: endpoints.asObject(),
       protocols: protocols.asObject(),
     });
+    const clientSpec = isRecord(client.spec) ? client.spec : {};
+    const operation = operationOrUndefined(client.operation);
     return {
       identity,
       hub: hubResource,
       client,
       endpoint,
       selectedProtocol: endpoint?.protocol,
+      clientId: typeof client.id === "string" && client.id ? client.id : undefined,
+      connectionType: typeof clientSpec.connection_type === "string" ? clientSpec.connection_type : undefined,
+      operation,
       asObject(resultOptions: { includeSecrets?: boolean } = {}) {
         const includeSecrets = resultOptions.includeSecrets ?? false;
         return {
@@ -1373,9 +1791,151 @@ export class ThalovantControlPlane {
           client: includeSecrets ? client : withoutSecretKeys(client),
           selectedProtocol: endpoint?.protocol,
           selectedEndpoint: endpoint?.endpoint,
+          operation: operation ?? null,
         };
       },
     };
+  }
+
+  /** Delete and refuse a connection the API did not make of the kind asked. */
+  private async requireConnectionType(client: JsonRecord, connectionType: string): Promise<void> {
+    const echoed = isRecord(client.spec) ? client.spec.connection_type : undefined;
+    if (echoed === connectionType) return;
+    const clientId = client.id;
+    let note = "";
+    if (typeof clientId === "string" && clientId) {
+      try {
+        await this.deleteClient(clientId, { etag: typeof client.etag === "string" ? client.etag : undefined });
+      } catch (error) {
+        if (!(error instanceof ThalovantApiError)) throw error;
+        note = ` Deleting the connection it made instead (${clientId}) failed; remove it in the dashboard.`;
+      }
+    }
+    const answered = typeof echoed === "string" && echoed ? JSON.stringify(echoed) : "no type";
+    throw new ThalovantUnsupportedConnectionTypeError(
+      `The Thalovant API did not make a ${JSON.stringify(connectionType)} connection (it answered ${answered}).${note}`,
+    );
+  }
+
+  /** Fetch one client (a hub connection), with the `etag` a change needs. */
+  getClient(clientId: string): Promise<JsonRecord> {
+    return this.request("GET", `/v1/clients/${encodeURIComponent(clientId)}`);
+  }
+
+  /** List the clients (hub connections) visible to the caller. */
+  listClients(options: ClientListOptions = {}): Promise<JsonRecord> {
+    const params = new URLSearchParams({ limit: String(options.limit ?? 100) });
+    setStringParam(params, "hub_id", options.hubId);
+    setStringParam(params, "cursor", options.cursor);
+    setStringParam(params, "owner_id", options.ownerId);
+    if (options.includeSpec === false) params.set("include_spec", "false");
+    return this.request("GET", `/v1/clients?${params.toString()}`);
+  }
+
+  /**
+   * Delete a client (a hub connection).
+   *
+   * The API wants the client's current `etag` as `If-Match`. Without one this
+   * reads it first, and if another writer changed the client in between (HTTP
+   * 412) reads it once more and retries. A client already gone (HTTP 404, on
+   * either request) counts as deleted.
+   */
+  async deleteClient(clientId: string, options: ClientDeleteOptions = {}): Promise<void> {
+    const path = `/v1/clients/${encodeURIComponent(clientId)}`;
+    let etag = options.etag ?? undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        if (etag === undefined) {
+          const current = await this.getClient(clientId);
+          if (typeof current.etag !== "string" || !current.etag) {
+            throw new ThalovantApiError("Thalovant API client resource is missing etag.");
+          }
+          etag = current.etag;
+        }
+        await this.request("DELETE", path, { headers: { "If-Match": etag } });
+        return;
+      } catch (error) {
+        if (!(error instanceof ThalovantApiError)) throw error;
+        if (error.statusCode === 404) return;
+        if (error.statusCode !== 412 || attempt === 1) throw error;
+        etag = undefined;
+      }
+    }
+  }
+
+  /**
+   * Wait until the hub has admitted a new connection, about ninety seconds.
+   *
+   * `connection` is what `createClientIdentity()` returned, or its `operation`
+   * (the resource, its id, or its `links.self`). Follows the operation with
+   * `GET /v1/operations/{id}`: `ready` resolves; `failed` and `timed_out`
+   * reject with {@link ThalovantAdmissionFailedError} carrying the operation's
+   * `error_code`; `requested`, `committed` and `applied` keep polling. No
+   * operation at all, or one the API no longer tracks (HTTP 404), resolves at
+   * once, and a 5xx is ridden out. When `timeoutMs` passes first it rejects
+   * with {@link ThalovantAdmissionTimeoutError}, which is both a connection
+   * error and a timeout: the connection may still be admitted later. A link
+   * on another origin than the API's is refused and never fetched, because
+   * the token goes nowhere else.
+   */
+  async waitForAdmission(
+    connection: BootstrapIdentityResult | OperationResource | JsonRecord | string | null | undefined,
+    options: AdmissionWaitOptions = {},
+  ): Promise<void> {
+    const signal = options.signal;
+    if (signal?.aborted) throw abortError();
+    const operation = isBootstrapResult(connection) ? connection.operation : connection;
+    if (operation === undefined || operation === null) return;
+    const link = typeof operation === "string"
+      ? operation
+      : isRecord(operation) && isRecord(operation.links) ? operation.links.self : undefined;
+    if (typeof link === "string" && /^[a-z][a-z0-9+.-]*:/i.test(link.trim())) {
+      let foreign = true;
+      try {
+        foreign = new URL(link.trim()).origin !== new URL(this.apiUrl).origin;
+      } catch {
+        foreign = true;
+      }
+      if (foreign) {
+        // The bearer token goes to the API's own origin and nowhere else.
+        throw new ThalovantApiError("The admission operation points outside the Thalovant API.");
+      }
+    }
+    const operationId = admissionOperationId(operation);
+    const timeoutMs = options.timeoutMs ?? DEFAULT_ADMISSION_TIMEOUT_MS;
+    const intervalMs = options.pollIntervalMs ?? DEFAULT_OPERATION_POLL_INTERVAL_MS;
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || !Number.isFinite(intervalMs) || intervalMs < 0) {
+      throw new RangeError("Admission waits need finite, non-negative durations.");
+    }
+    const deadline = performance.now() + timeoutMs;
+    for (;;) {
+      let current: OperationResource | undefined;
+      try {
+        current = await this.getOperation(operationId, { signal });
+      } catch (error) {
+        if (signal?.aborted) throw abortError();
+        if (!(error instanceof ThalovantApiError)) throw error;
+        // No longer tracked: the API keeps an operation only so long, and one
+        // it has forgotten carried its connection through long ago.
+        if (error.statusCode === 404) return;
+        if (error.statusCode === undefined || error.statusCode < 500) throw error;
+      }
+      if (current?.status === "ready") return;
+      if (current && (current.status === "failed" || current.status === "timed_out")) {
+        const said = current.error_message || current.error_code || "no detail";
+        throw new ThalovantAdmissionFailedError(
+          `The hub could not admit the connection: operation ${current.id ?? operationId} ended with status ${current.status}: ${said}`,
+          { errorCode: typeof current.error_code === "string" && current.error_code ? current.error_code : undefined },
+        );
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) {
+        throw new ThalovantAdmissionTimeoutError(
+          `The hub did not admit the connection within ${timeoutMs}ms; it may still.`,
+        );
+      }
+      await abortableSleep(Math.min(intervalMs, remaining), signal);
+    }
   }
 
   requireRuntimeProtocol(result: BootstrapIdentityResult, protocol?: HubProtocol): SelectedHubEndpoint {
@@ -1401,6 +1961,7 @@ export class ThalovantControlPlane {
       auth?: boolean;
       /** SDK-generated secrets sent in this request, scrubbed from any error. */
       redactSecrets?: ReadonlyArray<string | undefined>;
+      signal?: AbortSignal;
     } = {},
   ): Promise<JsonRecord> {
     const response = await this.send(method, path, options);
@@ -1423,7 +1984,7 @@ export class ThalovantControlPlane {
   private async send(
     method: string,
     path: string,
-    options: { body?: JsonRecord; headers?: Record<string, string>; auth?: boolean } = {},
+    options: { body?: JsonRecord; headers?: Record<string, string>; auth?: boolean; signal?: AbortSignal } = {},
   ): Promise<Response> {
     const headers: Record<string, string> = {
       accept: "application/json",
@@ -1450,16 +2011,19 @@ export class ThalovantControlPlane {
     if ((options.body || headers.authorization) && url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
       throw new ThalovantApiError("Credential-bearing control-plane requests require HTTPS (except explicit loopback HTTP).");
     }
+    const send = this.fetchImpl ?? globalThis.fetch;
     try {
-      return await fetch(url, {
+      return await send(url, {
         method,
         headers,
         body: options.body ? JSON.stringify(options.body) : undefined,
         // 307/308 preserve password-login bodies even when fetch strips bearer
         // headers on a cross-origin redirect. Never follow API redirects.
         redirect: "error",
+        ...(options.signal ? { signal: options.signal } : {}),
       });
     } catch {
+      if (options.signal?.aborted) throw abortError();
       // Network error causes can include URLs, queries or credentials.
       throw new ThalovantApiError("Could not reach the Thalovant API, or the endpoint redirected the request.");
     }
@@ -1581,9 +2145,114 @@ function isRecord(value: unknown): value is JsonRecord {
 function apiError(status: number, bodyText: string, redactSecrets?: ReadonlyArray<string | undefined>): ThalovantApiError {
   const safeBody = redactSecrets?.length ? redactSecretsInText(bodyText, redactSecrets) : bodyText;
   const body = parseJsonBody(safeBody);
-  return new ThalovantApiError(apiErrorMessage(status, safeBody, body), {
-    statusCode: status,
-    problem: body && isRecord(body.value) ? body.value : undefined,
+  const message = apiErrorMessage(status, safeBody, body);
+  const options = { statusCode: status, problem: body && isRecord(body.value) ? body.value : undefined };
+  const error = new ThalovantApiError(message, options);
+  // The class says what kind of refusal it is; every one is a ThalovantApiError.
+  if (status === 401 || status === 423 || (status === 403 && error.detail === "Insufficient scopes")) {
+    // A token that is unknown, expired or revoked; a locked account; or a
+    // token without the scope: signing in again is the way out of each.
+    return new ThalovantAuthError(message, options);
+  }
+  if (status === 402 || (status === 403 && error.code === "plan_limit")) {
+    return new ThalovantPlanError(message, options);
+  }
+  if (status === 409 && error.code === "home_assistant_already_linked") {
+    return new ThalovantAlreadyLinkedError(message, { ...options, clientId: linkedClientId(error.problem) });
+  }
+  return error;
+}
+
+/** The connection that holds a link, as a 409 names it. */
+function linkedClientId(problem: JsonRecord | undefined): string | undefined {
+  if (!problem) return undefined;
+  const nested = isRecord(problem.detail) ? problem.detail : {};
+  for (const source of [problem, nested]) {
+    for (const key of ["client_id", "existing_client_id", "connection_id"]) {
+      const value = source[key];
+      if (typeof value === "string" && value) return value;
+    }
+  }
+  return undefined;
+}
+
+/** A 422 whose problem is about `connection_type`. */
+function refusesConnectionType(error: ThalovantApiError): boolean {
+  if (error.statusCode !== 422) return false;
+  const text = error.problem ? JSON.stringify(error.problem) : error.message;
+  return text.includes("connection_type") || text.includes("connectionType");
+}
+
+/** The operation a create answered with, when it is one. */
+function operationOrUndefined(value: unknown): OperationResource | undefined {
+  return isRecord(value) && typeof value.id === "string" && value.id ? (value as unknown as OperationResource) : undefined;
+}
+
+function isBootstrapResult(value: unknown): value is BootstrapIdentityResult {
+  return isRecord(value) && value.identity instanceof ThalovantIdentity && isRecord(value.client);
+}
+
+/** The id of the operation to wait on: its `id`, or the last segment of its `links.self`. */
+function admissionOperationId(operation: OperationResource | JsonRecord | string): string {
+  let text: string;
+  if (typeof operation === "string") {
+    text = operation;
+  } else {
+    if (typeof operation.id === "string" && operation.id) return operation.id;
+    const link = isRecord(operation.links) ? operation.links.self : undefined;
+    text = typeof link === "string" ? link : "";
+  }
+  text = text.trim();
+  const marker = "/v1/operations/";
+  const at = text.lastIndexOf(marker);
+  if (at >= 0) text = text.slice(at + marker.length).split(/[?#]/, 1)[0].replace(/^\/+|\/+$/g, "");
+  if (!text) throw new ThalovantApiError("An operation needs an id to wait on.");
+  // Decoded because getOperation() encodes it again; a segment that is not
+  // valid percent-encoding is taken as it is.
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * Throw unless `value` is safe to open in a browser: http(s), a host, and no
+ * credentials or control characters anywhere in it.
+ */
+function assertSafeBrowserUrl(value: unknown): void {
+  try {
+    const authority = typeof value === "string" ? value.match(/^https?:\/\/([^/?#]*)/i)?.[1] : undefined;
+    if (!authority || authority.includes("@") || /[\s\u0000-\u0020\u007f-\u009f]/u.test(String(value))) throw new Error("unsafe URL");
+    const parsed = typeof value === "string" ? new URL(value) : undefined;
+    if (!parsed || !["http:", "https:"].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
+      throw new Error("unsafe URL");
+    }
+  } catch {
+    throw new ThalovantApiError("Device verification URLs must use HTTP or HTTPS without embedded credentials.");
+  }
+}
+
+function abortError(): Error {
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
+/** Wait `ms`, or reject with an `AbortError` the moment `signal` aborts. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

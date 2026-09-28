@@ -25,6 +25,7 @@ import {
   mergeContext,
   newRequestId,
   newSessionId,
+  replyContextFor,
   type ThalovantBinary,
   ThalovantEvent,
   ThalovantReply,
@@ -353,6 +354,27 @@ export class ThalovantClient {
     await this.connect();
     this.recordUntrackedSend();
     await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
+  }
+
+  /**
+   * Answer a message the hub sent, back along the route it came.
+   *
+   * The reply carries a deep copy of the request's context -- its session, its
+   * request id, everything a skill waiting on it matches -- with `source` and
+   * `destination` turned round (OVOS-MSG-1 §5.2; see {@link replyContext}), so
+   * the hub routes it to the peer that asked. `event` is the delivered
+   * {@link ThalovantEvent} or a bus payload `{ type, data, context }`;
+   * `context` entries are laid over the request's before the route is turned.
+   */
+  async reply(
+    event: ThalovantEvent | BusPayload | { context?: EventContext | null },
+    msgType: string,
+    data: Record<string, unknown> = {},
+    context?: EventContext,
+  ): Promise<void> {
+    const type = typeof msgType === "string" ? msgType.trim() : "";
+    if (!type) throw new TypeError("A reply needs a non-empty message type.");
+    await this.emit(type, data, replyContextFor(event, context));
   }
 
   async sendUtterance(
