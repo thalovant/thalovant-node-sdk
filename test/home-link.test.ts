@@ -500,10 +500,14 @@ test("plain speech decodes the portable set, and leaves everything else as writt
   assert.equal(plainSpeech("5 < 6 and 7 > 3"), "5 < 6 and 7 > 3");
   assert.equal(plainSpeech("<!-- never closed"), "<!-- never closed");
   assert.equal(plainSpeech("a</b>c<i x=\"1>2\">d</i>"), "acd");
-  // Many unclosed tags do not take long.
+  // Many unclosed tags do not take long, even when a closing ">" comes last
+  // inside a quote that never ends, and so do many unclosed comments.
   const started = performance.now();
   plainSpeech("<a ".repeat(20_000));
-  assert.ok(performance.now() - started < 2_000);
+  assert.equal(plainSpeech(`${"<a".repeat(50_000)}">`), `${"<a".repeat(50_000)}">`);
+  plainSpeech(`${"<!--".repeat(50_000)}x`);
+  plainSpeech(`<a${" ".repeat(50_000)}`);
+  assert.ok(performance.now() - started < 1_000, `${performance.now() - started}ms`);
 });
 
 test("an answer is held to the contract, whatever shape the handler gave it", () => {
@@ -1035,4 +1039,94 @@ test("a reply withdrawn by its own signal keeps the link, held or dialled for it
   assert.equal(state.closed, 0);
   assert.equal(dials, 1);
   await session.close();
+});
+
+test("a reply withdrawn while it waits behind another frame is never sent, and the link is untouched", async (t) => {
+  const received: string[] = [];
+  const identity = await hubServer(t, (socket) => {
+    const hub = createV3HubPeer("secret", (data, binary) => socket.send(data, { binary }));
+    socket.on("message", (data: Buffer, isBinary: boolean) => {
+      hub.onMessage(isBinary ? new Uint8Array(data) : data.toString());
+      received.splice(0, received.length, ...hub.received);
+    });
+    hub.start();
+  });
+  // Holds the first application frame on the wire until released.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let hold = false;
+  class HeldTransport extends HiveMindWSSTransport {
+    protected override async sendNoiseFrame(frame: Uint8Array): Promise<void> {
+      if (hold) {
+        hold = false;
+        await held;
+      }
+      return super.sendNoiseFrame(frame);
+    }
+  }
+  const transport = new HeldTransport(identity, { noiseStateDir: await noiseDir(t) });
+  t.after(() => transport.disconnect());
+  await transport.connect(8000);
+  hold = true;
+  const first = transport.emitBus("first", {}, {});
+  const withdraw = new AbortController();
+  const queued = transport.emitBus("queued", {}, {}, { signal: withdraw.signal });
+  withdraw.abort();
+  release();
+  await first;
+  await assert.rejects(queued, { name: "AbortError" });
+  await transport.emitBus("after", {}, {});
+  await waitUntil(() => received.some((frame) => frame.includes('"after"')));
+  assert.ok(!received.some((frame) => frame.includes('"queued"')));
+  assert.ok(transport.healthcheck().handshakeComplete, "the link is still up");
+});
+
+test("a 2xx device-token answer that is not a JSON object has no status, as one without a token has none", async () => {
+  await serving(() => ({ status: 200, text: "[]" }), async (url) => {
+    const api = new ThalovantControlPlane(url);
+    await assert.rejects(api.pollDeviceLogin("dc"), (error: unknown) => {
+      assert.ok(error instanceof ThalovantApiError);
+      assert.equal(error.statusCode, undefined);
+      return true;
+    });
+  });
+});
+
+test("a revoke does not forget a token a sign-in installed while it was on its way", async () => {
+  let api!: ThalovantControlPlane;
+  await serving(({ method }) => {
+    if (method === "DELETE") {
+      // A sign-in lands before the revoke's answer does.
+      api.accessToken = "tvt_newer";
+      api.tokenId = "t-newer";
+      return { status: 204 };
+    }
+    return { status: 200, body: { access_token: "tvt_old", token_id: "t-old" } };
+  }, async (url) => {
+    api = new ThalovantControlPlane(url);
+    await api.pollDeviceLogin("dc");
+    await api.revokeApiToken();
+    assert.equal(api.accessToken, "tvt_newer");
+    assert.equal(api.tokenId, "t-newer");
+  });
+});
+
+test("a hub that closes between the handshake and connect() returning is reported at once", async (t) => {
+  const identity = await hubServer(t, (socket) => {
+    const hub = createV3HubPeer("secret", (data, binary) => socket.send(data, { binary }));
+    socket.on("message", (data: Buffer, isBinary: boolean) => {
+      hub.onMessage(isBinary ? new Uint8Array(data) : data.toString());
+      if (hub.received.length === 1) socket.close(1008);
+    });
+    hub.start();
+  });
+  const client = new ThalovantClient(identity, { protocol: "wss", noiseStateDir: await noiseDir(t) });
+  t.after(() => client.close());
+  const started = performance.now();
+  // Either connect() saw the link up first, or it reports the refusal at once:
+  // never a wait until its whole budget.
+  await client.connect(15_000).catch((error: unknown) => {
+    assert.ok(error instanceof ThalovantHubRefusedError, String(error));
+  });
+  assert.ok(performance.now() - started < 10_000);
 });

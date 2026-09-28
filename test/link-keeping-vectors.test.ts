@@ -35,6 +35,7 @@ import {
   type LinkOutcome,
 } from "../src/index.js";
 import { hexToBytes } from "../src/bytes.js";
+import { HiveMindHttpTransport } from "../src/transport-core.js";
 import { record } from "./conformance-record.js";
 import { createV3HubPeer } from "./v3-hub.js";
 
@@ -279,3 +280,71 @@ test("a hub that closes between its HELLO and its offer is refusing, not droppin
   });
   assert.ok((await attempt(identity, noiseStateDir)) instanceof ThalovantHubRefusedError);
 });
+
+/**
+ * A HiveMind HTTP listener over a mocked fetch: each /connect starts a fresh
+ * responder, and a handshake message the hub cannot authenticate is answered
+ * 403, which is how the HTTP listener turns credentials away.
+ */
+function httpHub() {
+  const hub = { password: "the-right-password", staticKey: Uint8Array.from(randomBytes(32)), patterns: [] as string[] };
+  let clientKey: Uint8Array | undefined;
+  let peer: ReturnType<typeof createV3HubPeer> | undefined;
+  let clear: string[] = [];
+  let binary: string[] = [];
+  const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+  const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/connect") {
+      clear = [];
+      binary = [];
+      peer = createV3HubPeer(hub.password, (data, encrypted) => {
+        if (encrypted) binary.push(Buffer.from(data as Uint8Array).toString("base64"));
+        else clear.push(String(data));
+      }, { staticPrivateKey: hub.staticKey, pinnedClientKey: clientKey });
+      peer.start();
+      return reply({ status: "Connected" });
+    }
+    if (path === "/disconnect") return reply({ status: "Disconnected" });
+    if (path === "/get_messages") return reply({ messages: clear.splice(0) });
+    if (path === "/get_binary_messages") return reply({ b64_messages: binary.splice(0) });
+    const form = new URLSearchParams(String(init?.body));
+    const message = form.get("message")!;
+    try {
+      if (form.get("binary") === "1") peer!.onMessage(new Uint8Array(Buffer.from(message, "base64")));
+      else {
+        const pattern = (JSON.parse(message) as { payload?: { noise?: { pattern?: string } } }).payload?.noise?.pattern;
+        if (pattern) hub.patterns.push(pattern.slice(0, 2));
+        peer!.onMessage(message);
+      }
+    } catch {
+      return reply({ detail: "Forbidden" }, 403);
+    }
+    if (peer!.clientStaticKey && !clientKey) clientKey = hexToBytes(peer!.clientStaticKey);
+    return reply({ status: "message sent" });
+  };
+  return { hub, fetch };
+}
+
+for (const situation of ["password_changed_since_pinning", "hub_key_changed"] as const) {
+  test(`HTTPS polling follows a refused KK with XX at once: ${situation}`, async (t) => {
+    const { hub, fetch } = httpHub();
+    t.mock.method(globalThis, "fetch", fetch);
+    const noiseStateDir = await mkdtemp(join(tmpdir(), "thalovant-link-keeping-http-"));
+    t.after(() => rm(noiseStateDir, { recursive: true, force: true }));
+    const identity = new ThalovantIdentity({
+      access_key: "access", password: "the-right-password", site_id: "ha",
+      default_master: "https://hub.example.invalid", data_plane_endpoints: { https: "https://hub.example.invalid" },
+    });
+    const first = new HiveMindHttpTransport(identity, { noiseStateDir, pollIntervalMs: 5 });
+    await first.connect(10_000);
+    await first.disconnect();
+    if (situation === "password_changed_since_pinning") hub.password = "the-password-now";
+    else hub.staticKey = Uint8Array.from(randomBytes(32));
+    const again = new HiveMindHttpTransport(identity, { noiseStateDir, pollIntervalMs: 5 });
+    t.after(() => again.disconnect());
+    const error = await again.connect(10_000).then(() => undefined, (caught: unknown) => caught);
+    assert.equal(outcomeOf(error), situation === "hub_key_changed" ? "key_changed" : "refused", String(error));
+    assert.deepEqual(hub.patterns, ["XX", "KK", "XX"]);
+  });
+}

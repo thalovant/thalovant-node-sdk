@@ -12,7 +12,13 @@ import {
   EVENT_UTTERANCE_HANDLED,
 } from "./constants.js";
 import { failureError, refusalBelongsToAsk, UNTRACKED_UTTERANCE_GRACE_MS } from "./refusal.js";
-import { ThalovantConnectionError, ThalovantRuntimeError, ThalovantTimeoutError, ThalovantUnsupportedProtocolError } from "./errors.js";
+import {
+  ThalovantConnectionError,
+  ThalovantHubRefusedError,
+  ThalovantRuntimeError,
+  ThalovantTimeoutError,
+  ThalovantUnsupportedProtocolError,
+} from "./errors.js";
 import {
   contextWithCorrelation,
   carryConversation,
@@ -188,6 +194,14 @@ export class ThalovantClient {
             resolve();
             return;
           }
+          const closed = this.closedWhileConnecting();
+          if (closed) {
+            // The hub closed the link between the end of the handshake and
+            // this connect returning -- which is how a hub that does not know
+            // this key refuses it. Not a link to wait on until the deadline.
+            stop(closed);
+            return;
+          }
           await sleep(Math.min(20, Math.max(1, deadline - performance.now())));
         }
       } catch (error) {
@@ -205,6 +219,23 @@ export class ThalovantClient {
     });
     this.lifecycle = operation.catch(() => undefined);
     return result;
+  }
+
+  /** Why the link a connect just opened is already gone, or undefined while it is up. */
+  private closedWhileConnecting(): ThalovantConnectionError | undefined {
+    let info: TransportConnectionInfo;
+    try {
+      info = this.connectionInfo();
+    } catch {
+      return undefined;
+    }
+    if (info.phase !== "closed" && info.phase !== "error") return undefined;
+    if (info.refused) {
+      return new ThalovantHubRefusedError(
+        "The hub closed the link right after the handshake: it does not accept these credentials, or not yet.",
+      );
+    }
+    return new ThalovantConnectionError("The hub closed the link right after the handshake.");
   }
 
   async connectWithInfo(timeoutMs?: number): Promise<TransportConnectionInfo> {

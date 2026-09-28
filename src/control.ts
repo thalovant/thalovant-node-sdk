@@ -987,7 +987,10 @@ export class ThalovantControlPlane {
       // after a revoke from the dashboard, succeeds rather than failing.
       if (!(own && error instanceof ThalovantApiError && error.statusCode === 401)) throw error;
     }
-    if (own) {
+    // Forget the token only if it is still the one revoked: a sign-in that
+    // finished while the revoke was on its way installed another, and that
+    // one is alive.
+    if (own && this.tokenId === target) {
       this.accessToken = undefined;
       this.tokenId = undefined;
       this.revokedOwn = true;
@@ -1030,7 +1033,9 @@ export class ThalovantControlPlane {
     const parsed = parseJsonBody(text)?.value;
     if (response.ok) {
       if (!isRecord(parsed)) {
-        throw new ThalovantApiError("Thalovant API returned an unexpected response shape.", { statusCode: response.status });
+        // No status, like a 2xx that carries no token: the API did not
+        // refuse, the SDK could not use its answer.
+        throw new ThalovantApiError("Thalovant API returned an unexpected response shape.");
       }
       this.deviceIntervals.delete(deviceCode);
       return parsed;
@@ -1095,7 +1100,8 @@ export class ThalovantControlPlane {
       }
       if (response.ok) {
         if (!isRecord(parsed)) {
-          throw new ThalovantApiError("Thalovant API returned an unexpected response shape.", { statusCode: response.status });
+          // No status, as for a 2xx that carries no token.
+          throw new ThalovantApiError("Thalovant API returned an unexpected response shape.");
         }
         return parsed;
       }

@@ -231,7 +231,13 @@ export class HiveMindHttpTransport extends EventTarget {
     try {
       await attempt(timeoutMs);
     } catch (error) {
+      // Any refusal during the KK exchange -- its answer failing here, the hub
+      // closing with a refusal code (WSS), a request answered 401 or 403
+      // (HTTP) -- is followed by XX. MQTT has only the first: a broker relays
+      // no refusal of its own. A KK attempt that ran out of time is not
+      // retried: the caller's budget is spent.
       if (!(error instanceof ThalovantHubRefusedError) || this.attemptPattern !== NOISE_PATTERN_KK) throw error;
+      this.refusedDuringHandshake();
       this.forceXx = true;
       try {
         await attempt(Math.max(1, deadline - Date.now()));
@@ -386,7 +392,10 @@ export class HiveMindHttpTransport extends EventTarget {
       });
       this.assertConnection(epoch);
       if (!response.ok) {
-        if (path === "/connect" && (response.status === 401 || response.status === 403)) {
+        // The hub's HTTP listener turning the credentials away, on any request
+        // -- the admission or one during the Noise exchange -- as a WebSocket
+        // upgrade answered 401 or 403 does.
+        if (response.status === 401 || response.status === 403) {
           throw new ThalovantHubRefusedError(`The hub refused this connection's credentials (HTTP ${response.status}).`);
         }
         throw new ThalovantConnectionError(`HiveMind HTTP request failed (${response.status}).`);
@@ -667,10 +676,10 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   /**
-   * The hub closed during this client's handshake with a refusal code. After
-   * a KK first message that is what a hub does when it cannot authenticate it
-   * -- because the password changed, or the hub's own key did -- so the PSK
-   * may be stale; the XX attempt that follows derives it afresh.
+   * The hub refused during this client's KK handshake. That is what a hub
+   * does when it cannot authenticate a KK first message -- because the
+   * password changed, or the hub's own key did -- so the PSK may be stale;
+   * the XX attempt that follows derives it afresh.
    */
   protected refusedDuringHandshake(): void {
     if (this.attemptPattern === NOISE_PATTERN_KK && this.nodeId) void this.forgetPsk(this.nodeId);
@@ -912,7 +921,6 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
         const suffix = reason ? `: ${reason}` : "";
         // Any step of the handshake, the hub's HELLO and its offer included.
         const refused = closeRefuses(code);
-        if (refused) this.refusedDuringHandshake();
         this.rejectHandshake(
           refused
             ? new ThalovantHubRefusedError(`The hub refused this connection's credentials (${code}).`)
