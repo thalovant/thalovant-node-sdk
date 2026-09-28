@@ -195,7 +195,9 @@ export function mergeContext(base?: EventContext, extra?: EventContext): EventCo
  * whoever sent the request (`destination` becomes the old `source`) and comes
  * from whoever it was sent to (`source` becomes the old `destination`, its
  * first entry when that is a list). A hub routes the answer back to the peer
- * that asked this way, across bridges and NAT. A context with no routing keeps
+ * that asked this way, across bridges and NAT. A context with a destination
+ * and no source gets a reply with no destination at all: keeping the old one
+ * would address the reply to its own sender. A context with no routing keeps
  * none; the argument is never changed.
  */
 export function replyContext(context: EventContext | Record<string, unknown> | null | undefined): EventContext {
@@ -206,6 +208,7 @@ export function replyContext(context: EventContext | Record<string, unknown> | n
     swapped.source = Array.isArray(destination) && destination.length ? destination[0] : destination;
   }
   if (source !== undefined && source !== null) swapped.destination = source;
+  else if (destination !== undefined && destination !== null) delete swapped.destination;
   return swapped;
 }
 

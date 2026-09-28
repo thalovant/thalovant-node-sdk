@@ -8,8 +8,61 @@ export interface ThalovantDisplayItem {
   silent?: boolean;
 }
 
+/**
+ * Remove markup: tags, comments and processing instructions. Only real markup
+ * goes, so "5 < 6 and 7 > 3" survives whole; entities are left as they are.
+ *
+ * A tag is `<` or `</` immediately followed by an ASCII letter, then
+ * everything up to the next `>` that is not inside a quoted attribute value.
+ * A comment is `<!--` to `-->`, a processing instruction `<?` to `?>`. Any
+ * other `<` is text, and so is a construct that never closes.
+ */
 export function stripSsml(text: string): string {
-  return text.replace(/<{1}\/?[^>]*>{1}/g, "");
+  const lastClose = text.lastIndexOf(">");
+  let out = "";
+  let index = 0;
+  while (index < text.length) {
+    const at = text.indexOf("<", index);
+    if (at < 0 || at > lastClose) {
+      out += text.slice(index);
+      break;
+    }
+    out += text.slice(index, at);
+    const end = markupEnd(text, at);
+    if (end < 0) {
+      out += "<";
+      index = at + 1;
+    } else {
+      index = end;
+    }
+  }
+  return out;
+}
+
+/** Where the markup opening at `at` ends (just past it), or -1 when `<` there is text. */
+function markupEnd(text: string, at: number): number {
+  if (text.startsWith("<!--", at)) {
+    const close = text.indexOf("-->", at + 4);
+    return close < 0 ? -1 : close + 3;
+  }
+  if (text.startsWith("<?", at)) {
+    const close = text.indexOf("?>", at + 2);
+    return close < 0 ? -1 : close + 2;
+  }
+  const name = text[at + 1] === "/" ? at + 2 : at + 1;
+  if (!/[A-Za-z]/.test(text[name] ?? "")) return -1;
+  let quote = "";
+  for (let index = name + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote) {
+      if (char === quote) quote = "";
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ">") {
+      return index + 1;
+    }
+  }
+  return -1;
 }
 
 export function richMediaFromData(data: Record<string, unknown>): Record<string, unknown> {

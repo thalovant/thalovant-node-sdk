@@ -6,10 +6,16 @@
  * Assistant's conversation agent and answers with `thalovant.home.response`.
  * The rules every SDK keeps (`home-link-vectors.json`):
  *
- * - every request gets exactly one answer, within the hub's 10 seconds;
+ * - every request gets at most one answer, and never after the hub's 10
+ *   seconds, counted from its arrival: the handler's time (9 s by default)
+ *   and the reply's own sending both come out of that bound, and a reply that
+ *   could only arrive late is not sent at all;
  * - the answer is a reply (OVOS-MSG-1 §5.2), so it goes back the way the
  *   request came;
- * - `speech` is plain text, never markup;
+ * - `speech` is plain text, never markup: tags, comments and processing
+ *   instructions removed; numeric character references, the five XML
+ *   entities and `&nbsp;` decoded and nothing else; runs of Unicode
+ *   White_Space collapsed to one space;
  * - `response_type` is `action_done`, `query_answer` or `error`, and an `error`
  *   names one `error_code`. When the SDK has to answer for a handler -- it
  *   threw, it was too slow, it answered outside the contract -- the speech is
@@ -18,6 +24,7 @@
  */
 import type { EventHandler, ThalovantSubscription } from "./client.js";
 import type { BusPayload, EventContext } from "./events.js";
+import type { SendOptions } from "./transport.js";
 import { ThalovantEvent } from "./events.js";
 import { stripSsml } from "./rich.js";
 
@@ -100,11 +107,16 @@ export type HomeHandler = (
 
 /** Anything that can answer a message along its route: a `ThalovantClient` or a `HubSession`. */
 export interface HomeReplier {
+  /**
+   * `options.signal` aborts when the hub has given up on the request: a reply
+   * still queued then is withdrawn rather than sent late.
+   */
   reply(
     event: ThalovantEvent,
     msgType: string,
     data: Record<string, unknown>,
     context?: EventContext,
+    options?: SendOptions,
   ): Promise<unknown>;
 }
 
@@ -119,6 +131,11 @@ export interface HomeAnswerOptions {
    * `timeout` for it. Default 9000, a second inside the hub's 10 s.
    */
   timeoutMs?: number;
+  /**
+   * The hub's own bound, in milliseconds from the request's arrival: the
+   * handler and the reply's sending both fit inside it. Default 10000.
+   */
+  hubTimeoutMs?: number;
 }
 
 /** Read a request from a delivered event, or from a bus payload `{ type, data, context }`. */
@@ -174,21 +191,65 @@ export function homeResponse(request: HomeRequest, answer: HomeHandlerResult): H
 /**
  * Answer one request: run `handler`, then reply whatever happened.
  *
- * The handler is bounded by `timeoutMs`. One that throws is answered
+ * Everything happens inside the hub's bound (`hubTimeoutMs`, 10 s), counted
+ * from the call: the hub gives up on a request after that, and an answer it
+ * has given up on only confuses the next one. The handler gets `timeoutMs` or
+ * what is left of the bound, whichever is less. One that throws is answered
  * `failed_to_handle`, one that does not answer in time `timeout`, each with
- * empty speech. Resolves with the payload sent; rejects only when the reply
- * itself could not be sent.
+ * empty speech -- at the deadline, whether or not the handler returns. The
+ * reply gets whatever the handler left: it is never started after the bound,
+ * and one still queued when the bound passes is withdrawn.
+ *
+ * Resolves with the payload sent, or undefined when there was no time left to
+ * send it; rejects only when the reply itself could not be sent.
  */
 export async function answerHomeRequest(
   link: HomeReplier,
   event: ThalovantEvent | BusPayload,
   handler: HomeHandler,
   options: HomeAnswerOptions = {},
-): Promise<HomeResponsePayload> {
-  const request = homeRequestFromEvent(event);
-  const payload = await answerFor(request, handler, handlerTimeout(options.timeoutMs), new AbortController());
-  await link.reply(request.event, HOME_RESPONSE, payload);
-  return payload;
+): Promise<HomeResponsePayload | undefined> {
+  const arrived = performance.now();
+  return answerWithin(link, homeRequestFromEvent(event), handler, handlerTimeout(options.timeoutMs), {
+    arrived,
+    hubTimeoutMs: hubTimeout(options.hubTimeoutMs),
+    controller: new AbortController(),
+  });
+}
+
+/** Run the handler and send its answer, both inside the hub's bound from `arrived`. */
+async function answerWithin(
+  link: HomeReplier,
+  request: HomeRequest,
+  handler: HomeHandler,
+  timeoutMs: number,
+  bound: { arrived: number; hubTimeoutMs: number; controller: AbortController; stopped?: () => boolean },
+): Promise<HomeResponsePayload | undefined> {
+  const remaining = (): number => bound.hubTimeoutMs - (performance.now() - bound.arrived);
+  const payload = await answerFor(request, handler, Math.max(0, Math.min(timeoutMs, remaining())), bound.controller);
+  const left = remaining();
+  if (left <= 0 || bound.stopped?.()) return undefined;
+  // Withdraws the reply at the bound: one still queued is never sent late.
+  const withdraw = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<"expired">((resolve) => {
+    timer = setTimeout(() => {
+      withdraw.abort();
+      resolve("expired");
+    }, Math.ceil(left));
+  });
+  try {
+    const outcome = await Promise.race([
+      Promise.resolve().then(() => link.reply(request.event, HOME_RESPONSE, payload, undefined, { signal: withdraw.signal })),
+      expired,
+    ]);
+    return outcome === "expired" ? undefined : payload;
+  } catch (error) {
+    if (withdraw.signal.aborted) return undefined;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -207,18 +268,20 @@ export function answerHomeRequests(
   options: HomeAnswerOptions = {},
 ): () => void {
   const timeoutMs = handlerTimeout(options.timeoutMs);
+  const hubTimeoutMs = hubTimeout(options.hubTimeoutMs);
   const running = new Set<AbortController>();
   let stopped = false;
   const subscription = link.on(HOME_REQUEST, (event) => {
     if (stopped) return;
+    const arrived = performance.now();
     const controller = new AbortController();
     running.add(controller);
-    const request = homeRequestFromEvent(event);
-    void answerFor(request, handler, timeoutMs, controller)
-      .then(async (payload) => {
-        if (stopped) return;
-        await link.reply(request.event, HOME_RESPONSE, payload);
-      })
+    void answerWithin(link, homeRequestFromEvent(event), handler, timeoutMs, {
+      arrived,
+      hubTimeoutMs,
+      controller,
+      stopped: () => stopped,
+    })
       .catch(() => undefined)
       .finally(() => running.delete(controller));
   });
@@ -232,10 +295,46 @@ export function answerHomeRequests(
   };
 }
 
-/** Speech a device can say as it is: markup removed, entities decoded, whitespace collapsed. */
+/**
+ * Speech a device can say as it is, made in this order: markup removed (see
+ * `stripSsml`), character references decoded once (see {@link decodeReferences}),
+ * then every run of Unicode White_Space collapsed to one space and the ends
+ * trimmed. In that order, so `&lt;b&gt;` stays the text "<b>".
+ */
 export function plainSpeech(text: string | null | undefined): string {
   if (!text) return "";
-  return decodeEntities(stripSsml(String(text))).replace(/\s+/g, " ").trim();
+  const collapsed = decodeReferences(stripSsml(String(text))).replace(WHITE_SPACE, " ");
+  // Runs are single spaces now, so trimming is one character at each end.
+  const start = collapsed.startsWith(" ") ? 1 : 0;
+  const end = collapsed.length > start && collapsed.endsWith(" ") ? collapsed.length - 1 : collapsed.length;
+  return collapsed.slice(start, end);
+}
+
+/**
+ * The Unicode White_Space property, spelled out: a regular expression's `\s`
+ * differs between languages (JavaScript's has U+FEFF and lacks U+0085).
+ */
+const WHITE_SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/g;
+
+/** The portable set: numeric references, the five XML entities and `&nbsp;`, each with its `;`. */
+const REFERENCE = /&(?:#([0-9]{1,7})|#[xX]([0-9A-Fa-f]{1,6})|(amp|lt|gt|quot|apos|nbsp));/g;
+const NAMED: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
+
+/**
+ * Decode character references once, left to right: numeric ones (`&#72;`,
+ * `&#x48;`, `&#X48;`) except 0, surrogates and anything past U+10FFFF, which
+ * stay as written; the five XML entities; and `&nbsp;`. Nothing else --
+ * `&eacute;` and `&copy;` stay as written, since HTML's list of named
+ * references differs between the libraries SDKs use -- and a reference needs
+ * its `;`.
+ */
+export function decodeReferences(text: string): string {
+  return text.replace(REFERENCE, (whole: string, decimal?: string, hex?: string, name?: string) => {
+    if (name !== undefined) return NAMED[name];
+    const codePoint = decimal !== undefined ? Number.parseInt(decimal, 10) : Number.parseInt(hex ?? "", 16);
+    if (codePoint === 0 || (codePoint >= 0xd800 && codePoint <= 0xdfff) || codePoint > 0x10ffff) return whole;
+    return String.fromCodePoint(codePoint);
+  });
 }
 
 async function answerFor(
@@ -294,6 +393,14 @@ function readAnswer(answer: HomeHandlerResult): {
   };
 }
 
+function hubTimeout(timeoutMs: number | undefined): number {
+  const value = timeoutMs ?? HOME_REQUEST_TIMEOUT_MS;
+  if (!Number.isFinite(value) || value < 0 || value > 2_147_483_647) {
+    throw new RangeError("The hub's bound must be a finite, non-negative number of milliseconds.");
+  }
+  return value;
+}
+
 function handlerTimeout(timeoutMs: number | undefined): number {
   const value = timeoutMs ?? DEFAULT_HOME_HANDLER_TIMEOUT_MS;
   if (!Number.isFinite(value) || value < 0 || value > 2_147_483_647) {
@@ -304,48 +411,4 @@ function handlerTimeout(timeoutMs: number | undefined): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * Named character references a device's speech may carry: the XML five, the
- * Latin-1 block (U+00A0 onwards, in order) and the common typographic ones.
- */
-const LATIN1_ENTITIES =
-  "nbsp iexcl cent pound curren yen brvbar sect uml copy ordf laquo not shy reg macr deg plusmn sup2 sup3 " +
-  "acute micro para middot cedil sup1 ordm raquo frac14 frac12 frac34 iquest Agrave Aacute Acirc Atilde " +
-  "Auml Aring AElig Ccedil Egrave Eacute Ecirc Euml Igrave Iacute Icirc Iuml ETH Ntilde Ograve Oacute Ocirc " +
-  "Otilde Ouml times Oslash Ugrave Uacute Ucirc Uuml Yacute THORN szlig agrave aacute acirc atilde auml " +
-  "aring aelig ccedil egrave eacute ecirc euml igrave iacute icirc iuml eth ntilde ograve oacute ocirc " +
-  "otilde ouml divide oslash ugrave uacute ucirc uuml yacute thorn yuml";
-const NAMED_ENTITIES: ReadonlyMap<string, string> = new Map<string, string>([
-  ["quot", '"'], ["amp", "&"], ["apos", "'"], ["lt", "<"], ["gt", ">"],
-  ...LATIN1_ENTITIES.split(" ").map((name, index): [string, string] => [name, String.fromCodePoint(0xa0 + index)]),
-  ...([
-    ["OElig", 0x152], ["oelig", 0x153], ["Scaron", 0x160], ["scaron", 0x161], ["Yuml", 0x178], ["fnof", 0x192],
-    ["circ", 0x2c6], ["tilde", 0x2dc], ["ensp", 0x2002], ["emsp", 0x2003], ["thinsp", 0x2009], ["zwnj", 0x200c],
-    ["zwj", 0x200d], ["lrm", 0x200e], ["rlm", 0x200f], ["ndash", 0x2013], ["mdash", 0x2014], ["lsquo", 0x2018],
-    ["rsquo", 0x2019], ["sbquo", 0x201a], ["ldquo", 0x201c], ["rdquo", 0x201d], ["bdquo", 0x201e],
-    ["dagger", 0x2020], ["Dagger", 0x2021], ["bull", 0x2022], ["hellip", 0x2026], ["permil", 0x2030],
-    ["prime", 0x2032], ["Prime", 0x2033], ["lsaquo", 0x2039], ["rsaquo", 0x203a], ["oline", 0x203e],
-    ["frasl", 0x2044], ["euro", 0x20ac], ["trade", 0x2122], ["larr", 0x2190], ["uarr", 0x2191],
-    ["rarr", 0x2192], ["darr", 0x2193], ["harr", 0x2194], ["minus", 0x2212],
-  ] as const).map(([name, codePoint]): [string, string] => [name, String.fromCodePoint(codePoint)]),
-]);
-
-/**
- * Decode character references: numeric ones (`&#39;`, `&#x27;`, the `;`
- * optional) and the named ones above (`;` required). A reference that names no
- * character is left as it is; one that names something no voice can say -- a
- * control character, a surrogate, past U+10FFFF -- is dropped or replaced.
- */
-function decodeEntities(text: string): string {
-  return text.replace(/&(?:#(\d+);?|#[xX]([0-9a-fA-F]+);?|([A-Za-z][A-Za-z0-9]{1,31});)/g, (whole, decimal, hex, name) => {
-    if (name !== undefined) return NAMED_ENTITIES.get(name) ?? whole;
-    const codePoint = Number.parseInt(decimal ?? hex, decimal !== undefined ? 10 : 16);
-    if (!Number.isFinite(codePoint) || codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
-      return "�";
-    }
-    if ((codePoint < 0x20 && ![0x09, 0x0a, 0x0d].includes(codePoint)) || (codePoint >= 0x7f && codePoint <= 0x9f)) return "";
-    return String.fromCodePoint(codePoint);
-  });
 }

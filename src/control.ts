@@ -5,6 +5,7 @@ import {
   ThalovantAdmissionTimeoutError,
   ThalovantAlreadyLinkedError,
   ThalovantApiError,
+  ThalovantApiUnreachableError,
   ThalovantAuthError,
   ThalovantDeviceLoginDeniedError,
   ThalovantDeviceLoginExpiredError,
@@ -876,7 +877,9 @@ export class ThalovantControlPlane {
    */
   async loginWithBrowser(options: LoginWithBrowserOptions = {}): Promise<JsonRecord> {
     const body: JsonRecord = {};
-    if (options.scopes !== undefined) body.scopes = [...options.scopes];
+    // An empty list is left out, as none is: the API requires at least one
+    // scope and answers [] with a 422, and a missing field asks for its default.
+    if (options.scopes?.length) body.scopes = [...options.scopes];
     if (options.clientName) body.client_name = options.clientName;
     const grant = await this.request("POST", "/v1/auth/device/authorize", { body, auth: false });
 
@@ -928,7 +931,9 @@ export class ThalovantControlPlane {
    */
   async beginDeviceLogin(options: DeviceLoginOptions = {}): Promise<DeviceAuthorization> {
     const body: JsonRecord = {};
-    if (options.scopes !== undefined) body.scopes = [...options.scopes];
+    // An empty list is left out, as none is: the API requires at least one
+    // scope and answers [] with a 422, and a missing field asks for its default.
+    if (options.scopes?.length) body.scopes = [...options.scopes];
     if (options.clientName) body.client_name = options.clientName;
     const grant = await this.request("POST", "/v1/auth/device/authorize", { body, auth: false });
     const authorization = DeviceAuthorization.fromGrant(grant);
@@ -1058,7 +1063,7 @@ export class ThalovantControlPlane {
         { statusCode: response.status, problem },
       );
     }
-    throw apiError(response.status, text);
+    throw apiError(response.status, text, undefined, response.headers);
   }
 
   /**
@@ -1109,7 +1114,7 @@ export class ThalovantControlPlane {
             "Call loginWithBrowser() again to request a new code.", { statusCode: response.status, problem },
         );
       } else if (error !== "authorization_pending") {
-        throw apiError(response.status, text);
+        throw apiError(response.status, text, undefined, response.headers);
       }
       const remaining = deadline - now();
       if (remaining <= 0) {
@@ -1895,11 +1900,19 @@ export class ThalovantControlPlane {
    * reject with {@link ThalovantAdmissionFailedError} carrying the operation's
    * `error_code`; `requested`, `committed` and `applied` keep polling. No
    * operation at all, or one the API no longer tracks (HTTP 404), resolves at
-   * once, and a 5xx is ridden out. When `timeoutMs` passes first it rejects
-   * with {@link ThalovantAdmissionTimeoutError}, which is both a connection
-   * error and a timeout: the connection may still be admitted later. A link
-   * on another origin than the API's is refused and never fetched, because
-   * the token goes nowhere else.
+   * once. A 5xx is ridden out, and so is a 429, no sooner than the wait the
+   * API names (the problem's `retry_after_seconds`, else `Retry-After`, else
+   * `RateLimit-Reset`); one asking for longer than is left is a timeout at
+   * once. A 401 or 403 rejects with the API's own error (a
+   * `ThalovantAuthError` for a token to sign in again), an API out of reach
+   * with {@link ThalovantApiUnreachableError}, and any other refusal of the
+   * wait with {@link ThalovantAdmissionFailedError} keeping its `statusCode`,
+   * `code`, `detail` and `problem`. No read runs past the deadline. When
+   * `timeoutMs` passes first it rejects with
+   * {@link ThalovantAdmissionTimeoutError}, which is both a connection error
+   * and a timeout: the connection may still be admitted later. A link on
+   * another origin (scheme, host and port) than the API's is refused and never
+   * fetched, because the token goes nowhere else.
    */
   async waitForAdmission(
     connection: BootstrapIdentityResult | OperationResource | JsonRecord | string | null | undefined,
@@ -1931,24 +1944,46 @@ export class ThalovantControlPlane {
       throw new RangeError("Admission waits need finite, non-negative durations.");
     }
     const deadline = performance.now() + timeoutMs;
+    const timedOut = () => new ThalovantAdmissionTimeoutError(
+      `The hub did not admit the connection within ${timeoutMs}ms; it may still admit it later.`,
+    );
     for (;;) {
       let current: OperationResource | undefined;
       let retryAfterMs = 0;
       let rateLimited = false;
+      // Every read is bounded by what is left of the wait: a read the API is
+      // slow to answer must not carry the wait past its deadline.
+      const read = boundedSignal(signal, Math.max(0, deadline - performance.now()));
       try {
-        current = await this.getOperation(operationId, { signal });
+        current = await this.getOperation(operationId, { signal: read.signal });
       } catch (error) {
         if (signal?.aborted) throw abortError();
+        if (read.expired()) throw timedOut();
         if (!(error instanceof ThalovantApiError)) throw error;
+        // The API out of reach says nothing about the hub: reported as it is.
+        if (error instanceof ThalovantApiUnreachableError) throw error;
         // No longer tracked: the API keeps an operation only so long, and one
         // it has forgotten carried its connection through long ago.
         if (error.statusCode === 404) return;
-        // Rate limited: ridden out like a 5xx, but no sooner than the API asked.
+        // The token, not the connection: signing in again is the way out.
+        if (error.statusCode === 401 || error.statusCode === 403) throw error;
         if (error.statusCode === 429) {
+          // Rate limited: ridden out like a 5xx, but no sooner than the API
+          // asked -- in the body, else Retry-After, else RateLimit-Reset.
           rateLimited = true;
-          retryAfterMs = retryAfterSeconds(error.problem) * 1000;
+          retryAfterMs = (error.retryAfterSeconds ?? 0) * 1000;
+        } else if (error.statusCode === undefined || error.statusCode < 500) {
+          // The API refused the wait itself: what it said is kept.
+          throw new ThalovantAdmissionFailedError(`The hub could not admit the connection: ${error.message}`, {
+            statusCode: error.statusCode,
+            code: error.code,
+            detail: error.detail,
+            problem: error.problem,
+            cause: error,
+          });
         }
-        else if (error.statusCode === undefined || error.statusCode < 500) throw error;
+      } finally {
+        read.dispose();
       }
       if (current?.status === "ready") return;
       if (current && (current.status === "failed" || current.status === "timed_out")) {
@@ -1958,16 +1993,13 @@ export class ThalovantControlPlane {
           { errorCode: typeof current.error_code === "string" && current.error_code ? current.error_code : undefined },
         );
       }
-      const timedOut = () => new ThalovantAdmissionTimeoutError(
-        `The hub did not admit the connection within ${timeoutMs}ms; it may still.`,
-      );
       const wait = Math.max(intervalMs, retryAfterMs);
       const remaining = deadline - performance.now();
       if (remaining <= 0) throw timedOut();
       // Asked to come back after the deadline: waiting it out would only end
       // in the same timeout, later, and asking sooner would be refused again.
       if (rateLimited && wait > remaining) throw timedOut();
-      await abortableSleep(Math.min(wait, remaining), signal);
+      await sleepAtLeast(Math.min(wait, remaining), signal);
     }
   }
 
@@ -1999,7 +2031,7 @@ export class ThalovantControlPlane {
   ): Promise<JsonRecord> {
     const response = await this.send(method, path, options);
     if (!response.ok) {
-      throw apiError(response.status, await response.text(), options.redactSecrets);
+      throw apiError(response.status, await response.text(), options.redactSecrets, response.headers);
     }
     const text = await response.text();
     if (!text.trim()) {
@@ -2055,10 +2087,14 @@ export class ThalovantControlPlane {
         redirect: "error",
         ...(options.signal ? { signal: options.signal } : {}),
       });
-    } catch {
+    } catch (error) {
       if (options.signal?.aborted) throw abortError();
-      // Network error causes can include URLs, queries or credentials.
-      throw new ThalovantApiError("Could not reach the Thalovant API, or the endpoint redirected the request.");
+      // Network error causes can include URLs, queries or credentials, so none
+      // is kept. A redirect the SDK will not follow got an answer; anything
+      // else never did, and is reported as the API being out of reach.
+      const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "";
+      const message = "Could not reach the Thalovant API, or the endpoint redirected the request.";
+      throw cause === "unexpected redirect" ? new ThalovantApiError(message) : new ThalovantApiUnreachableError(message);
     }
   }
 }
@@ -2175,11 +2211,20 @@ function isRecord(value: unknown): value is JsonRecord {
  * JSON object it rides on the error whole, as `problem`, with its `code` and
  * its unshortened `detail` read out of it by the error itself.
  */
-function apiError(status: number, bodyText: string, redactSecrets?: ReadonlyArray<string | undefined>): ThalovantApiError {
+function apiError(
+  status: number,
+  bodyText: string,
+  redactSecrets?: ReadonlyArray<string | undefined>,
+  headers?: Pick<Headers, "get">,
+): ThalovantApiError {
   const safeBody = redactSecrets?.length ? redactSecretsInText(bodyText, redactSecrets) : bodyText;
   const body = parseJsonBody(safeBody);
   const message = apiErrorMessage(status, safeBody, body);
-  const options = { statusCode: status, problem: body && isRecord(body.value) ? body.value : undefined };
+  const options = {
+    statusCode: status,
+    problem: body && isRecord(body.value) ? body.value : undefined,
+    retryAfterSeconds: retryAfterHeader(headers),
+  };
   const error = new ThalovantApiError(message, options);
   // The class says what kind of refusal it is; every one is a ThalovantApiError.
   if (status === 401 || status === 423 || (status === 403 && error.detail === "Insufficient scopes")) {
@@ -2196,24 +2241,30 @@ function apiError(status: number, bodyText: string, redactSecrets?: ReadonlyArra
   return error;
 }
 
+/**
+ * `Retry-After` in whole seconds, else `RateLimit-Reset`, from an answer's
+ * headers. The API's own rate limiter answers a 429 in plain text with only
+ * `RateLimit-Reset` (seconds until its window resets) to say how long. An
+ * HTTP-date `Retry-After` is not read.
+ */
+function retryAfterHeader(headers: Pick<Headers, "get"> | undefined): number | undefined {
+  if (!headers) return undefined;
+  for (const name of ["Retry-After", "RateLimit-Reset"]) {
+    let value: string | null;
+    try {
+      value = headers.get(name);
+    } catch {
+      return undefined;
+    }
+    const text = value?.trim() ?? "";
+    if (/^\d{1,10}$/.test(text)) return Number.parseInt(text, 10);
+  }
+  return undefined;
+}
+
 /** The id a token answer names, or undefined: never an earlier token's. */
 function tokenIdOf(token: JsonRecord): string | undefined {
   return typeof token.token_id === "string" && token.token_id ? token.token_id : undefined;
-}
-
-/**
- * The `retry_after_seconds` a 429 names, read wherever the problem carries it:
- * at the top, or inside FastAPI's `detail` envelope (once or twice). A
- * non-negative number of seconds; 0 when there is none.
- */
-function retryAfterSeconds(problem: JsonRecord | undefined): number {
-  let level: unknown = problem;
-  for (let depth = 0; depth < 3 && isRecord(level); depth += 1) {
-    const value = level.retry_after_seconds;
-    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
-    level = level.detail;
-  }
-  return 0;
 }
 
 /** The connection that holds a link, as a 409 names it. */
@@ -2307,6 +2358,47 @@ function assertSafeBrowserUrl(value: unknown): void {
 
 function abortError(): Error {
   return new DOMException("The operation was aborted.", "AbortError");
+}
+
+/**
+ * Wait the whole of `ms` on the monotonic clock, never less, or reject with an
+ * `AbortError` the moment `signal` aborts. A timer may fire a millisecond
+ * early; it is re-armed for what is left.
+ */
+async function sleepAtLeast(ms: number, signal?: AbortSignal): Promise<void> {
+  const end = performance.now() + ms;
+  for (let left = ms; left > 0; left = end - performance.now()) {
+    await abortableSleep(Math.ceil(left), signal);
+  }
+}
+
+/**
+ * A signal that aborts when `parent` does or when `ms` pass, whichever is
+ * first; `expired()` says whether the time ran out. `dispose()` clears the
+ * timer and the listener.
+ */
+function boundedSignal(parent: AbortSignal | undefined, ms: number): {
+  signal: AbortSignal;
+  expired(): boolean;
+  dispose(): void;
+} {
+  const controller = new AbortController();
+  let ranOut = false;
+  const onAbort = (): void => controller.abort();
+  const timer = setTimeout(() => {
+    ranOut = true;
+    controller.abort();
+  }, Math.min(Math.max(0, Math.ceil(ms)), 2_147_483_647));
+  if (parent?.aborted) controller.abort();
+  else parent?.addEventListener("abort", onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    expired: () => ranOut,
+    dispose: () => {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", onAbort);
+    },
+  };
 }
 
 /** Wait `ms`, or reject with an `AbortError` the moment `signal` aborts. */

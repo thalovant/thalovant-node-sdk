@@ -44,6 +44,7 @@ import {
   HiveMindRuntimeTransport,
   HiveMindWSSTransport,
   HiveMessage,
+  type SendOptions,
   TransportConnectionInfo,
   TransportHealth,
 } from "./transport.js";
@@ -332,10 +333,23 @@ export class ThalovantClient {
     }
   }
 
-  async emit(eventType: string, data: Record<string, unknown> = {}, context: EventContext = {}): Promise<void> {
+  /**
+   * Send a bus message. `options.signal` withdraws it while it has not gone
+   * out yet: while the connection is being made (which carries on for other
+   * callers), or while it waits behind other frames. A frame already being
+   * written is finished.
+   */
+  async emit(
+    eventType: string,
+    data: Record<string, unknown> = {},
+    context: EventContext = {},
+    options: SendOptions = {},
+  ): Promise<void> {
+    if (options.signal?.aborted) throw operationAbortedError();
     if (eventType !== EVENT_RECOGNIZER_LOOP_UTTERANCE) {
       await this.connect();
-      await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
+      if (options.signal?.aborted) throw operationAbortedError();
+      await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context), options);
       return;
     }
     // A fire-and-forget utterance: nothing will wait on it, but the hub may
@@ -352,8 +366,9 @@ export class ThalovantClient {
     // that need not have been there costs an ask its deadline; a missing one
     // ends a question the hub never refused.
     await this.connect();
+    if (options.signal?.aborted) throw operationAbortedError();
     this.recordUntrackedSend();
-    await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context));
+    await this.transport.emitBus(eventType, data, this.contextWithIdentityMetadata(context), options);
   }
 
   /**
@@ -365,16 +380,19 @@ export class ThalovantClient {
    * the hub routes it to the peer that asked. `event` is the delivered
    * {@link ThalovantEvent} or a bus payload `{ type, data, context }`;
    * `context` entries are laid over the request's before the route is turned.
+   * `options.signal` withdraws the reply while it has not gone out yet, as
+   * {@link emit} does.
    */
   async reply(
     event: ThalovantEvent | BusPayload | { context?: EventContext | null },
     msgType: string,
     data: Record<string, unknown> = {},
     context?: EventContext,
+    options: SendOptions = {},
   ): Promise<void> {
     const type = typeof msgType === "string" ? msgType.trim() : "";
     if (!type) throw new TypeError("A reply needs a non-empty message type.");
-    await this.emit(type, data, replyContextFor(event, context));
+    await this.emit(type, data, replyContextFor(event, context), options);
   }
 
   async sendUtterance(

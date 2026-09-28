@@ -5,6 +5,7 @@ import {
 } from "./client.js";
 import {
   ThalovantConnectionError,
+  ThalovantHubKeyChangedError,
   ThalovantHubRefusedError,
   ThalovantRuntimeError,
 } from "./errors.js";
@@ -15,42 +16,12 @@ import {
   type ThalovantEvent,
 } from "./events.js";
 import type { ThalovantIdentity } from "./identity.js";
+import type { SendOptions } from "./transport.js";
+import { HubSessionPolicy, LinkSupervisor } from "./link-keeping.js";
 
-/**
- * Seconds, using a monotonic clock. Explicit probes let the host own
- * scheduling; {@link HubSession.run} keeps the link by the same numbers.
- *
- * `refusalGraceSeconds` is how long `run()` keeps trying through refusals
- * before it gives up: a connection just created is refused until its hub has
- * admitted it -- about ninety seconds -- so a refusal is only final once it has
- * lasted this long.
- */
-export class HubSessionPolicy {
-  constructor(
-    readonly retrySeconds = 10,
-    readonly retryCeilingSeconds = 120,
-    readonly probeSeconds = 60,
-    readonly probeDownSeconds = 5,
-    readonly refusalGraceSeconds = 600,
-  ) {
-    if (
-      ![
-        retrySeconds,
-        retryCeilingSeconds,
-        probeSeconds,
-        probeDownSeconds,
-        refusalGraceSeconds,
-      ].every((v) => Number.isFinite(v) && v > 0) ||
-      retryCeilingSeconds < retrySeconds
-    )
-      throw new RangeError(
-        "Session policy requires positive finite durations and an ordered retry ceiling",
-      );
-  }
-  nextWait(current: number): number {
-    return Math.min(current * 2, this.retryCeilingSeconds);
-  }
-}
+// Defined beside the rules it parameterises, and exported here as it always was.
+export { HubSessionPolicy };
+
 export type HubSessionClient = Pick<
   ThalovantClient,
   "ask" | "emit" | "on" | "connectionInfo" | "close"
@@ -357,11 +328,14 @@ export class HubSession {
     msgType: string,
     data: Record<string, unknown> = {},
     context?: EventContext,
+    options: SendOptions = {},
   ): Promise<void> {
-    const send = (client: ReplyingClient): Promise<void> =>
-      typeof client.reply === "function"
-        ? client.reply(event, msgType, data, context)
-        : client.emit(msgType, data, replyContextFor(event, context));
+    const send = (client: ReplyingClient): Promise<void> => {
+      if (options.signal?.aborted) return Promise.reject(abortError());
+      return typeof client.reply === "function"
+        ? client.reply(event, msgType, data, context, options)
+        : client.emit(msgType, data, replyContextFor(event, context), options);
+    };
     const client = this.client;
     if (!client || this.closed || !alive(client))
       return this.call((c) => send(c as ReplyingClient));
@@ -386,20 +360,27 @@ export class HubSession {
    * client's static key says so only by closing right after the handshake.
    * Refusals are retried like any other failure until they have lasted
    * `refusalGraceSeconds` -- a new connection is refused until its hub admits
-   * it -- and then this rejects with {@link ThalovantHubRefusedError}.
+   * it -- and then this rejects with {@link ThalovantHubRefusedError}. A hub
+   * whose Noise key is not the pinned one ends it at once with
+   * {@link ThalovantHubKeyChangedError}: retrying cannot change that. The
+   * decisions are {@link LinkSupervisor}'s.
    *
    * Resolves once the session is closed; rejects with an `AbortError` when
    * `signal` aborts, which stops keeping the link without closing it.
    */
   async run(options: { signal?: AbortSignal } = {}): Promise<void> {
     const signal = options.signal;
-    let refusedSince: number | undefined;
+    const supervisor = new LinkSupervisor(this.policy);
     while (!this.closed) {
       if (signal?.aborted) throw abortError();
       let attempted = false;
       let failure: unknown;
       await this.exclusive(async () => {
-        if (this.client && !alive(this.client)) await this.drop();
+        if (this.client && !alive(this.client)) {
+          await this.drop();
+          // A drop dials again at once: the ladder was reset when it came up.
+          supervisor.after("dropped", this.clock());
+        }
         if (this.client || this.closed || this.clock() < this.nextRetry) return;
         attempted = true;
         try {
@@ -409,13 +390,15 @@ export class HubSession {
         }
       });
       if (attempted) {
-        if (failure instanceof ThalovantHubRefusedError) {
-          const now = this.clock();
-          refusedSince ??= now;
-          if (now - refusedSince >= this.policy.refusalGraceSeconds) throw failure;
-        } else {
-          refusedSince = undefined;
-        }
+        // The session's own ladder (nextRetry) moves in step with the
+        // supervisor's: both start at retrySeconds, double on each failed
+        // attempt and reset when the link comes up.
+        const outcome = failure === undefined ? "up"
+          : failure instanceof ThalovantHubKeyChangedError ? "key_changed"
+          : failure instanceof ThalovantHubRefusedError ? "refused"
+          : "failed";
+        const decision = supervisor.after(outcome, this.clock());
+        if (decision.action === "give_up") throw failure;
       }
       if (this.closed) break;
       const held = this.client;

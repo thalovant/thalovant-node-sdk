@@ -51,6 +51,7 @@ import {
   type EventHandler,
   type HubSessionClient,
 } from "../src/index.js";
+import { HiveMindWSSTransport } from "../src/transport-core.js";
 import { createV3HubPeer } from "./v3-hub.js";
 
 type Json = Record<string, unknown>;
@@ -61,6 +62,8 @@ async function serving<T>(
   route: (request: { method: string; path: string; body: unknown; headers: IncomingMessage["headers"] }) => {
     status: number;
     body?: unknown;
+    text?: string;
+    headers?: Record<string, string>;
   },
   run: (url: string, sent: string[]) => Promise<T>,
 ): Promise<T> {
@@ -72,8 +75,9 @@ async function serving<T>(
     const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
     sent.push(`${request.method} ${request.url}`);
     const answer = route({ method: request.method ?? "", path, body: raw ? JSON.parse(raw) : null, headers: request.headers });
-    const text = answer.body === undefined ? "" : JSON.stringify(answer.body);
-    response.writeHead(answer.status, text ? { "content-type": "application/json" } : {});
+    const text = answer.text ?? (answer.body === undefined ? "" : JSON.stringify(answer.body));
+    const type = answer.text !== undefined ? "text/plain; charset=utf-8" : "application/json";
+    response.writeHead(answer.status, { ...(answer.headers ?? {}), ...(text ? { "content-type": type } : {}) });
     response.end(text);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -426,13 +430,25 @@ test("admission follows a create's result, a bare id or a path, and stops on an 
 });
 
 test("admission waits out a 429 for as long as the API asks, and no longer than its own deadline", async () => {
-  const limited = { status: 429, body: { detail: { detail: { code: "token_rate_limited", message: "Slow down.", retry_after_seconds: 1 } } } };
+  // The per-token 429 as the API sends it: FastAPI's envelope, nested once.
+  const limited = { status: 429, body: { detail: { code: "token_rate_limited", message: "Slow down.", retry_after_seconds: 1 } } };
   const answers = [limited, { status: 200, body: requested("ready") }];
   const stamps: number[] = [];
   await serving(() => { stamps.push(performance.now()); return answers.shift()!; }, async (url) => {
     const api = new ThalovantControlPlane(url, { accessToken: "t" });
     await api.waitForAdmission("op-1", { pollIntervalMs: 10, timeoutMs: 5_000 });
     assert.equal(stamps.length, 2);
+    assert.ok(stamps[1] - stamps[0] >= 950, `asked again after ${stamps[1] - stamps[0]}ms`);
+  });
+  // The API's own rate limiter: plain text, with only RateLimit-Reset to say how long.
+  const plain: Array<{ status: number; body?: unknown; text?: string; headers?: Record<string, string> }> = [
+    { status: 429, text: "Too Many Requests", headers: { "RateLimit-Reset": "1" } },
+    { status: 200, body: requested("ready") },
+  ];
+  stamps.length = 0;
+  await serving(() => { stamps.push(performance.now()); return plain.shift()!; }, async (url) => {
+    const api = new ThalovantControlPlane(url, { accessToken: "t" });
+    await api.waitForAdmission("op-1", { pollIntervalMs: 10, timeoutMs: 5_000 });
     assert.ok(stamps[1] - stamps[0] >= 950, `asked again after ${stamps[1] - stamps[0]}ms`);
   });
   const lifted = { status: 429, body: { code: "token_quota_exceeded", retry_after_seconds: 3_600 } };
@@ -470,13 +486,24 @@ test("admission lets an authentication refusal through as itself", async () => {
 
 // -- the home answer -------------------------------------------------------------------
 
-test("plain speech decodes what a voice can say and drops what it cannot", () => {
-  assert.equal(plainSpeech("Caf&eacute; &mdash; 21&#176;C &#x26; &lt;dry&gt; &hellip;"), "Café — 21°C & <dry> …");
-  assert.equal(plainSpeech("A&#39;s &#39 B"), "A's ' B");
+test("plain speech decodes the portable set, and leaves everything else as written", () => {
+  // Numeric references, the XML five and nbsp; no other name, and never without its ";".
+  assert.equal(plainSpeech("Caf&eacute; &mdash; 21&#176;C &#x26; &lt;dry&gt; &hellip;"), "Caf&eacute; &mdash; 21\u00b0C & <dry> &hellip;");
+  assert.equal(plainSpeech("A&#39;s &#39 B"), "A's &#39 B");
   assert.equal(plainSpeech("AT&T &unknown; &amp"), "AT&T &unknown; &amp");
-  assert.equal(plainSpeech("bell&#7;&#x80;s &#0; &#xD800;"), "bells � �");
+  assert.equal(plainSpeech("&#0; &#xD800; &#x110000; &#12345678;"), "&#0; &#xD800; &#x110000; &#12345678;");
   assert.equal(plainSpeech(null), "");
   assert.equal(plainSpeech("  <p>line one</p>\n\t<p>two</p>  "), "line one two");
+  // White_Space, not a regex's \s: U+0085 collapses, U+FEFF (not White_Space) stays.
+  assert.equal(plainSpeech("a\u0085b\ufeffc"), "a b\ufeffc");
+  // Markup is real markup only.
+  assert.equal(plainSpeech("5 < 6 and 7 > 3"), "5 < 6 and 7 > 3");
+  assert.equal(plainSpeech("<!-- never closed"), "<!-- never closed");
+  assert.equal(plainSpeech("a</b>c<i x=\"1>2\">d</i>"), "acd");
+  // Many unclosed tags do not take long.
+  const started = performance.now();
+  plainSpeech("<a ".repeat(20_000));
+  assert.ok(performance.now() - started < 2_000);
 });
 
 test("an answer is held to the contract, whatever shape the handler gave it", () => {
@@ -508,14 +535,35 @@ test("a handler that ran out of time sees its signal abort, and a thrown value i
     (_request, signal) => new Promise(() => signal.addEventListener("abort", () => (aborted = true))),
     { timeoutMs: 10 },
   );
-  assert.equal(payload.error_code, "timeout");
+  assert.equal(payload?.error_code, "timeout");
   assert.ok(aborted);
   const thrown = await answerHomeRequest(replier, { type: HOME_REQUEST, data: {} }, () => {
     throw "not even an Error";
   });
-  assert.equal(thrown.error_code, "failed_to_handle");
+  assert.equal(thrown?.error_code, "failed_to_handle");
   assert.equal(sent.length, 2);
   await assert.rejects(answerHomeRequest(replier, { type: HOME_REQUEST }, () => "x", { timeoutMs: -1 }), RangeError);
+  await assert.rejects(answerHomeRequest(replier, { type: HOME_REQUEST }, () => "x", { hubTimeoutMs: Number.NaN }), RangeError);
+});
+
+test("a handler that ignores its signal does not hold the answer back past the hub's bound", async () => {
+  const sent: Json[] = [];
+  const replier = { reply: async (_event: ThalovantEvent, _type: string, data: Json) => void sent.push(data) };
+  const started = performance.now();
+  const payload = await answerHomeRequest(
+    replier,
+    { type: HOME_REQUEST, data: { request_id: "s1" } },
+    () => new Promise((resolve) => setTimeout(() => resolve("Too late."), 2_000)),
+    { timeoutMs: 100, hubTimeoutMs: 1_000 },
+  );
+  assert.ok(performance.now() - started < 500);
+  assert.equal(payload?.error_code, "timeout");
+  assert.equal(sent.length, 1);
+});
+
+test("a reply that fails for its own reasons inside the bound still rejects", async () => {
+  const replier = { reply: async () => { throw new Error("socket gone"); } };
+  await assert.rejects(answerHomeRequest(replier, { type: HOME_REQUEST, data: {} }, () => "x"), /socket gone/);
 });
 
 test("unsubscribing aborts the answers still running and sends none of them", async () => {
@@ -886,4 +934,63 @@ test("a hub that closes right after the handshake is a refusal to a kept link", 
   const info = client.connectionInfo();
   assert.equal(info.closeCode, 1008);
   assert.equal(info.refused, true, "the transport reports the code; only the settle window treats it as a verdict");
+});
+
+test("a send withdrawn while queued is never written, and the next one still decrypts", async (t) => {
+  const received: string[] = [];
+  let hub: ReturnType<typeof createV3HubPeer> | undefined;
+  const identity = await hubServer(t, (socket) => {
+    hub = createV3HubPeer("secret", (data, binary) => socket.send(data, { binary }));
+    socket.on("message", (data: Buffer, isBinary: boolean) => {
+      hub!.onMessage(isBinary ? new Uint8Array(data) : data.toString());
+      received.splice(0, received.length, ...hub!.received);
+    });
+    hub.start();
+  });
+  const transport = new HiveMindWSSTransport(identity, { noiseStateDir: await noiseDir(t) });
+  t.after(() => transport.disconnect());
+  await transport.connect(8000);
+  await assert.rejects(
+    transport.emitBus("withdrawn", {}, {}, { signal: AbortSignal.abort() }),
+    { name: "AbortError" },
+  );
+  await transport.emitBus("kept", {}, {});
+  await waitUntil(() => received.some((frame) => frame.includes('"kept"')));
+  assert.ok(!received.some((frame) => frame.includes('"withdrawn"')));
+});
+
+test("a poll the API is slow to answer does not carry the wait past its deadline", async () => {
+  const server = createServer(() => {
+    // Never answers.
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const api = new ThalovantControlPlane(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, { accessToken: "t" });
+    const started = performance.now();
+    await assert.rejects(api.waitForAdmission("op-1", { timeoutMs: 300 }), (error: unknown) => {
+      assert.ok(error instanceof ThalovantAdmissionTimeoutError, String(error));
+      assert.match((error as Error).message, /it may still admit it later\.$/);
+      return true;
+    });
+    assert.ok(performance.now() - started < 1_500);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("an empty scope list is left out of the browser sign-in too", async () => {
+  const bodies: unknown[] = [];
+  await serving(({ path, body }) => {
+    if (path === "/v1/auth/device/authorize") {
+      bodies.push(body);
+      return { status: 200, body: { device_code: "d", user_code: "u", verification_uri: "https://x.example.invalid/a", interval: 0 } };
+    }
+    return { status: 200, body: { access_token: "tvt_x", token_id: "t" } };
+  }, async (url) => {
+    const api = new ThalovantControlPlane(url);
+    await api.loginWithBrowser({ scopes: [], openBrowser: false, prompt: () => {} });
+    await api.beginDeviceLogin({ scopes: [] });
+    assert.deepEqual(bodies, [{}, {}]);
+  });
 });

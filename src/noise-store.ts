@@ -8,7 +8,7 @@
  */
 
 import { bytesToHex, hexToBytes } from "./bytes.js";
-import { ThalovantConnectionError, ThalovantIdentityError } from "./errors.js";
+import { ThalovantHubKeyChangedError, ThalovantIdentityError } from "./errors.js";
 import {
   NOISE_KEY_FILENAME,
   NOISE_PINS_FILENAME,
@@ -155,7 +155,7 @@ export async function pinHubKey(
       return;
     }
     if (pinned.toLowerCase() !== remoteStaticKey.toLowerCase()) {
-      throw new ThalovantConnectionError(
+      throw new ThalovantHubKeyChangedError(
         "The hub's Noise static key changed. If the hub was not reinstalled or replaced, another machine may be answering at this address. If it was, drop the stale pin with forgetNoisePin and reconnect to trust the new key.",
       );
     }

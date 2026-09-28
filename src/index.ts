@@ -39,5 +39,15 @@ export * from "./wire.js";
 export { asSentence, closestLanguage, usualForm, defaultListing, ListingRules, type ListingData, type ListingLanguage } from "./listing.js";
 
 export * from "./session.js";
+// HubSessionPolicy comes from ./session.js, as it always did.
+export {
+  CLOSE_CODE_GRACE_MS,
+  closeRefuses,
+  LinkSupervisor,
+  REFUSAL_CLOSE_CODES,
+  REFUSAL_SETTLE_MS,
+  type LinkDecision,
+  type LinkOutcome,
+} from "./link-keeping.js";
 
 export * from "./inventory.js";

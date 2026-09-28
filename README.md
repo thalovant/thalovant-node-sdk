@@ -509,7 +509,9 @@ keeps it on the control plane, or rejects with
 `ThalovantDeviceLoginExpiredError` or `ThalovantDeviceLoginDeniedError`. Neither
 the device code nor the token appears in an error or in `console.log` of these
 objects; `JSON.stringify` keeps them, so a sign-in can be stored as a secret and
-resumed with `DeviceAuthorization.fromGrant()`. `revokeApiToken()` revokes the
+resumed with `DeviceAuthorization.fromGrant()`. An empty scope list is left out
+of the request, as none is, so the API's default applies (it refuses `[]`).
+`revokeApiToken()` revokes the
 token the SDK signed in with (a token may always revoke itself) and forgets it;
 a token already revoked (a 401 on its own revoke) counts as revoked, and
 revoking again sends nothing until the next sign-in. Every
@@ -543,20 +545,34 @@ reading the etag first when none is given, retrying once on 412, and counting
 follows the operation: `ready` resolves, `failed` and `timed_out` reject with
 `ThalovantAdmissionFailedError` (its `errorCode` is the operation's), and a 404
 or no operation at all resolves at once. A 5xx is ridden out, and a 429 no
-sooner than the `retry_after_seconds` it names; a 429 asking for longer than is
-left ends the wait at once as a timeout. When `timeoutMs`
+sooner than the wait it names -- the problem's `retry_after_seconds`, else the
+`Retry-After` header, else `RateLimit-Reset` (every `ThalovantApiError` carries
+it as `retryAfterSeconds`); a 429 asking for longer than is left ends the wait at
+once as a timeout. A 401 or 403 rejects with the API's own error (sign in again),
+an API out of reach with `ThalovantApiUnreachableError`, and any other refusal of
+the wait with `ThalovantAdmissionFailedError` keeping its `statusCode`, `code`,
+`detail` and `problem`. No read runs past the deadline. When `timeoutMs`
 (default 180000) passes first it rejects with `ThalovantAdmissionTimeoutError`,
 which is both a `ThalovantConnectionError` and a `ThalovantTimeoutError`: the
-connection may still be admitted later. A `links.self` on another origin than
-the API's is refused and never fetched.
+hub may still admit it later. A `links.self` on another origin (scheme, host and
+port) than the API's is refused and never fetched.
 
 **Answering.** The hub sends `thalovant.home.request` (`request_id`,
 `utterance`, `lang`, `conversation_id`) and waits 10 seconds for one
 `thalovant.home.response`. `answerHomeRequests(linkOrSession, handler)` answers
-every one; `answerHomeRequest()` answers one. The answer is a reply built from
-the request's context as the hub sent it, so it goes back to the peer that asked
-(`client.reply()` and `session.reply()` do the same for any message). `speech`
-is sent as plain text: markup removed, entities decoded, whitespace collapsed.
+every one; `answerHomeRequest()` answers one and resolves with what it sent, or
+undefined when there was no time left. Both answer at most once and never after
+the hub's 10 seconds, counted from the request's arrival (`hubTimeoutMs`): the
+handler gets its `timeoutMs` or what is left, and the reply's sending gets what
+the handler left -- one still queued at the bound is withdrawn rather than sent
+late (`client.reply()`, `client.emit()` and `session.reply()` take a `signal`
+for that). The answer is a reply built from the request's context as the hub
+sent it, so it goes back to the peer that asked (`client.reply()` and
+`session.reply()` do the same for any message); a request with a destination and
+no source gets a reply with no destination. `speech` is sent as plain text:
+real markup removed (a `<` that opens no tag stays, so "5 < 6" survives),
+numeric references, the five XML entities and `&nbsp;` decoded and nothing else
+(`decodeReferences()`), and runs of Unicode White_Space collapsed.
 `responseType` is `action_done`, `query_answer` or `error`, and an `error` names
 one of `HOME_ERROR_CODES`. The SDK always answers: a handler that throws is
 answered `failed_to_handle`, one that does not answer within `timeoutMs`
@@ -568,13 +584,18 @@ stops waiting for it.
 **Keeping the link.** `session.run({ signal })` stays connected until
 `session.close()`: it looks at a held link every 60 seconds (and notices a drop
 within a second), retries a failed attempt after 10 seconds doubling to 120, and
-treats a close within `settleSeconds` (0.75) of the handshake as the hub
-refusing the credentials, since a hub that does not know a connection's key says
-so only by closing; a handshake that fails to authenticate (a password the hub
-does not hold) is a refusal too. Refusals count as "not admitted yet" for
-`refusalGraceSeconds` (600), then `run()` rejects with
-`ThalovantHubRefusedError`. `session.onStateChange(up => ...)` reports the link
-coming up and going down.
+treats a close with 1000, 1005 or 1008 during the handshake or within
+`settleSeconds` (0.75) after it as the hub refusing the credentials, since a hub
+that does not know a connection's key says so only by closing; a handshake that
+fails to authenticate (a password the hub does not hold) is a refusal too.
+Refusals count as "not admitted yet" for `refusalGraceSeconds` (600), then
+`run()` rejects with `ThalovantHubRefusedError`. A refused KK handshake is
+followed at once by one XX handshake inside the same connect, which is how a
+changed password (a refusal) is told from a changed hub key: a hub whose Noise
+key is not the pinned one rejects with `ThalovantHubKeyChangedError`, and
+`run()` stops on it at once, since retrying cannot change it. The rules are
+`closeRefuses()` and `LinkSupervisor`, for a caller that runs its own loop.
+`session.onStateChange(up => ...)` reports the link coming up and going down.
 
 ## Protocols
 
@@ -1128,6 +1149,7 @@ replaced with `[redacted]` in `detail` and `problem` too.
 - `replyContext(context)`
 - `answerHomeRequests(clientOrSession, handler, options)` and `answerHomeRequest(clientOrSession, event, handler, options)`
 - `HubSession.forIdentity(identity, options)`, `session.run(options)`, `session.reply(...)`, `session.onStateChange(callback)`
+- `closeRefuses(code, options)`, `new LinkSupervisor(policy).after(outcome, now)`, `decodeReferences(text)`
 - `client.conversation(options)`
 - `client.intents(languages, options)` with optional `timeoutMs`, `describe`, and `fallback`
 - `client.listIntents(lang, options)` with optional `timeoutMs` and `includeDefinitions`

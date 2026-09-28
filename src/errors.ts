@@ -33,6 +33,19 @@ export class ThalovantRuntimeError extends ThalovantError {}
 export class ThalovantHubRefusedError extends ThalovantConnectionError {}
 
 /**
+ * A hub answered with another Noise static key than the one pinned for it.
+ *
+ * The first connection to a hub pins its key; every later one must present
+ * the same. A different one is either the hub being replaced or somebody in
+ * between, and the SDK cannot tell which, so it never connects and never
+ * replaces the pin by itself. It is a connection error rather than a refusal
+ * -- the hub did not turn the credentials away -- and retrying changes
+ * nothing: {@link HubSession.run} stops on it at once. Drop the pin with
+ * `forgetNoisePin` only once the new key is known to be the hub's.
+ */
+export class ThalovantHubKeyChangedError extends ThalovantConnectionError {}
+
+/**
  * A control-plane request failed.
  *
  * `statusCode` is the HTTP status when the API answered. Everything else the
@@ -65,6 +78,13 @@ export class ThalovantApiError extends ThalovantError {
   /** The API's whole sentence, exactly as sent: never trimmed or shortened. */
   readonly detail?: string;
   /**
+   * How long the API asked the caller to wait before trying again, in seconds,
+   * when it said: a 429's `retry_after_seconds` (at the top of the problem or
+   * inside its `detail` object), else its `Retry-After` or `RateLimit-Reset`
+   * header. Undefined otherwise.
+   */
+  readonly retryAfterSeconds?: number;
+  /**
    * The whole error body when it is a JSON object. Not enumerable, so logging
    * the error never prints what the body echoed back from the request.
    */
@@ -77,6 +97,8 @@ export class ThalovantApiError extends ThalovantError {
       code?: string;
       detail?: string;
       problem?: Record<string, unknown>;
+      /** Seconds to wait, when the answer's headers said; the problem's own number wins. */
+      retryAfterSeconds?: number;
     },
   ) {
     super(message, options);
@@ -89,8 +111,32 @@ export class ThalovantApiError extends ThalovantError {
     const read = problemFields(problem);
     this.code = options?.code ?? read.code;
     this.detail = options?.detail ?? read.detail;
+    this.retryAfterSeconds = problemRetryAfter(problem) ?? options?.retryAfterSeconds;
   }
 }
+
+/**
+ * A problem's `retry_after_seconds`, at its top or inside a `detail` object:
+ * the API's per-token 429 is FastAPI's envelope around a structured refusal,
+ * so the number sits inside `detail`, as `code` does.
+ */
+function problemRetryAfter(problem: Record<string, unknown> | undefined): number | undefined {
+  if (!problem) return undefined;
+  for (const source of [problem, isRecord(problem.detail) ? problem.detail : {}]) {
+    const value = source.retry_after_seconds;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  }
+  return undefined;
+}
+
+/**
+ * The control-plane API could not be reached: the request never got an
+ * answer (a refused connection, a failed name lookup, a reset, a redirect the
+ * SDK will not follow). That says nothing about what the API would have
+ * answered, so a wait that meets it reports it as it is rather than as the
+ * API refusing anything. `statusCode` is undefined.
+ */
+export class ThalovantApiUnreachableError extends ThalovantApiError {}
 
 /** A string with something in it, exactly as sent; anything else is absent. */
 function problemText(value: unknown): string | undefined {
@@ -203,15 +249,40 @@ export class ThalovantDeviceLoginDeniedError extends ThalovantApiError {}
 export class ThalovantAdmissionTimeoutError extends ThalovantConnectionError {}
 
 /**
- * The operation that admits a new connection failed or timed out on the
- * platform. `errorCode` is the operation's own code, when it had one.
+ * A new connection will not be admitted.
+ *
+ * Either the operation that admits it failed or timed out on the platform --
+ * `errorCode` is the operation's own code, and `statusCode` is undefined -- or
+ * the API refused the wait itself, and then `statusCode`, `code`, `detail` and
+ * `problem` keep what it answered, as a `ThalovantApiError` does. An
+ * authentication refusal is not this: it is thrown as the API's own error.
  */
 export class ThalovantAdmissionFailedError extends ThalovantConnectionError {
   readonly errorCode?: string;
+  readonly statusCode?: number;
+  readonly code?: string;
+  readonly detail?: string;
+  /** The whole body of the API's refusal, when it was a JSON object. Not enumerable. */
+  declare readonly problem?: Record<string, unknown>;
 
-  constructor(message?: string, options?: ErrorOptions & { errorCode?: string }) {
+  constructor(
+    message?: string,
+    options?: ErrorOptions & {
+      errorCode?: string;
+      statusCode?: number;
+      code?: string;
+      detail?: string;
+      problem?: Record<string, unknown>;
+    },
+  ) {
     super(message, options);
     this.errorCode = options?.errorCode;
+    this.statusCode = options?.statusCode;
+    const problem = isRecord(options?.problem) ? { ...options.problem } : undefined;
+    Object.defineProperty(this, "problem", { value: problem, enumerable: false, writable: false, configurable: false });
+    const read = problemFields(problem);
+    this.code = options?.code ?? read.code;
+    this.detail = options?.detail ?? read.detail;
   }
 }
 

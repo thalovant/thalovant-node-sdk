@@ -38,11 +38,13 @@ import {
   HOME_RESPONSE,
   HOME_RESPONSE_TYPES,
   HubSession,
+  plainSpeech,
   replyContext,
   ThalovantAdmissionFailedError,
   ThalovantAdmissionTimeoutError,
   ThalovantAlreadyLinkedError,
   ThalovantApiError,
+  ThalovantApiUnreachableError,
   ThalovantAuthError,
   ThalovantConnectionError,
   ThalovantControlPlane,
@@ -71,7 +73,7 @@ interface Exchange {
     if_match?: string;
     authorization?: string;
   };
-  response: { status: number; content_type: string; body: string };
+  response: { status: number; content_type: string; body: string; headers?: Record<string, string> };
   repeat?: boolean;
 }
 
@@ -94,12 +96,15 @@ const ADMISSION = loadVectors<{ cases: HttpCase[] }>("connection-admission-vecto
 const HOME = loadVectors<{
   cases: Array<{
     name: string;
-    kind: "reply_context" | "answer";
+    kind: "reply_context" | "answer" | "deadline" | "speech";
     context?: Json;
     request?: Json;
     handler?: Json;
     timeout_ms?: number;
-    expect: Json;
+    hub_timeout_ms?: number;
+    send_ms?: number;
+    text?: string;
+    expect: Json | string;
   }>;
   request_type: string;
   response_type: string;
@@ -161,10 +166,11 @@ class ScriptedApi {
       this.mismatches.push("wrong Authorization header");
     }
     const answer = Buffer.from(exchange.response.body, "utf8");
-    response.writeHead(
-      exchange.response.status,
-      answer.length ? { "content-type": exchange.response.content_type, "content-length": String(answer.length) } : {},
-    );
+    // The case's own headers too: a 429 carries Retry-After or RateLimit-Reset.
+    response.writeHead(exchange.response.status, {
+      ...(exchange.response.headers ?? {}),
+      ...(answer.length ? { "content-type": exchange.response.content_type, "content-length": String(answer.length) } : {}),
+    });
     response.end(answer);
   }
 }
@@ -349,24 +355,56 @@ for (const vector of KINDS.cases) {
 
 // -- admission --------------------------------------------------------------------
 
+/** A loopback port nothing listens on: bound, then released. */
+async function closedPort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const { port } = probe.address() as AddressInfo;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  return port;
+}
+
+/** The case's operation with {api_host} and {api_port} filled in. */
+function placed(value: unknown, host: string, port: string): unknown {
+  if (typeof value === "string") return value.replaceAll("{api_host}", host).replaceAll("{api_port}", port);
+  if (Array.isArray(value)) return value.map((item) => placed(item, host, port));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, placed(item, host, port)]));
+  }
+  return value;
+}
+
 for (const vector of ADMISSION.cases) {
   test(`connection admission: ${vector.name}`, async () => {
-    const call = vector.call as { operation: Json | null; timeout_ms: number; poll_interval_ms: number };
+    const call = vector.call as { operation: Json | null; timeout_ms: number; poll_interval_ms: number; api?: string };
     const expect = vector.expect as Json;
+    const unreachable = call.api === "unreachable" ? await closedPort() : undefined;
     const { produced, api } = await scripted(vector.exchanges, async (api) => {
-      const plane = new ThalovantControlPlane(api.url, { accessToken: "synthetic-token" });
+      const { port } = new URL(api.url);
+      const url = unreachable === undefined ? api.url : `http://127.0.0.1:${unreachable}`;
+      const plane = new ThalovantControlPlane(url, { accessToken: "synthetic-token" });
       const started = performance.now();
       let produced: Json;
       try {
-        await plane.waitForAdmission(call.operation, { timeoutMs: call.timeout_ms, pollIntervalMs: call.poll_interval_ms });
+        await plane.waitForAdmission(placed(call.operation, "127.0.0.1", port) as Json | null, {
+          timeoutMs: call.timeout_ms,
+          pollIntervalMs: call.poll_interval_ms,
+        });
         produced = { outcome: "admitted", polls: api.sent.length };
       } catch (error) {
         if (error instanceof ThalovantAdmissionTimeoutError) {
           assert.ok(error instanceof ThalovantConnectionError && error instanceof ThalovantTimeoutError);
+          assert.ok(error.message.endsWith("it may still admit it later."), error.message);
           produced = { outcome: "timeout" };
           if ("polls" in expect) produced.polls = api.sent.length;
         } else if (error instanceof ThalovantAdmissionFailedError) {
-          produced = { outcome: "failed", error_code: error.errorCode ?? null, polls: api.sent.length };
+          produced = { outcome: "failed", error_code: error.errorCode ?? null, status: error.statusCode ?? null };
+          if (error.statusCode !== undefined) Object.assign(produced, { code: error.code ?? null, detail: error.detail ?? null });
+          produced.polls = api.sent.length;
+        } else if (error instanceof ThalovantApiUnreachableError) {
+          produced = { outcome: "unreachable", polls: api.sent.length };
+        } else if (error instanceof ThalovantAuthError) {
+          produced = { outcome: "auth", status: error.statusCode ?? null, polls: api.sent.length };
         } else {
           assert.ok(error instanceof ThalovantApiError, String(error));
           produced = { outcome: "error", polls: api.sent.length };
@@ -410,13 +448,52 @@ function vectorHandler(spec: Json): HomeHandler {
   };
 }
 
+/** A transport that takes `sendMs` to put a reply on the wire, and sends nothing withdrawn by then. */
+function slowReplier(sendMs: number) {
+  const sent: Array<[string, Json]> = [];
+  return {
+    sent,
+    async reply(_event: ThalovantEvent, msgType: string, data: Json, _context?: unknown, options?: { signal?: AbortSignal }): Promise<void> {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, sendMs);
+        options?.signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new DOMException("withdrawn", "AbortError"));
+        }, { once: true });
+      });
+      sent.push([msgType, data]);
+    },
+  };
+}
+
 for (const vector of HOME.cases) {
   test(`home link: ${vector.name}`, async () => {
-    let produced: Json;
+    let produced: Json | string;
     if (vector.kind === "reply_context") {
       const before = structuredClone(vector.context);
       produced = replyContext(vector.context) as Json;
       assert.deepEqual(vector.context, before, "the request's context is never changed");
+    } else if (vector.kind === "speech") {
+      produced = plainSpeech(vector.text);
+    } else if (vector.kind === "deadline") {
+      const replier = slowReplier(vector.send_ms ?? 0);
+      const event = new ThalovantEvent(HOME_REQUEST, vector.request, { source: "skill" });
+      const started = performance.now();
+      const sent = await answerHomeRequest(replier, event, vectorHandler(vector.handler!), {
+        timeoutMs: vector.timeout_ms ?? 9_000,
+        hubTimeoutMs: vector.hub_timeout_ms,
+      });
+      // Never past the hub's bound, whatever the handler or the transport did.
+      assert.ok(performance.now() - started <= (vector.hub_timeout_ms ?? 10_000) + 100);
+      produced = { replied: sent !== undefined };
+      if (sent !== undefined) {
+        assert.deepEqual(replier.sent, [[HOME_RESPONSE, sent]]);
+        produced.response = sent;
+      } else {
+        // Withdrawn: nothing goes out later either.
+        await new Promise((resolve) => setTimeout(resolve, (vector.send_ms ?? 0) + 50));
+        assert.deepEqual(replier.sent, []);
+      }
     } else {
       const sent: Array<[string, Json]> = [];
       const replier = {
@@ -425,9 +502,11 @@ for (const vector of HOME.cases) {
         },
       };
       const event = new ThalovantEvent(HOME_REQUEST, vector.request, { source: "skill" });
-      produced = await answerHomeRequest(replier, event, vectorHandler(vector.handler!), {
+      const answered = await answerHomeRequest(replier, event, vectorHandler(vector.handler!), {
         timeoutMs: vector.timeout_ms ?? 9_000,
       });
+      assert.ok(answered);
+      produced = answered;
       assert.deepEqual(sent, [[HOME_RESPONSE, produced]]);
     }
     record("home-link-vectors.json", vector.name, produced);
@@ -476,7 +555,7 @@ test("home link: every answer case over a real WSS + Noise link, routed back as 
       {
         on: (name, handler) =>
           session.on(name, (event) => (event.data.utterance === item.request!.utterance ? handler(event) : undefined)),
-        reply: (event, msgType, data, context) => session.reply(event, msgType, data, context),
+        reply: (event, msgType, data, context, options) => session.reply(event, msgType, data, context, options),
       },
       handlers.get(item.name)!,
       { timeoutMs: timeouts.get(item.name) },

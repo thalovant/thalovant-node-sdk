@@ -1,12 +1,13 @@
 import { base64FromUtf8, base64ToBytes, bytesToBase64, bytesToHex, hexToBytes, utf8Decode, utf8Encode } from "./bytes.js";
 import { DEFAULT_USER_AGENT } from "./constants.js";
-import { ThalovantConnectionError, ThalovantHubRefusedError, ThalovantRuntimeError } from "./errors.js";
+import { ThalovantConnectionError, ThalovantHubKeyChangedError, ThalovantHubRefusedError, ThalovantRuntimeError } from "./errors.js";
 import {
   buildPrologue,
   canonicalJson,
   derivePskAsync,
   NoiseHandshake,
   NoiseSession,
+  NOISE_PATTERN_KK,
   noiseProtocolName,
   selectNoiseOptions,
 } from "./noise.js";
@@ -23,16 +24,10 @@ import { ThalovantIdentity } from "./identity.js";
 import { createPlatformWebSocket, randomUUID } from "./platform/node.js";
 import type { PlatformWebSocket } from "./platform/types.js";
 import { decodeHiveBinaryFrame } from "./wire.js";
+import { closeRefuses } from "./link-keeping.js";
 
 const MESH_KINDS = new Set(["broadcast", "propagate", "escalate", "intercom", "rendezvous"]);
 
-/**
- * WebSocket close codes a hub refuses credentials with: 1000, 1005 (no status)
- * and 1008 (policy). A hub that does not know a client's static key says so
- * only by closing, so these read as a refusal right after the handshake and a
- * drop any other time.
- */
-const REFUSAL_CLOSE_CODES: ReadonlySet<number> = new Set([1000, 1005, 1008]);
 
 export interface HiveMessage {
   msg_type: string;
@@ -45,6 +40,12 @@ export interface HiveMessage {
   target_site_id?: string | null;
   target_pubkey?: string | null;
   source_peer?: string | null;
+}
+
+/** Options for one send. */
+export interface SendOptions {
+  /** Withdraws the send while it is still queued; a frame already being written is finished. */
+  signal?: AbortSignal;
 }
 
 export interface TransportHealth {
@@ -81,8 +82,12 @@ export interface HiveMindRuntimeTransport extends EventTarget {
   disconnect(): Promise<void>;
   healthcheck(): TransportHealth;
   connectionInfo?(): TransportConnectionInfo;
-  emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void>;
-  sendHiveMessage?(message: HiveMessage, encrypt?: boolean): Promise<void>;
+  /**
+   * `options.signal` withdraws the send while it is still queued behind other
+   * frames; a frame already being written is finished.
+   */
+  emitBus(eventType: string, data: Record<string, unknown>, context: EventContext, options?: SendOptions): Promise<void>;
+  sendHiveMessage?(message: HiveMessage, encrypt?: boolean, options?: SendOptions): Promise<void>;
 }
 
 export class HiveMindHttpTransport extends EventTarget {
@@ -111,6 +116,14 @@ export class HiveMindHttpTransport extends EventTarget {
   private nodeId = "";
   private noiseHandshake?: NoiseHandshake;
   private session?: NoiseSession;
+  /** Choose XX whatever is pinned: the KK attempt before this one was refused. */
+  private forceXx = false;
+  /** The pattern this connect's latest attempt used, once it chose one. */
+  protected attemptPattern?: string;
+  /** The hub key pinned when this attempt started, checked against the one the hub presents. */
+  private attemptPin?: string;
+  /** When the handshake completed (monotonic ms), to tell a refusal close from a drop. */
+  private handshakeCompletedAt = 0;
 
   /**
    * Deriving the pre-shared key costs 64 MiB and a few hundred milliseconds,
@@ -197,7 +210,35 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   async connect(timeoutMs = 20000): Promise<void> {
-    return this.connectOnce(() => this.connectHttp(timeoutMs));
+    return this.connectOnce(() => this.withXxFallback((budget) => this.connectHttp(budget), timeoutMs));
+  }
+
+  /**
+   * One connect, and when its KK attempt is refused, one XX attempt at once.
+   *
+   * A KK handshake that does not authenticate -- the hub closing on its first
+   * message with a refusal code, or its answer failing here -- means the
+   * password or the hub's key is not what was pinned, and only XX can say
+   * which: a wrong password is a refusal, a changed hub key a
+   * {@link ThalovantHubKeyChangedError}. The XX attempt is not a downgrade:
+   * the pinned key is still checked when it completes. Its outcome is the
+   * connect's, inside the same budget.
+   */
+  protected async withXxFallback(attempt: (timeoutMs: number) => Promise<void>, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    this.forceXx = false;
+    this.attemptPattern = undefined;
+    try {
+      await attempt(timeoutMs);
+    } catch (error) {
+      if (!(error instanceof ThalovantHubRefusedError) || this.attemptPattern !== NOISE_PATTERN_KK) throw error;
+      this.forceXx = true;
+      try {
+        await attempt(Math.max(1, deadline - Date.now()));
+      } finally {
+        this.forceXx = false;
+      }
+    }
   }
 
   /** Clean up an owned admission before starting a fresh authenticated session. */
@@ -299,7 +340,7 @@ export class HiveMindHttpTransport extends EventTarget {
     return { ...this.currentConnection };
   }
 
-  async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+  async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext, options?: SendOptions): Promise<void> {
     await this.sendHiveMessage({
       msg_type: "bus",
       payload: { type: eventType, data, context },
@@ -309,7 +350,7 @@ export class HiveMindHttpTransport extends EventTarget {
       target_site_id: null,
       target_pubkey: null,
       source_peer: null,
-    });
+    }, true, options);
   }
 
   private startPolling(): void {
@@ -509,7 +550,13 @@ export class HiveMindHttpTransport extends EventTarget {
     const epoch = this.connectionEpoch;
     if (this.noiseHandshake || this.session) throw new ThalovantConnectionError("Duplicate Noise negotiation.");
     const pinned = await loadNoisePin(this.noiseStateDir, this.nodeId);
-    const selection = selectNoiseOptions(stringList(noiseParams.patterns), stringList(noiseParams.suites), pinned);
+    // After a KK attempt the hub refused, XX: the pin is still checked when it
+    // completes, below and in pinHubKey().
+    const selection = selectNoiseOptions(
+      stringList(noiseParams.patterns),
+      stringList(noiseParams.suites),
+      this.forceXx ? undefined : pinned,
+    );
     if (!selection) {
       throw new ThalovantConnectionError(
         "No Noise pattern and suite this SDK supports are on offer from the hub.",
@@ -522,6 +569,8 @@ export class HiveMindHttpTransport extends EventTarget {
     const psk = await this.pskFor(this.nodeId);
 
     if (epoch !== this.connectionEpoch || !this.connected) return;
+    this.attemptPattern = selection.pattern;
+    this.attemptPin = pinned;
     this.noiseHandshake = new NoiseHandshake(
       selection.pattern,
       selection.suite,
@@ -564,9 +613,16 @@ export class HiveMindHttpTransport extends EventTarget {
       // The PSK is the other thing this message authenticates, so a rejection
       // may mean the stored key came from a password that has since been
       // rotated. Drop it; the next attempt derives from the current one.
-      this.cachedPsk = undefined;
-      await forgetCachedPsk(this.noiseStateDir, nodeId).catch(() => undefined);
+      await this.forgetPsk(nodeId);
       throw error;
+    }
+
+    // The hub's key is known now: a pinned hub answering with another key is
+    // not the pinned hub, and hears nothing more from this client -- not even
+    // message 3, which carries this client's static key.
+    const presented = handshake.remoteStaticKey;
+    if (this.attemptPin && presented && presented.toLowerCase() !== this.attemptPin.toLowerCase()) {
+      throw new ThalovantHubKeyChangedError("The hub's Noise static key is not the one pinned for it; refusing the connection.");
     }
 
     if (!handshake.isFinished) {
@@ -602,6 +658,22 @@ export class HiveMindHttpTransport extends EventTarget {
       route: [],
     });
     if (epoch === this.connectionEpoch && this.connected) this.completeHandshake();
+  }
+
+  /** Forget the pre-shared key for a hub, here and on disk: the next attempt derives it afresh. */
+  private async forgetPsk(nodeId: string): Promise<void> {
+    this.cachedPsk = undefined;
+    await forgetCachedPsk(this.noiseStateDir, nodeId).catch(() => undefined);
+  }
+
+  /**
+   * The hub closed during this client's handshake with a refusal code. After
+   * a KK first message that is what a hub does when it cannot authenticate it
+   * -- because the password changed, or the hub's own key did -- so the PSK
+   * may be stale; the XX attempt that follows derives it afresh.
+   */
+  protected refusedDuringHandshake(): void {
+    if (this.attemptPattern === NOISE_PATTERN_KK && this.nodeId) void this.forgetPsk(this.nodeId);
   }
 
   /** Derive, or reuse, the pre-shared key for a hub. */
@@ -663,6 +735,7 @@ export class HiveMindHttpTransport extends EventTarget {
   protected completeHandshake(): void {
     if (this.handshakeComplete) return;
     this.handshakeComplete = true;
+    this.handshakeCompletedAt = performance.now();
     const now = Date.now();
     this.currentConnection = {
       ...this.currentConnection,
@@ -724,25 +797,18 @@ export class HiveMindHttpTransport extends EventTarget {
     };
   }
 
-  /** The hub closed an established link with `code`. */
+  /**
+   * The hub closed an established link with `code`. Whether that is a refusal
+   * is decided by the close's own time: within the settle window after the
+   * handshake, a refusal code is the hub's answer to the credentials.
+   */
   protected markClosedBy(code: number): void {
     this.currentConnection = {
       ...this.currentConnection,
       phase: "closed",
       closeCode: code,
-      refused: REFUSAL_CLOSE_CODES.has(code),
+      refused: closeRefuses(code, { closedAfterHandshakeMs: performance.now() - this.handshakeCompletedAt }),
     };
-  }
-
-  /**
-   * How far a handshake still in progress has come: waiting for the hub's
-   * HELLO, holding it before this client has answered (`offer`), or answered.
-   * A close in the `offer` step is not a verdict on the credentials, which the
-   * hub has not seen yet.
-   */
-  protected handshakeStep(): "hello" | "offer" | "response" {
-    if (this.noiseHandshake || this.session) return "response";
-    return this.serverHello ? "offer" : "hello";
   }
 
   protected async sendCleartext(message: HiveMessage): Promise<void> {
@@ -759,12 +825,15 @@ export class HiveMindHttpTransport extends EventTarget {
     });
   }
 
-  async sendHiveMessage(message: HiveMessage, _encrypt = true): Promise<void> {
+  async sendHiveMessage(message: HiveMessage, _encrypt = true, options?: SendOptions): Promise<void> {
     const session = this.session;
     if (!this.connected || !session) throw new ThalovantConnectionError("Refusing to send before the v3 Noise session is established.");
     const epoch = this.connectionEpoch;
     const serialized = utf8Encode(JSON.stringify(message));
     const send = this.sendChain.then(async () => {
+      // Withdrawn while queued: nothing was encrypted, so the session's nonce
+      // has not moved and the next frame is unaffected.
+      if (options?.signal?.aborted) throw withdrawnError();
       if (epoch !== this.connectionEpoch || session !== this.session) throw new ThalovantConnectionError("Noise session changed before send.");
       try {
         for (const frame of session.encryptMessage(serialized, true)) {
@@ -807,7 +876,7 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
    *   top of the round trips, so the default is generous rather than tight.
    */
   override async connect(timeoutMs = 20000): Promise<void> {
-    return this.connectOnce(() => this.connectWss(timeoutMs));
+    return this.connectOnce(() => this.withXxFallback((budget) => this.connectWss(budget), timeoutMs));
   }
 
   private async connectWss(timeoutMs: number): Promise<void> {
@@ -841,8 +910,11 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
       this.connected = false;
       if (!this.handshakeComplete) {
         const suffix = reason ? `: ${reason}` : "";
+        // Any step of the handshake, the hub's HELLO and its offer included.
+        const refused = closeRefuses(code);
+        if (refused) this.refusedDuringHandshake();
         this.rejectHandshake(
-          REFUSAL_CLOSE_CODES.has(code) && this.handshakeStep() !== "offer"
+          refused
             ? new ThalovantHubRefusedError(`The hub refused this connection's credentials (${code}).`)
             : new ThalovantConnectionError(`HiveMind WSS closed before handshake completed (${code})${suffix}.`),
         );
@@ -1008,6 +1080,10 @@ function decodeRawHiveMessage(raw: unknown): HiveMessage {
     return JSON.parse(raw) as HiveMessage;
   }
   return raw as HiveMessage;
+}
+
+function withdrawnError(): Error {
+  return new DOMException("The send was withdrawn before it went out.", "AbortError");
 }
 
 function sleep(ms: number): Promise<void> {
