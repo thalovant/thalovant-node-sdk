@@ -1952,8 +1952,12 @@ export class ThalovantControlPlane {
       let retryAfterMs = 0;
       let rateLimited = false;
       // Every read is bounded by what is left of the wait: a read the API is
-      // slow to answer must not carry the wait past its deadline.
-      const read = boundedSignal(signal, Math.max(0, deadline - performance.now()));
+      // slow to answer must not carry the wait past its deadline. With
+      // nothing left, no read starts at all: one aborted at once may already
+      // be on the wire, and its answer would come to nobody.
+      const left = deadline - performance.now();
+      if (left <= 0) throw timedOut();
+      const read = boundedSignal(signal, left);
       try {
         current = await this.getOperation(operationId, { signal: read.signal });
       } catch (error) {

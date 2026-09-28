@@ -994,3 +994,13 @@ test("an empty scope list is left out of the browser sign-in too", async () => {
     assert.deepEqual(bodies, [{}, {}]);
   });
 });
+
+test("no poll starts once the wait has nothing left: its answer would come to nobody", async () => {
+  await serving(() => ({ status: 200, body: requested("committed") }), async (url, sent) => {
+    const api = new ThalovantControlPlane(url, { accessToken: "t" });
+    // One read at once, then a sleep of the whole remainder: the deadline has passed.
+    await assert.rejects(api.waitForAdmission("op-1", { timeoutMs: 60, pollIntervalMs: 60 }), ThalovantAdmissionTimeoutError);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(sent.length, 1);
+  });
+});
