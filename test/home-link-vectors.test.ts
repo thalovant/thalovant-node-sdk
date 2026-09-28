@@ -29,6 +29,7 @@ import {
   answerHomeRequest,
   answerHomeRequests,
   CONNECTION_TYPE_HOME_ASSISTANT,
+  DEFAULT_HOME_HANDLER_TIMEOUT_MS,
   DeviceAuthorization,
   HOME_ASSISTANT_SCOPES,
   HOME_ERROR_CODES,
@@ -97,12 +98,12 @@ const HOME = loadVectors<{
     context?: Json;
     request?: Json;
     handler?: Json;
-    timeout_seconds?: number;
+    timeout_ms?: number;
     expect: Json;
   }>;
   request_type: string;
   response_type: string;
-  reply_timeout_seconds: number;
+  reply_timeout_ms: number;
   response_types: string[];
   error_codes: string[];
 }>("home-link-vectors.json");
@@ -279,6 +280,8 @@ for (const vector of DEVICE.cases) {
         await plane.revokeApiToken();
         assert.equal(plane.accessToken, undefined);
         assert.equal(plane.tokenId, undefined);
+        // Idempotent: revoking again sends nothing and succeeds.
+        await plane.revokeApiToken();
         return [{ outcome: "revoked" }];
       }
       return produced;
@@ -348,26 +351,35 @@ for (const vector of KINDS.cases) {
 
 for (const vector of ADMISSION.cases) {
   test(`connection admission: ${vector.name}`, async () => {
-    const call = vector.call as { operation: Json | null; timeout_seconds: number; poll_interval_seconds: number };
+    const call = vector.call as { operation: Json | null; timeout_ms: number; poll_interval_ms: number };
+    const expect = vector.expect as Json;
     const { produced, api } = await scripted(vector.exchanges, async (api) => {
       const plane = new ThalovantControlPlane(api.url, { accessToken: "synthetic-token" });
+      const started = performance.now();
+      let produced: Json;
       try {
-        await plane.waitForAdmission(call.operation, {
-          timeoutMs: call.timeout_seconds * 1000,
-          pollIntervalMs: call.poll_interval_seconds * 1000,
-        });
-        return { outcome: "admitted", polls: api.sent.length } as Json;
+        await plane.waitForAdmission(call.operation, { timeoutMs: call.timeout_ms, pollIntervalMs: call.poll_interval_ms });
+        produced = { outcome: "admitted", polls: api.sent.length };
       } catch (error) {
         if (error instanceof ThalovantAdmissionTimeoutError) {
           assert.ok(error instanceof ThalovantConnectionError && error instanceof ThalovantTimeoutError);
-          return { outcome: "timeout" } as Json;
+          produced = { outcome: "timeout" };
+          if ("polls" in expect) produced.polls = api.sent.length;
+        } else if (error instanceof ThalovantAdmissionFailedError) {
+          produced = { outcome: "failed", error_code: error.errorCode ?? null, polls: api.sent.length };
+        } else {
+          assert.ok(error instanceof ThalovantApiError, String(error));
+          produced = { outcome: "error", polls: api.sent.length };
         }
-        if (error instanceof ThalovantAdmissionFailedError) {
-          return { outcome: "failed", error_code: error.errorCode ?? null, polls: api.sent.length } as Json;
-        }
-        assert.ok(error instanceof ThalovantApiError, String(error));
-        return { outcome: "error", polls: api.sent.length } as Json;
       }
+      if ("waited_at_least_ms" in expect) {
+        // Recorded as the bound it met, as the reference records it, so every
+        // SDK records the same value.
+        const waited = performance.now() - started;
+        const bound = expect.waited_at_least_ms as number;
+        produced.waited_at_least_ms = waited >= bound ? bound : Math.floor(waited);
+      }
+      return produced;
     });
     record("connection-admission-vectors.json", vector.name, produced);
     assert.deepEqual(api.mismatches, []);
@@ -381,9 +393,9 @@ for (const vector of ADMISSION.cases) {
 function vectorHandler(spec: Json): HomeHandler {
   return async (_request, signal) => {
     if (spec.raises) throw new Error("the conversation agent is gone");
-    if (typeof spec.sleep_seconds === "number") {
+    if (typeof spec.sleep_ms === "number") {
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, (spec.sleep_seconds as number) * 1000);
+        const timer = setTimeout(resolve, spec.sleep_ms as number);
         // The SDK stops waiting at the timeout and says so; the handler can stop too.
         signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
       });
@@ -414,7 +426,7 @@ for (const vector of HOME.cases) {
       };
       const event = new ThalovantEvent(HOME_REQUEST, vector.request, { source: "skill" });
       produced = await answerHomeRequest(replier, event, vectorHandler(vector.handler!), {
-        timeoutMs: (vector.timeout_seconds ?? 9) * 1000,
+        timeoutMs: vector.timeout_ms ?? 9_000,
       });
       assert.deepEqual(sent, [[HOME_RESPONSE, produced]]);
     }
@@ -457,7 +469,7 @@ test("home link: every answer case over a real WSS + Noise link, routed back as 
 
   const answers = HOME.cases.filter((item) => item.kind === "answer");
   const handlers = new Map(answers.map((item) => [item.name, vectorHandler(item.handler!)]));
-  const timeouts = new Map(answers.map((item) => [item.name, (item.timeout_seconds ?? 9) * 1000]));
+  const timeouts = new Map(answers.map((item) => [item.name, item.timeout_ms ?? 9_000]));
   // One subscription per case, told apart by the utterance, with the case's own bound.
   const stops = answers.map((item) =>
     answerHomeRequests(
@@ -513,7 +525,8 @@ test("the contract's lists are the SDK's", () => {
   assert.deepEqual([...HOME_ERROR_CODES], HOME.error_codes);
   assert.equal(HOME_REQUEST, HOME.request_type);
   assert.equal(HOME_RESPONSE, HOME.response_type);
-  assert.equal(HOME_REQUEST_TIMEOUT_MS, HOME.reply_timeout_seconds * 1000);
+  assert.equal(HOME_REQUEST_TIMEOUT_MS, HOME.reply_timeout_ms);
+  assert.equal(DEFAULT_HOME_HANDLER_TIMEOUT_MS, 9_000);
   assert.deepEqual([...HOME_ASSISTANT_SCOPES], DEVICE.home_assistant_scopes);
   assert.equal(CONNECTION_TYPE_HOME_ASSISTANT, "home_assistant");
 });

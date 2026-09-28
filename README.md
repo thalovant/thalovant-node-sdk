@@ -511,7 +511,8 @@ the device code nor the token appears in an error or in `console.log` of these
 objects; `JSON.stringify` keeps them, so a sign-in can be stored as a secret and
 resumed with `DeviceAuthorization.fromGrant()`. `revokeApiToken()` revokes the
 token the SDK signed in with (a token may always revoke itself) and forgets it;
-a token already revoked (a 401 on its own revoke) counts as revoked. Every
+a token already revoked (a 401 on its own revoke) counts as revoked, and
+revoking again sends nothing until the next sign-in. Every
 sign-in -- device, password or native -- replaces `tokenId`, so an earlier
 token's id never outlives it.
 `HOME_ASSISTANT_SCOPES` is `hubs:read`, `clients:read` and `clients:write`,
@@ -542,7 +543,8 @@ reading the etag first when none is given, retrying once on 412, and counting
 follows the operation: `ready` resolves, `failed` and `timed_out` reject with
 `ThalovantAdmissionFailedError` (its `errorCode` is the operation's), and a 404
 or no operation at all resolves at once. A 5xx is ridden out, and a 429 no
-sooner than the `retry_after_seconds` it names. When `timeoutMs`
+sooner than the `retry_after_seconds` it names; a 429 asking for longer than is
+left ends the wait at once as a timeout. When `timeoutMs`
 (default 180000) passes first it rejects with `ThalovantAdmissionTimeoutError`,
 which is both a `ThalovantConnectionError` and a `ThalovantTimeoutError`: the
 connection may still be admitted later. A `links.self` on another origin than

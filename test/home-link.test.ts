@@ -271,6 +271,8 @@ test("every sign-in replaces the token id, and a token that revokes itself twice
     await api.revokeApiToken();
     assert.equal(api.accessToken, undefined);
     assert.equal(api.tokenId, undefined);
+    // And again: nothing to send, nothing refused.
+    await api.revokeApiToken();
     // Another token's 401 is still the refusal it is.
     api.accessToken = "tvt_other";
     await assert.rejects(api.revokeApiToken("t-someone"), ThalovantAuthError);
@@ -437,8 +439,10 @@ test("admission waits out a 429 for as long as the API asks, and no longer than 
   stamps.length = 0;
   await serving(() => { stamps.push(performance.now()); return lifted; }, async (url) => {
     const api = new ThalovantControlPlane(url, { accessToken: "t" });
-    await assert.rejects(api.waitForAdmission("op-1", { pollIntervalMs: 10, timeoutMs: 300 }), ThalovantAdmissionTimeoutError);
+    const started = performance.now();
+    await assert.rejects(api.waitForAdmission("op-1", { pollIntervalMs: 10, timeoutMs: 3_000 }), ThalovantAdmissionTimeoutError);
     assert.equal(stamps.length, 1, "no read the API said would be refused");
+    assert.ok(performance.now() - started < 1_000, "a timeout at once, not after sleeping out the wait");
   });
 });
 

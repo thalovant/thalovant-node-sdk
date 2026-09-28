@@ -767,6 +767,8 @@ export class ThalovantControlPlane {
   tokenId?: string;
   readonly userAgent: string;
   private readonly fetchImpl?: typeof fetch;
+  /** The token this client signed in with was revoked and forgotten; revoking it again is a no-op. */
+  private revokedOwn = false;
   /** Each device code's poll interval in seconds, lengthened by every slow_down. */
   private readonly deviceIntervals = new Map<string, number>();
 
@@ -812,6 +814,7 @@ export class ThalovantControlPlane {
     // A new sign-in replaces the token, so the id of an earlier one must not
     // outlive it: revokeApiToken() would send the new token to revoke the old.
     this.tokenId = tokenIdOf(token);
+    this.revokedOwn = false;
     return token;
   }
 
@@ -854,6 +857,7 @@ export class ThalovantControlPlane {
     }
     this.accessToken = accessToken;
     this.tokenId = tokenIdOf(token);
+    this.revokedOwn = false;
     return token;
   }
 
@@ -964,6 +968,9 @@ export class ThalovantControlPlane {
   async revokeApiToken(tokenId?: string): Promise<void> {
     const target = tokenId || this.tokenId;
     if (!target) {
+      // Already revoked and forgotten: revoking again changes nothing, until
+      // the next sign-in.
+      if (this.revokedOwn && this.accessToken === undefined) return;
       throw new ThalovantApiError("No API token id to revoke: pass tokenId, or sign in with a device login first.");
     }
     const own = target === this.tokenId;
@@ -978,6 +985,7 @@ export class ThalovantControlPlane {
     if (own) {
       this.accessToken = undefined;
       this.tokenId = undefined;
+      this.revokedOwn = true;
     }
   }
 
@@ -985,6 +993,7 @@ export class ThalovantControlPlane {
     this.accessToken = token.accessToken;
     // Always set, never kept: an earlier sign-in's id must not outlive its token.
     this.tokenId = token.tokenId ?? undefined;
+    this.revokedOwn = false;
   }
 
   private rememberDeviceInterval(deviceCode: string, interval: number): void {
@@ -1925,6 +1934,7 @@ export class ThalovantControlPlane {
     for (;;) {
       let current: OperationResource | undefined;
       let retryAfterMs = 0;
+      let rateLimited = false;
       try {
         current = await this.getOperation(operationId, { signal });
       } catch (error) {
@@ -1934,7 +1944,10 @@ export class ThalovantControlPlane {
         // it has forgotten carried its connection through long ago.
         if (error.statusCode === 404) return;
         // Rate limited: ridden out like a 5xx, but no sooner than the API asked.
-        if (error.statusCode === 429) retryAfterMs = retryAfterSeconds(error.problem) * 1000;
+        if (error.statusCode === 429) {
+          rateLimited = true;
+          retryAfterMs = retryAfterSeconds(error.problem) * 1000;
+        }
         else if (error.statusCode === undefined || error.statusCode < 500) throw error;
       }
       if (current?.status === "ready") return;
@@ -1948,15 +1961,13 @@ export class ThalovantControlPlane {
       const timedOut = () => new ThalovantAdmissionTimeoutError(
         `The hub did not admit the connection within ${timeoutMs}ms; it may still.`,
       );
+      const wait = Math.max(intervalMs, retryAfterMs);
       const remaining = deadline - performance.now();
       if (remaining <= 0) throw timedOut();
-      // Asked to come back after the deadline: asking sooner would be refused
-      // again, so the wait ends here.
-      if (retryAfterMs > remaining) {
-        await abortableSleep(remaining, signal);
-        throw timedOut();
-      }
-      await abortableSleep(Math.min(Math.max(intervalMs, retryAfterMs), remaining), signal);
+      // Asked to come back after the deadline: waiting it out would only end
+      // in the same timeout, later, and asking sooner would be refused again.
+      if (rateLimited && wait > remaining) throw timedOut();
+      await abortableSleep(Math.min(wait, remaining), signal);
     }
   }
 
@@ -2221,22 +2232,27 @@ function linkedClientId(problem: JsonRecord | undefined): string | undefined {
 /**
  * A 422 whose problem is about `connection_type`.
  *
- * Only the parts that describe the error are read: the problem's sentence, and
- * each entry's `loc` and `msg` when it is FastAPI's validation list. The whole
- * body is not, because `/v1/clients` echoes the spec it was sent -- which holds
- * `connection_type` whenever a kind was asked for -- so a 422 about the name
- * would otherwise read as the API not knowing the kind.
+ * Read from the problem's `detail` and `code`, and from each validation
+ * error's `loc` and `msg` (in its `errors` list, or FastAPI's `detail` list) --
+ * never from the rest of the body. `/v1/clients` echoes what it was sent as a
+ * validation error's `input`, and the request always carries
+ * `spec.connection_type`, so a 422 about any other field would otherwise read
+ * as the API not knowing the kind.
  */
 function refusesConnectionType(error: ThalovantApiError): boolean {
   if (error.statusCode !== 422) return false;
-  const names = (text: unknown): boolean =>
-    typeof text === "string" && (text.includes("connection_type") || text.includes("connectionType"));
-  if (names(error.detail)) return true;
-  const detail = error.problem?.detail;
-  if (Array.isArray(detail)) {
-    return detail.some((entry) => isRecord(entry) && ((Array.isArray(entry.loc) && entry.loc.some(names)) || names(entry.msg)));
+  const said: string[] = [error.detail, error.code].filter((text): text is string => typeof text === "string");
+  for (const key of ["errors", "detail"]) {
+    const entries = error.problem?.[key];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!isRecord(entry)) continue;
+      if (Array.isArray(entry.loc)) said.push(entry.loc.map(String).join("."));
+      else if (typeof entry.loc === "string") said.push(entry.loc);
+      if (typeof entry.msg === "string") said.push(entry.msg);
+    }
   }
-  return !error.problem && names(error.message);
+  return said.some((text) => text.includes("connection_type") || text.includes("connectionType"));
 }
 
 /** The operation a create answered with, when it is one. */
