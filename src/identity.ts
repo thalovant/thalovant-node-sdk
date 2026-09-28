@@ -1,5 +1,6 @@
 import { ThalovantIdentityError } from "./errors.js";
 import {
+  absoluteFilePath,
   defaultConfigPath as platformDefaultConfigPath,
   envVar,
   parseYamlText,
@@ -165,6 +166,7 @@ export class ThalovantIdentity {
   readonly publicKey?: string;
   readonly metadata: Record<string, unknown>;
   readonly mqtt?: MqttBrokerCredentials;
+  #sourcePath?: string;
 
   constructor(input: IdentityInput) {
     this.accessKey = required(input.accessKey ?? input.access_key ?? input.api_key ?? input.key, "access_key");
@@ -183,11 +185,30 @@ export class ThalovantIdentity {
     this.mqtt = MqttBrokerCredentials.from(input.mqtt);
   }
 
-  /** Node-only: reading identity files throws a ThalovantIdentityError in browsers. */
+  /**
+   * The file this identity was read from, when it was read from one
+   * (`fromFile`, `fromConfig`). A client keeps this identity's Noise key in
+   * that file's folder unless told otherwise, so every program that reads the
+   * same file presents the same key to the hub. Not identity material: never
+   * serialized, and not compared.
+   */
+  get sourcePath(): string | undefined {
+    return this.#sourcePath;
+  }
+
+  private withSource(path: string): this {
+    this.#sourcePath = absoluteFilePath(path);
+    return this;
+  }
+
+  /**
+   * Node-only: reading identity files throws a ThalovantIdentityError in
+   * browsers. `sourcePath` is the file.
+   */
   static async fromFile(path: string): Promise<ThalovantIdentity> {
     const text = await readSecretFile(path, "identity file");
     try {
-      return new ThalovantIdentity(JSON.parse(text) as IdentityInput);
+      return new ThalovantIdentity(JSON.parse(text) as IdentityInput).withSource(path);
     } catch (error) {
       if (error instanceof SyntaxError) {
         throw new ThalovantIdentityError(`Identity file is not valid JSON: ${path}`);
@@ -199,7 +220,10 @@ export class ThalovantIdentity {
     }
   }
 
-  /** Node-only: reading YAML config files throws a ThalovantIdentityError in browsers. */
+  /**
+   * Node-only: reading YAML config files throws a ThalovantIdentityError in
+   * browsers. `sourcePath` is the file.
+   */
   static async fromConfig(options: { path?: string; profile?: string } = {}): Promise<ThalovantIdentity> {
     const path = options.path ?? defaultConfigPath();
     const text = await readSecretFile(path, "Thalovant config file");
@@ -215,7 +239,7 @@ export class ThalovantIdentity {
     if (!isRecord(raw)) {
       throw new ThalovantIdentityError("Thalovant config file must contain a YAML object.");
     }
-    return new ThalovantIdentity(identityConfigInput(raw, options.profile));
+    return new ThalovantIdentity(identityConfigInput(raw, options.profile)).withSource(path);
   }
 
   static fromEnv(prefix = "THALOVANT_"): ThalovantIdentity {

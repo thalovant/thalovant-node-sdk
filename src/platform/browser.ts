@@ -87,7 +87,7 @@ export async function aesGcmDecrypt(key: Uint8Array, nonce: Uint8Array, sealed: 
   return new Uint8Array(plaintext);
 }
 
-export function inflateBytes(_bytes: Uint8Array): Uint8Array {
+export function inflateBytes(_bytes: Uint8Array, _maxOutputLength: number): Uint8Array {
   throw new Error("Compressed HiveMind binary frames are not supported in browsers.");
 }
 
@@ -197,6 +197,16 @@ export const NOISE_PSK_FILENAME = "noise_psks.json";
  */
 export function noiseStateDir(): string {
   return "thalovant:noise";
+}
+
+/** Browsers read no identity files; a path is kept as given. */
+export function absoluteFilePath(path: string): string {
+  return path;
+}
+
+/** A browser keeps every identity's Noise state in `localStorage`. */
+export function identityNoiseStateDir(_sourcePath: string): string | undefined {
+  return undefined;
 }
 
 const memoryNoiseState = new Map<string, string>();

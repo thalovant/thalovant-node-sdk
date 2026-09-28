@@ -162,6 +162,43 @@ export async function pinHubKey(
   });
 }
 
+/**
+ * Copy this client's key and hub pins from the folder an SDK before 0.9.1 kept
+ * them in, the first time `target` is used.
+ *
+ * Before 0.9.1 every identity with no `noiseStateDir` kept its key in the
+ * shared default folder. It now lives beside its identity file, and a hub pins
+ * the first key a connection presents: a device that silently got a new key
+ * would be locked out. So when `target` holds no key yet and `legacy` holds one
+ * that has already met this hub (a pin for `nodeId`, the node id the hub's
+ * HELLO names), that key and the pins are **copied** -- never moved: another
+ * program may still read the old folder. Returns whether it copied.
+ *
+ * @internal
+ */
+export async function adoptNoiseState(target: string, legacy: string, nodeId: string): Promise<boolean> {
+  if (!nodeId || target === legacy) return false;
+  return withPinLock(target, async () => {
+    if ((await readNoiseState(target, NOISE_KEY_FILENAME)) !== undefined) return false;
+    let key: string | undefined;
+    let pins: Record<string, string>;
+    try {
+      key = (await readNoiseState(legacy, NOISE_KEY_FILENAME))?.trim();
+      pins = await readPins(legacy);
+    } catch {
+      return false; // unreadable or not private: nothing to keep
+    }
+    // A key that never met this hub is not the one the hub pinned for this
+    // connection, so there is nothing to keep.
+    if (!key || !/^[0-9a-fA-F]{64}$/.test(key) || !pins[nodeId]) return false;
+    // The pins first and the key last: an interrupted copy leaves no key, and
+    // the next connect copies again. Pins already in the target win.
+    await writePins(target, Object.assign(pins, await readPins(target)));
+    await writeNoiseState(target, NOISE_KEY_FILENAME, key);
+    return true;
+  });
+}
+
 function validateNoisePin(publicKey: string): void {
   if (!/^[0-9a-fA-F]{64}$/.test(publicKey)) {
     throw new ThalovantIdentityError("A Noise pin must be a 32-byte hexadecimal public key.");

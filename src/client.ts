@@ -14,7 +14,6 @@ import {
 import { failureError, refusalBelongsToAsk, UNTRACKED_UTTERANCE_GRACE_MS } from "./refusal.js";
 import {
   ThalovantConnectionError,
-  ThalovantHubRefusedError,
   ThalovantRuntimeError,
   ThalovantTimeoutError,
   ThalovantUnsupportedProtocolError,
@@ -50,6 +49,7 @@ import {
   HiveMindRuntimeTransport,
   HiveMindWSSTransport,
   HiveMessage,
+  refusalAfterHandshake,
   type SendOptions,
   TransportConnectionInfo,
   TransportHealth,
@@ -230,11 +230,7 @@ export class ThalovantClient {
       return undefined;
     }
     if (info.phase !== "closed" && info.phase !== "error") return undefined;
-    if (info.refused) {
-      return new ThalovantHubRefusedError(
-        "The hub closed the link right after the handshake: it does not accept these credentials, or not yet.",
-      );
-    }
+    if (info.refused) return refusalAfterHandshake(info);
     return new ThalovantConnectionError("The hub closed the link right after the handshake.");
   }
 

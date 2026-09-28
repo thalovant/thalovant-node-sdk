@@ -4,6 +4,7 @@ import {
   type EventHandler,
 } from "./client.js";
 import {
+  ThalovantClientKeyRejectedError,
   ThalovantConnectionError,
   ThalovantHubKeyChangedError,
   ThalovantHubRefusedError,
@@ -16,7 +17,7 @@ import {
   type ThalovantEvent,
 } from "./events.js";
 import type { ThalovantIdentity } from "./identity.js";
-import type { SendOptions } from "./transport.js";
+import { refusalAfterHandshake, type SendOptions } from "./transport.js";
 import { HubSessionPolicy, LinkSupervisor } from "./link-keeping.js";
 
 // Defined beside the rules it parameterises, and exported here as it always was.
@@ -52,11 +53,13 @@ const WATCH_MS = 1_000;
 const MAX_TIMER_MS = 2_147_483_647;
 
 /** Whether the client's last close was the hub turning its credentials away. */
-function refusedNow(client: Pick<HubSessionClient, "connectionInfo">): boolean {
+/** The refusal a closed link's hub gave right after its handshake, or undefined. */
+function refusalNow(client: Pick<HubSessionClient, "connectionInfo">): ThalovantHubRefusedError | undefined {
   try {
-    return client.connectionInfo().refused === true;
+    const info = client.connectionInfo();
+    return info.refused === true ? refusalAfterHandshake(info) : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -269,10 +272,8 @@ export class HubSession {
       await delay(Math.min(SETTLE_CHECK_MS, left));
     }
     if (alive(client)) return;
-    if (refusedNow(client))
-      throw new ThalovantHubRefusedError(
-        "The hub closed the link right after the handshake: it does not accept these credentials, or not yet.",
-      );
+    const refusal = refusalNow(client);
+    if (refusal) throw refusal;
     throw new ThalovantConnectionError(
       "The hub closed the link right after the handshake.",
     );
@@ -411,6 +412,7 @@ export class HubSession {
         // attempt and reset when the link comes up.
         const outcome = failure === undefined ? "up"
           : failure instanceof ThalovantHubKeyChangedError ? "key_changed"
+          : failure instanceof ThalovantClientKeyRejectedError ? "client_key_rejected"
           : failure instanceof ThalovantHubRefusedError ? "refused"
           : "failed";
         const decision = supervisor.after(outcome, this.clock());

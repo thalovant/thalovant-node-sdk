@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,9 +25,11 @@ import {
   HubSession,
   HubSessionPolicy,
   LinkSupervisor,
+  NOISE_KEY_FILENAME,
   REFUSAL_CLOSE_CODES,
   REFUSAL_SETTLE_MS,
   ThalovantClient,
+  ThalovantClientKeyRejectedError,
   ThalovantConnectionError,
   ThalovantHubKeyChangedError,
   ThalovantHubRefusedError,
@@ -48,6 +50,7 @@ interface Case {
   after_ms?: number;
   code?: number | null;
   code_late_ms?: number;
+  after_authenticated_frame?: boolean;
   situation?: string;
   hub_offers_kk?: boolean;
   status?: number;
@@ -89,6 +92,7 @@ for (const vector of cases("close")) {
     const refused = closeRefuses(vector.code, {
       closedAfterHandshakeMs: vector.when === "after_handshake" ? vector.after_ms : undefined,
       codeLateMs: vector.code_late_ms ?? 0,
+      afterAuthenticatedFrame: vector.after_authenticated_frame ?? false,
     });
     const produced = { outcome: refused ? "refused" : "dropped" };
     record("link-keeping-vectors.json", vector.name, produced);
@@ -108,6 +112,8 @@ class LoopbackHub {
   staticKey = Uint8Array.from(randomBytes(32));
   offerKk = true;
   upgradeStatus?: number;
+  /** Close right after the handshake -- having sent one encrypted frame first. */
+  speakThenClose = false;
   readonly patterns: string[] = [];
   private clientKey?: Uint8Array;
   private server?: WebSocketServer;
@@ -140,6 +146,9 @@ class LoopbackHub {
     const peer = createV3HubPeer(this.password, (data, binary) => socket.send(data, { binary }), {
       staticPrivateKey: this.staticKey,
       pinnedClientKey: this.offerKk ? this.clientKey : undefined,
+      // hivemind-core pins the first client key a connection presents and
+      // aborts, before sending anything, on any other an XX handshake shows.
+      requiredClientKey: this.clientKey,
     });
     socket.on("message", (data: Buffer, isBinary: boolean) => {
       const text = isBinary ? undefined : data.toString();
@@ -158,31 +167,50 @@ class LoopbackHub {
         return;
       }
       if (peer.clientStaticKey && !this.clientKey) this.clientKey = hexToBytes(peer.clientStaticKey);
+      if (this.speakThenClose && peer.clientStaticKey && !spoke) {
+        spoke = true;
+        peer.sendBus({ type: "hub.ready", data: {}, context: {} });
+        socket.close();
+      }
     });
+    let spoke = false;
     peer.start();
   }
 }
 
-type Outcome = "connected" | "refused" | "key_changed" | "failed";
+type Outcome = "connected" | "refused" | "key_changed" | "client_key_rejected" | "failed";
 
 function outcomeOf(error: unknown): Outcome {
   if (error === undefined) return "connected";
+  if (error instanceof ThalovantClientKeyRejectedError) return "client_key_rejected";
   if (error instanceof ThalovantHubRefusedError) return "refused";
   if (error instanceof ThalovantHubKeyChangedError) return "key_changed";
   assert.ok(error instanceof ThalovantConnectionError, String(error));
   return "failed";
 }
 
+/** One connect as a kept link makes it: the handshake, then the settle window. */
 async function attempt(identity: ThalovantIdentity, noiseStateDir: string): Promise<unknown> {
-  const client = new ThalovantClient(identity, { protocol: "wss", noiseStateDir });
+  const session = HubSession.forIdentity(identity, {
+    client: { protocol: "wss", noiseStateDir },
+    warm: false,
+    connectTimeoutMs: 10_000,
+    settleSeconds: POLICY.settle_ms / 1000,
+  });
   try {
-    await client.connect(10_000);
+    // What run() does for each attempt: connect, then hold the settle window.
+    await (session as unknown as { ensure(settle: boolean): Promise<unknown> }).ensure(true);
     return undefined;
   } catch (error) {
     return error;
   } finally {
-    await client.close();
+    await session.close();
   }
+}
+
+/** Give the client a new static key, keeping the hub pins it has. */
+async function replaceClientKey(noiseStateDir: string): Promise<void> {
+  await writeFile(join(noiseStateDir, NOISE_KEY_FILENAME), randomBytes(32).toString("hex"), { mode: 0o600 });
 }
 
 for (const vector of cases("handshake")) {
@@ -195,7 +223,9 @@ for (const vector of cases("handshake")) {
       await rm(noiseStateDir, { recursive: true, force: true });
     });
     let identity = hub.identity();
-    if (["pinned", "password_changed_since_pinning", "hub_key_changed"].includes(vector.situation!)) {
+    let stateDir = noiseStateDir;
+    if (["pinned", "password_changed_since_pinning", "hub_key_changed", "client_key_changed",
+      "client_key_changed_pinned_here"].includes(vector.situation!)) {
       assert.equal(await attempt(identity, noiseStateDir), undefined, "first contact pins both ways");
     }
     if (vector.situation === "wrong_password") identity = hub.identity("a-wrong-password");
@@ -204,8 +234,11 @@ for (const vector of cases("handshake")) {
       hub.staticKey = Uint8Array.from(randomBytes(32)); // the hub was replaced
       hub.offerKk = vector.hub_offers_kk ?? true;
     } else if (vector.situation === "upgrade_status") hub.upgradeStatus = vector.status;
+    else if (vector.situation === "client_key_changed") stateDir = join(noiseStateDir, "another-program"); // its own key
+    else if (vector.situation === "client_key_changed_pinned_here") await replaceClientKey(noiseStateDir);
+    else if (vector.situation === "closed_after_first_frame") hub.speakThenClose = true;
     const before = hub.patterns.length;
-    const outcome = outcomeOf(await attempt(identity, noiseStateDir));
+    const outcome = outcomeOf(await attempt(identity, stateDir));
     const produced = { outcome, patterns: hub.patterns.slice(before) };
     record("link-keeping-vectors.json", vector.name, produced);
     assert.deepEqual(produced, vector.expect);

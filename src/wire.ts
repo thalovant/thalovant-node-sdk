@@ -117,8 +117,28 @@ export function decodeHiveBinaryFrame(payload: Uint8Array): HiveWireMessage {
   };
 }
 
+/**
+ * The most a compressed part of a binary frame may inflate to. A reassembled
+ * Noise message is itself capped at 32 MiB; without a cap here, a small frame
+ * of zeros from a hub could make the client allocate gigabytes.
+ */
+export const MAX_INFLATED_BYTES = 32 * 1024 * 1024;
+
 function bytesToText(bytes: Uint8Array, compressed: boolean): string {
-  return utf8Decode(compressed ? inflateBytes(bytes) : bytes);
+  if (!compressed) return utf8Decode(bytes);
+  let inflated: Uint8Array;
+  try {
+    inflated = inflateBytes(bytes, MAX_INFLATED_BYTES);
+  } catch (error) {
+    // Past the cap (a RangeError from zlib) or truncated: the frame is refused.
+    if (error instanceof RangeError) throw new Error("HiveMind binary frame inflates past the size limit.");
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && code.startsWith("Z_")) {
+      throw new Error("HiveMind binary frame holds a compressed stream that does not inflate.");
+    }
+    throw error;
+  }
+  return utf8Decode(inflated);
 }
 
 function parseRecord(raw: string): Record<string, unknown> {

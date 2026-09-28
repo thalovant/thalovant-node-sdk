@@ -439,6 +439,19 @@ Raw identity files are supported too:
 const client = await ThalovantClient.fromIdentityFile("_identity.json");
 ```
 
+**Where the Noise key lives.** A hub pins the first Noise key a connection
+presents, so every program that uses one identity must present the same key.
+An identity read from a file (`fromIdentityFile()`, `fromConfig()`, and
+`ThalovantIdentity.fromFile()`, which keeps the path as `sourcePath`) keeps its
+key and hub pins in that file's folder unless you pass `noiseStateDir`, so two
+programs reading the same file share them. A file in `~/.config/thalovant`
+changes nothing: that was always the folder. For a file elsewhere, the first
+connect copies the key and pins the SDK kept in `~/.config/thalovant` before
+0.9.1 -- only when that key has already met this hub, and never moving them --
+so no device gets a new key and is locked out. A folder the process cannot write
+falls back to `~/.config/thalovant`. A browser keeps them in `localStorage`, as
+before.
+
 Environment variables are supported too:
 
 ```ts
@@ -456,6 +469,7 @@ one call, so a config flow can run it on its own schedule.
 import {
   answerHomeRequests,
   CONNECTION_TYPE_HOME_ASSISTANT,
+  HOME_ASSISTANT_CLIENT_ID,
   HOME_ASSISTANT_SCOPES,
   HubSession,
   ThalovantAlreadyLinkedError,
@@ -465,8 +479,12 @@ import {
 
 const api = new ThalovantControlPlane();
 
-// 1. Sign in on the device (RFC 8628), one poll at a time.
-const grant = await api.beginDeviceLogin({ scopes: HOME_ASSISTANT_SCOPES, clientName: "Home Assistant" });
+// 1. Sign in on the device (RFC 8628), one poll at a time, as the registered app.
+const grant = await api.beginDeviceLogin({
+  scopes: HOME_ASSISTANT_SCOPES,
+  clientId: HOME_ASSISTANT_CLIENT_ID,
+  clientName: "Home Assistant (kitchen)",
+});
 console.log(`Visit ${grant.verificationUri} and enter ${grant.userCode}`);
 for (;;) {
   try {
@@ -519,6 +537,19 @@ sign-in -- device, password or native -- replaces `tokenId`, so an earlier
 token's id never outlives it.
 `HOME_ASSISTANT_SCOPES` is `hubs:read`, `clients:read` and `clients:write`,
 which is also all a Free plan can approve.
+
+`clientId` signs in as a registered app: `HOME_ASSISTANT_CLIENT_ID`
+(`thalovant-home-assistant`) for Home Assistant. The approval screen then shows
+the platform's own name for the app as verified, with `clientName` as the
+device's label beside it, and approving the app again replaces the token it
+already holds instead of counting a second one against the plan. Such an app may
+ask only for its own scopes, and an id the API does not know is refused (400
+`unknown_client`). Left out, the device names itself, unverified.
+`describeDeviceLogin(userCode)`, signed in as the person approving, reads a
+pending sign-in as the approval screen does: a `DeviceLoginRequest` with
+`scopes`, `clientName`, `clientId`, `clientVerified` (true only for a registered
+app), `deviceName` and `expiresAt`. A code that is unknown, expired or already
+answered is a 404.
 
 **Creating the connection.** `connectionType` is sent as
 `spec.connection_type`. When the answer does not repeat it, the API made an
@@ -585,15 +616,27 @@ stops waiting for it.
 `session.close()`: it looks at a held link every 60 seconds (and notices a drop
 within a second), retries a failed attempt after 10 seconds doubling to 120, and
 treats a close with 1000, 1005 or 1008 during the handshake or within
-`settleSeconds` (0.75) after it as the hub refusing the credentials, since a hub
-that does not know a connection's key says so only by closing; a handshake that
-fails to authenticate (a password the hub does not hold) is a refusal too.
+`settleSeconds` (0.75) after it, before the hub has sent anything that
+decrypts, as the hub refusing the credentials, since a hub that does not know a
+connection's key says so only by closing; once the hub has spoken, it had
+accepted them, and a close is a drop. A handshake that fails to authenticate (a
+password the hub does not hold) is a refusal too.
 Refusals count as "not admitted yet" for `refusalGraceSeconds` (600), then
 `run()` rejects with `ThalovantHubRefusedError`. A refused KK handshake is
 followed at once by one XX handshake inside the same connect, which is how a
 changed password (a refusal) is told from a changed hub key: a hub whose Noise
 key is not the pinned one rejects with `ThalovantHubKeyChangedError`, and
-`run()` stops on it at once, since retrying cannot change it. The rules are
+`run()` stops on it at once, since retrying cannot change it. A hub that
+closes as an XX handshake ends -- or, over HTTPS polling, answers 401 or 403
+while its last frames go out or right after -- has refused this client's own
+key, because it pinned another one for the connection:
+`ThalovantClientKeyRejectedError`, a `ThalovantHubRefusedError` whose
+`keyFolder` names the folder this client's key is in and `otherKeyFolder` where
+another program reading the same identity likely keeps its own. No handshake
+can fix that, so `run()` stops on it at once too: re-pair, or point every
+program at the folder holding the key the hub trusts (`noiseStateDir`). A reply
+withdrawn while it waits behind another frame is never sent and leaves the link
+as it was. The rules are
 `closeRefuses()` and `LinkSupervisor`, for a caller that runs its own loop.
 `session.onStateChange(up => ...)` reports the link coming up and going down.
 
@@ -1083,8 +1126,9 @@ replaced with `[redacted]` in `detail` and `problem` too.
 - `new ThalovantControlPlane()`
 - `new ThalovantControlPlane(apiUrl, options)` for local or self-hosted control planes
 - `controlPlane.login(email, password, options)` with optional `scope`, `otpCode`, and `recoveryCode`
-- `controlPlane.loginWithBrowser(options)` with optional `scopes`, `clientName`, `openBrowser`, `prompt`, and `timeoutMs`
-- `controlPlane.beginDeviceLogin(options)` with optional `scopes` and `clientName`
+- `controlPlane.loginWithBrowser(options)` with optional `scopes`, `clientName`, `clientId`, `openBrowser`, `prompt`, and `timeoutMs`
+- `controlPlane.beginDeviceLogin(options)` with optional `scopes`, `clientName`, and `clientId` (`HOME_ASSISTANT_CLIENT_ID`)
+- `controlPlane.describeDeviceLogin(userCode)` — a pending sign-in as its approver sees it (`DeviceLoginRequest`)
 - `controlPlane.pollDeviceLogin(authorization)` — one poll; resolves with an `ApiToken` or rejects pending, expired or denied
 - `controlPlane.revokeApiToken(tokenId?)` — by default the token the SDK signed in with
 - `controlPlane.listPublicHubs(options)`
@@ -1130,7 +1174,7 @@ replaced with `[redacted]` in `detail` and `problem` too.
 - `controlPlane.deleteClient(clientId, { etag })` — reads the etag when omitted, retries one 412, counts 404 as deleted
 - `controlPlane.waitForAdmission(connection, options)` with optional `timeoutMs`, `pollIntervalMs`, and `signal`
 - `new ThalovantControlPlane(apiUrl, { fetch })` to send every request with your own `fetch`
-- `ThalovantIdentity.fromConfig(options)`
+- `ThalovantIdentity.fromConfig(options)` and `ThalovantIdentity.fromFile(path)`, which keep `sourcePath`
 - `ThalovantClient.fromConfig(options)`
 - `ThalovantClient.fromIdentityFile(path)`
 - `ThalovantClient.fromEnv()`
@@ -1149,7 +1193,8 @@ replaced with `[redacted]` in `detail` and `problem` too.
 - `replyContext(context)`
 - `answerHomeRequests(clientOrSession, handler, options)` and `answerHomeRequest(clientOrSession, event, handler, options)`
 - `HubSession.forIdentity(identity, options)`, `session.run(options)`, `session.reply(...)`, `session.onStateChange(callback)`
-- `closeRefuses(code, options)`, `new LinkSupervisor(policy).after(outcome, now)`, `decodeReferences(text)`
+- `closeRefuses(code, options)` with optional `closedAfterHandshakeMs`, `codeLateMs` and `afterAuthenticatedFrame`, `new LinkSupervisor(policy).after(outcome, now)`, `decodeReferences(text)`
+- `ThalovantClientKeyRejectedError` (a `ThalovantHubRefusedError`) with `keyFolder` and `otherKeyFolder`
 - `client.conversation(options)`
 - `client.intents(languages, options)` with optional `timeoutMs`, `describe`, and `fallback`
 - `client.listIntents(lang, options)` with optional `timeoutMs` and `includeDefinitions`

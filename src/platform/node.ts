@@ -12,9 +12,10 @@ import {
   randomBytes as nodeRandomBytes,
   randomUUID as nodeRandomUUID,
 } from "node:crypto";
+import { accessSync, constants as fsConstants } from "node:fs";
 import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { inflateSync } from "node:zlib";
 import WebSocket from "ws";
 import { parse as parseYaml } from "yaml";
@@ -58,8 +59,13 @@ export async function aesGcmDecrypt(key: Uint8Array, nonce: Uint8Array, sealed: 
   return aesGcmDecryptSync(key, nonce, sealed);
 }
 
-export function inflateBytes(bytes: Uint8Array): Uint8Array {
-  return inflateSync(bytes);
+/**
+ * Inflate a compressed part of a binary frame, to at most `maxOutputLength`
+ * bytes. Past that the output buffer is refused ({@link RangeError}), and a
+ * truncated stream fails as zlib fails it.
+ */
+export function inflateBytes(bytes: Uint8Array, maxOutputLength: number): Uint8Array {
+  return inflateSync(bytes, { maxOutputLength });
 }
 
 export function createPlatformWebSocket(url: string): PlatformWebSocket {
@@ -292,6 +298,29 @@ export const NOISE_PSK_FILENAME = "noise_psks.json";
 
 export function noiseStateDir(): string {
   return dirname(defaultConfigPath("config.yaml"));
+}
+
+/** A file's absolute path, for `ThalovantIdentity.sourcePath`. */
+export function absoluteFilePath(path: string): string {
+  return resolve(path);
+}
+
+/**
+ * The folder an identity read from `sourcePath` keeps its Noise state in when
+ * no folder is named: the file's own folder, so every program that reads the
+ * same file presents the same key to the hub. Undefined -- the shared default,
+ * {@link noiseStateDir} -- when the file already sits there, or when its folder
+ * cannot be written (an identity in `/etc` read by an ordinary user).
+ */
+export function identityNoiseStateDir(sourcePath: string): string | undefined {
+  const folder = dirname(resolve(sourcePath));
+  if (folder === resolve(noiseStateDir())) return undefined;
+  try {
+    accessSync(folder, fsConstants.W_OK);
+  } catch {
+    return undefined;
+  }
+  return folder;
 }
 
 export function defaultInventoryCacheDirectory(): string {
