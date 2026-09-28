@@ -27,6 +27,7 @@ import {
 } from "./protocols.js";
 import { REDACTED, redactSecretsInText, withoutSecretKeys } from "./redact.js";
 import { USER_AGENT } from "./version.js";
+import { trimSlashes, trimTrailingSlashes } from "./slashes.js";
 
 export const DEFAULT_CONTROL_API_URL = "https://api.thalovant.com";
 /** Control-plane user agent. Derived from the one version constant, never pinned. */
@@ -2056,11 +2057,11 @@ function newSecret(): string {
 }
 
 function normalizeControlApiUrl(apiUrl: string): string {
-  let normalized = (apiUrl || DEFAULT_CONTROL_API_URL).trim().replace(/\/+$/, "");
+  let normalized = trimTrailingSlashes((apiUrl || DEFAULT_CONTROL_API_URL).trim());
   if (normalized.endsWith("/v1")) {
     normalized = normalized.slice(0, -3);
   }
-  return `${normalized.replace(/\/+$/, "")}/`;
+  return `${trimTrailingSlashes(normalized)}/`;
 }
 
 function setStringParam(params: URLSearchParams, key: string, value?: string): void {
@@ -2146,7 +2147,7 @@ function stripPath(endpoint: string): string {
     url.hash = "";
     return url.toString().replace(/\/$/, "");
   } catch {
-    return endpoint.replace(/\/+$/, "");
+    return trimTrailingSlashes(endpoint);
   }
 }
 
@@ -2269,15 +2270,6 @@ function admissionOperationId(operation: OperationResource | JsonRecord | string
   } catch {
     return text;
   }
-}
-
-/** `text` without leading or trailing slashes, in one linear pass rather than a backtracking pattern. */
-function trimSlashes(text: string): string {
-  let start = 0;
-  let end = text.length;
-  while (start < end && text[start] === "/") start += 1;
-  while (end > start && text[end - 1] === "/") end -= 1;
-  return text.slice(start, end);
 }
 
 /**

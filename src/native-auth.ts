@@ -216,7 +216,10 @@ export function assertSecureTokenExchange(apiUrl: string): void {
 function origin(url: string): string | null {
   try {
     const parsed = new URL(url);
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, "")}`.toLowerCase();
+    // A loop, as above: the trailing-run regex backtracks on a path of slashes.
+    let path = parsed.pathname;
+    while (path.endsWith("/")) path = path.slice(0, -1);
+    return `${parsed.protocol}//${parsed.host}${path}`.toLowerCase();
   } catch {
     return null;
   }

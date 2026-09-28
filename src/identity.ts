@@ -7,6 +7,7 @@ import {
 } from "./platform/node.js";
 import { HubDataPlaneEndpoints, HubProtocol, HubProtocolSettings } from "./protocols.js";
 import { REDACTED, redactUrlUserinfo, withoutSecretKeys } from "./redact.js";
+import { trimSlashes, trimTrailingSlashes } from "./slashes.js";
 
 const DEFAULT_CONFIG_FILENAME = "config.yaml";
 
@@ -168,10 +169,10 @@ export class ThalovantIdentity {
   constructor(input: IdentityInput) {
     this.accessKey = required(input.accessKey ?? input.access_key ?? input.api_key ?? input.key, "access_key");
     this.password = required(input.password, "password");
-    this.defaultMaster = required(
+    this.defaultMaster = trimTrailingSlashes(required(
       input.defaultMaster ?? input.default_master ?? input.hub_http_host ?? input.host ?? input.master,
       "default_master",
-    ).replace(/\/+$/, "");
+    ));
     this.siteId = required(input.siteId ?? input.site_id ?? input.site, "site_id");
     this.defaultPort = numberValue(input.defaultPort ?? input.default_port ?? input.hub_http_port ?? input.port ?? 5679);
     this.defaultPath = normalizePath(input.defaultPath ?? input.default_path ?? input.hub_http_path ?? input.path ?? input.uri_path);
@@ -386,6 +387,7 @@ function boolValue(value: unknown, fallback: boolean): boolean {
 }
 
 function normalizePath(value: unknown): string {
-  const normalized = optional(value)?.replace(/^\/+|\/+$/g, "");
+  const raw = optional(value);
+  const normalized = raw === undefined ? undefined : trimSlashes(raw);
   return normalized ? `/${normalized}` : "";
 }

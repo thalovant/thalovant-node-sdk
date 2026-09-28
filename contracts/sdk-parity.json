@@ -2,7 +2,7 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/control.ts": "c63a1a81a55ba9d6eddc48c31aa903f00123df66dcb3b60d735aa77b1f7e079a",
+        "src/control.ts": "66681e3b4159c6f83285935331daba91e15357f8e267bc9476465e05bff612e4",
         "src/errors.ts": "2f70d52dca50bfec6b62f356045710b95f9e2e5c743bd056f8a33fdabb6aeabf"
       },
       "reason": "ThalovantApiError in src/errors.ts carries statusCode, code, detail and a non-enumerable problem, filled by apiError() in src/control.ts for every failed control-plane response, device-flow polling included; the message is unchanged. Run against the shared api-error vectors, each served by a loopback node:http peer and read back through getHub(), plus a device sign-in poll and a createClientIdentity() whose generated secrets stay redacted.",
@@ -40,7 +40,7 @@
     },
     "connection-admission": {
       "implementation": {
-        "src/control.ts": "c63a1a81a55ba9d6eddc48c31aa903f00123df66dcb3b60d735aa77b1f7e079a",
+        "src/control.ts": "66681e3b4159c6f83285935331daba91e15357f8e267bc9476465e05bff612e4",
         "src/errors.ts": "2f70d52dca50bfec6b62f356045710b95f9e2e5c743bd056f8a33fdabb6aeabf"
       },
       "reason": "waitForAdmission() follows the create's operation with GET /v1/operations/{id}: ready resolves, failed and timed_out reject with ThalovantAdmissionFailedError(errorCode), requested/committed/applied keep polling, 404 and no operation resolve at once, a 5xx is ridden out, and the deadline rejects with ThalovantAdmissionTimeoutError, which answers instanceof for both ThalovantConnectionError and ThalovantTimeoutError (Symbol.hasInstance on ThalovantTimeoutError). A links.self on another origin than the API's is refused before any request; an AbortSignal stops the wait. Run against the shared admission vectors over a loopback node:http peer. The vectors carry fractional seconds, which scripts/record-conformance.mjs digests as Python spells them (fixed notation, 1e-4 to 1e16).",
@@ -58,7 +58,7 @@
     },
     "connection-kinds": {
       "implementation": {
-        "src/control.ts": "c63a1a81a55ba9d6eddc48c31aa903f00123df66dcb3b60d735aa77b1f7e079a",
+        "src/control.ts": "66681e3b4159c6f83285935331daba91e15357f8e267bc9476465e05bff612e4",
         "src/errors.ts": "2f70d52dca50bfec6b62f356045710b95f9e2e5c743bd056f8a33fdabb6aeabf"
       },
       "reason": "createClientIdentity(hub, { connectionType }) sends spec.connection_type and requireConnectionType() deletes (If-Match: the answer's etag) and refuses a client whose answer does not repeat it; a 422 naming connection_type is ThalovantUnsupportedConnectionTypeError, and apiError() classes 402/403 plan_limit as ThalovantPlanError, 409 home_assistant_already_linked as ThalovantAlreadyLinkedError with clientId, and 401/423/403 'Insufficient scopes' as ThalovantAuthError, all keeping statusCode, code and detail. deleteClient() reads the etag when none is given, retries one 412 and counts 404 as deleted. Run against the shared connection-kinds vectors over a loopback node:http peer that checks method, path, body subset and If-Match of every request.",
@@ -76,9 +76,10 @@
     },
     "control": {
       "implementation": {
-        "src/control.ts": "c63a1a81a55ba9d6eddc48c31aa903f00123df66dcb3b60d735aa77b1f7e079a",
+        "src/control.ts": "66681e3b4159c6f83285935331daba91e15357f8e267bc9476465e05bff612e4",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
-        "src/native-auth.ts": "5a186664da7e4705973be0cbb31a79fb8657807080acbd7e34a0986622822a8e"
+        "src/native-auth.ts": "352f2ef326b846eee5b5df2de347bf88889122ba29edf22ff4f003e7e4cc0322",
+        "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
       "status": "required",
@@ -86,7 +87,8 @@
         "test/control-security.test.ts": "b8e89b545dacdc117367aa277651436fa5fe47d9959d02c52a1ff76e035c1c6d",
         "test/hub-skills.test.ts": "3e5551a1195dfb7c4a13b7dc1ad7e0903a1b216b5fbe200bece925353af94634",
         "test/hubs.test.ts": "895a164d1cabe309886d2646cdd83611a7b4f58fe6944349c0fc3aab641a5c5e",
-        "test/native-auth.test.ts": "c424ace4571ca3ede8717d5c51bd86a3a92fa50af429533326d8a7cec556b9f5"
+        "test/native-auth.test.ts": "c424ace4571ca3ede8717d5c51bd86a3a92fa50af429533326d8a7cec556b9f5",
+        "test/slashes.test.ts": "dee6bc93205fbdd387bc6113325cc1b9943d39068d06787b634dd2023c6d0fbf"
       }
     },
     "conversation": {
@@ -106,7 +108,7 @@
     },
     "device-login": {
       "implementation": {
-        "src/control.ts": "c63a1a81a55ba9d6eddc48c31aa903f00123df66dcb3b60d735aa77b1f7e079a",
+        "src/control.ts": "66681e3b4159c6f83285935331daba91e15357f8e267bc9476465e05bff612e4",
         "src/errors.ts": "2f70d52dca50bfec6b62f356045710b95f9e2e5c743bd056f8a33fdabb6aeabf"
       },
       "reason": "beginDeviceLogin() returns a DeviceAuthorization (DeviceAuthorization.fromGrant refuses a verification URL that is not http(s), has no host or carries credentials); each pollDeviceLogin() is one POST /v1/auth/device/token that resolves with an ApiToken kept as accessToken and tokenId, or rejects with ThalovantDeviceLoginPendingError (interval lengthened by five seconds for good per device code on slow_down), ThalovantDeviceLoginExpiredError or ThalovantDeviceLoginDeniedError, every other failure through apiError() with the api-errors fields; revokeApiToken() revokes and forgets the token the SDK signed in with. Neither the device code nor the token is printed by an error, console.log or util.inspect. Run against the shared device-login vectors, each served in order by a loopback node:http peer that checks every request (body, Authorization) and read back through the public control plane.",
@@ -147,14 +149,16 @@
     },
     "identity": {
       "implementation": {
-        "src/identity.ts": "998b49fa1b71f60531e70cdfebc5dcd18544ed955185616dd72d56c28f783112",
-        "src/protocols.ts": "3b497ee67c2e3ba2b334ac111579f3772ca6b2250792e5362e058ef23972dd52"
+        "src/identity.ts": "58cd90af3017d6d36b6e3bcd4609aa79aa6bb1cf76f8fc7ff3f9849847d1b0fd",
+        "src/protocols.ts": "9e672a0feb0ff5566cdd055cc37c475866244f5b941d4aea6da991ac60ec57f9",
+        "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
       "status": "required",
       "tests": {
         "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8",
-        "test/sdk.test.ts": "5b7b16bc0bfc9fa47fee3051f97ca2ab5627a9322812c5c3e62944547d703267"
+        "test/sdk.test.ts": "5b7b16bc0bfc9fa47fee3051f97ca2ab5627a9322812c5c3e62944547d703267",
+        "test/slashes.test.ts": "dee6bc93205fbdd387bc6113325cc1b9943d39068d06787b634dd2023c6d0fbf"
       }
     },
     "inventory": {
