@@ -40,6 +40,7 @@ import {
   ThalovantDeviceLoginDeniedError,
   ThalovantDeviceLoginPendingError,
   ThalovantEvent,
+  ThalovantClientKeyRejectedError,
   ThalovantHubRefusedError,
   ThalovantIdentity,
   ThalovantPlanError,
@@ -52,6 +53,7 @@ import {
   type HubSessionClient,
 } from "../src/index.js";
 import { HiveMindWSSTransport } from "../src/transport-core.js";
+import { redactSecretsInText } from "../src/redact.js";
 import { createV3HubPeer } from "./v3-hub.js";
 
 type Json = Record<string, unknown>;
@@ -906,20 +908,31 @@ test("a hub that holds another password for this connection is a refusal, and a 
 
 test("a hub that closes right after the handshake is a refusal to a kept link", async (t) => {
   let connections = 0;
+  let closing = false;
+  let clientKey: Uint8Array | undefined;
   const identity = await hubServer(t, (socket) => {
     connections += 1;
-    // One static key for every connection, as a real hub has: the client pins it.
+    // One static key for every connection, as a real hub has: the client pins
+    // it, and the hub offers KK once it has pinned the client's.
     const hub = createV3HubPeer("secret", (data, binary) => socket.send(data, { binary }), {
       staticPrivateKey: new Uint8Array(32).fill(7),
+      pinnedClientKey: clientKey,
     });
     socket.on("message", (data: Buffer, isBinary: boolean) => {
       hub.onMessage(isBinary ? new Uint8Array(data) : data.toString());
+      if (hub.clientStaticKey && !clientKey) clientKey = Uint8Array.from(Buffer.from(hub.clientStaticKey, "hex"));
       // The client's encrypted HELLO is its first message after the handshake.
-      if (hub.received.length === 1) socket.close(1008);
+      if (closing && hub.received.length === 1) socket.close(1008);
     });
     hub.start();
   });
   const noiseStateDir = await noiseDir(t);
+  // First contact pins both ways, so every later attempt is KK: a refusal
+  // after KK is an ordinary one, retried through the grace period.
+  const first = new ThalovantClient(identity, { protocol: "wss", noiseStateDir });
+  await first.connect(8000);
+  await first.close();
+  closing = true;
   const session = HubSession.forIdentity(identity, {
     client: { protocol: "wss", noiseStateDir },
     warm: false,
@@ -927,8 +940,12 @@ test("a hub that closes right after the handshake is a refusal to a kept link", 
     policy: new HubSessionPolicy(0.01, 0.02, 0.05, 0.01, 0.3),
   });
   t.after(() => session.close());
-  await assert.rejects(session.run(), ThalovantHubRefusedError);
-  assert.ok(connections >= 2, `${connections} connections`);
+  await assert.rejects(session.run(), (error: unknown) => {
+    assert.ok(error instanceof ThalovantHubRefusedError, String(error));
+    assert.ok(!(error instanceof ThalovantClientKeyRejectedError), String(error));
+    return true;
+  });
+  assert.ok(connections >= 3, `${connections} connections`);
 
   // The same close long after the handshake is an ordinary drop.
   const client = new ThalovantClient(identity, { protocol: "wss", noiseStateDir });
@@ -938,6 +955,37 @@ test("a hub that closes right after the handshake is a refusal to a kept link", 
   const info = client.connectionInfo();
   assert.equal(info.closeCode, 1008);
   assert.equal(info.refused, true, "the transport reports the code; only the settle window treats it as a verdict");
+});
+
+test("the same close right after an XX handshake is the hub refusing this client's key, and run() stops at once", async (t) => {
+  let connections = 0;
+  const identity = await hubServer(t, (socket) => {
+    connections += 1;
+    const hub = createV3HubPeer("secret", (data, binary) => socket.send(data, { binary }), {
+      staticPrivateKey: new Uint8Array(32).fill(7),
+    });
+    socket.on("message", (data: Buffer, isBinary: boolean) => {
+      hub.onMessage(isBinary ? new Uint8Array(data) : data.toString());
+      if (hub.received.length === 1) socket.close(1008);
+    });
+    hub.start();
+  });
+  const noiseStateDir = await noiseDir(t);
+  const session = HubSession.forIdentity(identity, {
+    client: { protocol: "wss", noiseStateDir },
+    warm: false,
+    settleSeconds: 2,
+    policy: new HubSessionPolicy(0.01, 0.02, 0.05, 0.01, 30),
+  });
+  t.after(() => session.close());
+  await assert.rejects(session.run(), (error: unknown) => {
+    assert.ok(error instanceof ThalovantClientKeyRejectedError, String(error));
+    assert.equal(error.keyFolder, noiseStateDir);
+    assert.match(error.message, /Re-pair, or share the key folder/);
+    assert.ok(error.message.includes(noiseStateDir), error.message);
+    return true;
+  });
+  assert.equal(connections, 1, "no handshake can recover from it");
 });
 
 test("a send withdrawn while queued is never written, and the next one still decrypts", async (t) => {
@@ -1129,4 +1177,94 @@ test("a hub that closes between the handshake and connect() returning is reporte
     assert.ok(error instanceof ThalovantHubRefusedError, String(error));
   });
   assert.ok(performance.now() - started < 10_000);
+});
+
+// -- 0.9.1 ---------------------------------------------------------------------------
+
+test("a refused device-token poll never repeats the device code, in the message or the problem", async () => {
+  const deviceCode = "dc-synthetic-device-code-do-not-log";
+  for (const status of [400, 422, 500]) {
+    await serving(() => ({
+      status,
+      body: status === 400
+        ? { error: "invalid_grant", detail: `unknown device code ${deviceCode}`, device_code: deviceCode }
+        : { detail: [{ loc: ["body", "device_code"], msg: `bad ${deviceCode}`, input: deviceCode }] },
+    }), async (url) => {
+      const api = new ThalovantControlPlane(url);
+      for (const poll of [
+        () => api.pollDeviceLogin(deviceCode),
+        () => api.pollDeviceToken(deviceCode, { timeoutMs: 1, sleep: async () => {} }),
+      ]) {
+        const error = await poll().then(() => undefined, (caught: unknown) => caught);
+        assert.ok(error instanceof ThalovantApiError, String(error));
+        for (const form of [error.message, inspect(error), JSON.stringify(error.problem ?? null), String(error.detail)]) {
+          assert.ok(!form.includes(deviceCode), `${status}: ${form}`);
+        }
+        assert.equal(error.statusCode, status);
+      }
+    });
+  }
+});
+
+test("a secret the SDK sent is redacted in its JSON-escaped spellings too", () => {
+  // A secret with a quote, a backslash and a non-ASCII letter: a JSON body
+  // spells each of them escaped, and Python's json.dumps escapes the letter
+  // as well. Redaction runs on the body before it is parsed.
+  const secret = 'pa"ss\\wo-é-rd-0123';
+  const escaped = JSON.stringify(secret).slice(1, -1);
+  const lower = escaped.replace("é", "\\u00e9");
+  const upper = escaped.replace("é", "\\u00E9");
+  for (const spelling of [secret, escaped, lower, upper]) {
+    const body = `{"detail":[{"msg":"echo ${spelling}","input":"${spelling}"}]}`;
+    const redacted = redactSecretsInText(body, [secret]);
+    for (const form of [secret, escaped, lower, upper]) assert.ok(!redacted.includes(form), `${spelling}: ${redacted}`);
+    if (spelling !== secret) {
+      // Still the JSON it was, with the secret gone from what it parses to.
+      const parsed = JSON.parse(redacted) as { detail: Array<{ msg: string; input: string }> };
+      assert.deepEqual(parsed.detail[0], { msg: "echo [redacted]", input: "[redacted]" });
+    }
+  }
+  // Short values are still left alone.
+  assert.equal(redactSecretsInText('{"a":"é\\"x"}', ['é"x']), '{"a":"é\\"x"}');
+});
+
+test("describeDeviceLogin reads a code as its approver sees it, and never vouches for an unnamed app", async () => {
+  const bodies: Json[] = [
+    { scopes: ["hubs:read"], client_name: "Home Assistant", client_id: "thalovant-home-assistant", client_verified: true, device_name: "kitchen", expires_at: "2026-09-28T12:15:00Z" },
+    { scopes: ["hubs:read"], client_name: "Totally the bank", client_verified: true },
+  ];
+  for (const body of bodies) {
+    await serving((request) => {
+      assert.equal(request.method, "GET");
+      assert.equal(request.path, "/v1/auth/device/codes/WDJB%2FMJHT");
+      assert.equal(request.headers.authorization, "Bearer approver-token");
+      return { status: 200, body };
+    }, async (url) => {
+      const api = new ThalovantControlPlane(url, { accessToken: "approver-token" });
+      const request = await api.describeDeviceLogin("WDJB/MJHT");
+      assert.equal(request.clientVerified, body.client_id !== undefined);
+      assert.equal(request.clientId, (body.client_id as string | undefined) ?? null);
+      assert.equal(request.clientName, body.client_name);
+      assert.equal(request.deviceName, (body.device_name as string | undefined) ?? null);
+      assert.equal(request.expiresAt, (body.expires_at as string | undefined) ?? null);
+      assert.deepEqual(request.toJSON().client_verified, request.clientVerified);
+    });
+  }
+});
+
+test("the browser sign-in names a registered app too, and leaves an absent one out", async () => {
+  for (const clientId of ["thalovant-home-assistant", undefined]) {
+    const bodies: unknown[] = [];
+    await serving((request) => {
+      if (request.path === "/v1/auth/device/authorize") {
+        bodies.push(request.body);
+        return { status: 200, body: { device_code: "dc-browser-0001", user_code: "ABCD-EFGH", verification_uri: "https://thalovant.com/activate", interval: 0, expires_in: 900 } };
+      }
+      return { status: 200, body: { access_token: "tvt_browser", token_id: "t-browser" } };
+    }, async (url) => {
+      const api = new ThalovantControlPlane(url);
+      await api.loginWithBrowser({ clientId, openBrowser: false, prompt: () => {} });
+    });
+    assert.deepEqual(bodies, [clientId ? { client_id: clientId } : {}]);
+  }
 });

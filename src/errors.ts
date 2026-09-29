@@ -33,6 +33,34 @@ export class ThalovantRuntimeError extends ThalovantError {}
 export class ThalovantHubRefusedError extends ThalovantConnectionError {}
 
 /**
+ * The hub refused this client's own Noise key: it pinned a different one.
+ *
+ * A hub pins the first static key a connection presents and refuses any other
+ * for good, closing the link the moment the XX handshake that showed it ends.
+ * Two programs that read the same identity but keep their keys in different
+ * folders each present their own key, and whichever came second is locked out.
+ * No handshake can recover from this, so {@link HubSession.run} stops on it at
+ * once. It is a {@link ThalovantHubRefusedError}, so code that catches a
+ * refusal still catches it.
+ *
+ * `keyFolder` is the folder this client's key is in, and `otherKeyFolder`,
+ * when there is a likely one, where another program reading the same identity
+ * keeps its key. Re-pair (a new connection pins afresh), or share the key
+ * folder: point every program that reads this identity at the folder holding
+ * the key the hub trusts (`noiseStateDir`).
+ */
+export class ThalovantClientKeyRejectedError extends ThalovantHubRefusedError {
+  readonly keyFolder?: string;
+  readonly otherKeyFolder?: string;
+
+  constructor(message?: string, options?: { keyFolder?: string; otherKeyFolder?: string }) {
+    super(message);
+    this.keyFolder = options?.keyFolder;
+    this.otherKeyFolder = options?.otherKeyFolder;
+  }
+}
+
+/**
  * A hub answered with another Noise static key than the one pinned for it.
  *
  * The first connection to a hub pins its key; every later one must present

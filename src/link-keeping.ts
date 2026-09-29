@@ -65,18 +65,23 @@ export const CLOSE_CODE_GRACE_MS = 250;
  * from the end of the handshake -- undefined for a close during it -- so the
  * close's own time decides, not when the transport reported it.
  * `codeLateMs` is how long after the close the transport learnt the code.
+ * `afterAuthenticatedFrame` is whether the hub had sent a frame that
+ * decrypted under the new session's keys before it closed: a hub refuses a
+ * key before it sends anything, so once it has spoken it had accepted the
+ * credentials, and the close is a drop.
  */
 export function closeRefuses(
   code: number | null | undefined,
-  options: { closedAfterHandshakeMs?: number; codeLateMs?: number } = {},
+  options: { closedAfterHandshakeMs?: number; codeLateMs?: number; afterAuthenticatedFrame?: boolean } = {},
 ): boolean {
+  if (options.afterAuthenticatedFrame) return false;
   if (code === null || code === undefined || !REFUSAL_CLOSE_CODES.has(code)) return false;
   if ((options.codeLateMs ?? 0) > CLOSE_CODE_GRACE_MS) return false;
   return options.closedAfterHandshakeMs === undefined || options.closedAfterHandshakeMs <= REFUSAL_SETTLE_MS;
 }
 
 /** What happened on one attempt to keep a link up. */
-export type LinkOutcome = "up" | "dropped" | "failed" | "refused" | "key_changed";
+export type LinkOutcome = "up" | "dropped" | "failed" | "refused" | "key_changed" | "client_key_rejected";
 
 /**
  * What to do after one outcome: `hold` (the link is up), `retry` after
@@ -85,7 +90,7 @@ export type LinkOutcome = "up" | "dropped" | "failed" | "refused" | "key_changed
 export interface LinkDecision {
   readonly action: "hold" | "retry" | "give_up";
   readonly waitSeconds: number;
-  readonly reason?: "refused" | "key_changed";
+  readonly reason?: "refused" | "key_changed" | "client_key_rejected";
 }
 
 /**
@@ -98,7 +103,10 @@ export interface LinkDecision {
  *   `retryCeilingSeconds` -- and stop counting refusals;
  * - `refused`: wait the ladder's step the same way until refusals have lasted
  *   `refusalGraceSeconds` since the first of them (inclusive), then give up;
- * - `key_changed`: give up at once: retrying cannot change the hub's key.
+ * - `key_changed`: give up at once: retrying cannot change the hub's key;
+ * - `client_key_rejected`: give up at once: the hub pinned another key for
+ *   this client, and no handshake can change that either
+ *   (`ThalovantClientKeyRejectedError`).
  */
 export class LinkSupervisor {
   readonly policy: HubSessionPolicy;
@@ -120,7 +128,8 @@ export class LinkSupervisor {
       case "dropped":
         return { action: "retry", waitSeconds: 0 };
       case "key_changed":
-        return { action: "give_up", waitSeconds: 0, reason: "key_changed" };
+      case "client_key_rejected":
+        return { action: "give_up", waitSeconds: 0, reason: outcome };
       case "refused":
         this.refusedSince ??= now;
         if (now - this.refusedSince >= this.policy.refusalGraceSeconds) {

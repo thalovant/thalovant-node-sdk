@@ -43,7 +43,18 @@ type Send = (data: string | Uint8Array, binary: boolean) => void;
 export function createV3HubPeer(
   password: string,
   send: Send,
-  options: { staticPrivateKey?: Uint8Array; nodeId?: string; pinnedClientKey?: Uint8Array } = {},
+  options: {
+    staticPrivateKey?: Uint8Array;
+    nodeId?: string;
+    /** Offer KK, expecting this client key. */
+    pinnedClientKey?: Uint8Array;
+    /**
+     * The client key this connection was pinned to. An XX handshake that shows
+     * another is aborted (onMessage throws) before anything is sent, as
+     * hivemind-core does: "client Noise static key contradicts pinned key".
+     */
+    requiredClientKey?: Uint8Array;
+  } = {},
 ): V3HubPeer & { onMessage(data: string | Uint8Array): void; start(): void } {
   const nodeId = options.nodeId ?? V3_HUB_NODE_ID;
   const staticPrivateKey = options.staticPrivateKey ?? Uint8Array.from(randomBytes(32));
@@ -111,7 +122,11 @@ export function createV3HubPeer(
       }
 
       handshake.readMessage(hexBytes(noise.msg));
-      session = handshake.intoSession();
+      const established = handshake.intoSession();
+      if (options.requiredClientKey && established.remoteStaticKey?.toLowerCase() !== hexString(options.requiredClientKey)) {
+        throw new Error("client Noise static key contradicts pinned key");
+      }
+      session = established;
     },
   };
 }

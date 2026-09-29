@@ -89,15 +89,39 @@ export function redactUrlUserinfo(value: string): string {
  * Used to scrub secrets the SDK itself generated (and sent) out of a server
  * error string before it is surfaced. Values shorter than 8 characters are
  * ignored to avoid clobbering unrelated text.
+ *
+ * The text is usually a JSON body not yet parsed, where a secret holding `"`,
+ * `\`, a control character or non-ASCII is spelt escaped: each of those
+ * spellings is replaced too (see {@link jsonSpellings}).
  */
 export function redactSecretsInText(text: string, secrets: ReadonlyArray<string | undefined>): string {
-  let result = text;
+  const spellings = new Set<string>();
   for (const secret of secrets) {
     if (secret && secret.length >= 8) {
-      result = result.split(secret).join(REDACTED);
+      for (const spelling of jsonSpellings(secret)) spellings.add(spelling);
     }
   }
+  // Longest first, so a spelling that contains another is replaced whole.
+  let result = text;
+  for (const spelling of [...spellings].sort((a, b) => b.length - a.length)) {
+    result = result.split(spelling).join(REDACTED);
+  }
   return result;
+}
+
+/**
+ * How a secret may be spelt inside a JSON string: as it is; as
+ * `JSON.stringify` escapes it (`"`, `\` and control characters); and with
+ * every non-ASCII character `\u`-escaped as well, in lower- and upper-case hex,
+ * as Python's `json.dumps` and many other encoders write it.
+ */
+function jsonSpellings(secret: string): string[] {
+  const escaped = JSON.stringify(secret).slice(1, -1);
+  const ascii = (upper: boolean) => escaped.replace(/[^\x00-\x7f]/g, (char) => {
+    const hex = char.charCodeAt(0).toString(16).padStart(4, "0");
+    return `\\u${upper ? hex.toUpperCase() : hex}`;
+  });
+  return [...new Set([secret, escaped, ascii(false), ascii(true)])];
 }
 
 function isRecord(value: unknown): value is UnknownRecord {

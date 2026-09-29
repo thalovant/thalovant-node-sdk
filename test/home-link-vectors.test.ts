@@ -31,6 +31,7 @@ import {
   CONNECTION_TYPE_HOME_ASSISTANT,
   DEFAULT_HOME_HANDLER_TIMEOUT_MS,
   DeviceAuthorization,
+  HOME_ASSISTANT_CLIENT_ID,
   HOME_ASSISTANT_SCOPES,
   HOME_ERROR_CODES,
   HOME_REQUEST,
@@ -41,6 +42,7 @@ import {
   plainSpeech,
   replyContext,
   ThalovantAdmissionFailedError,
+  ThalovantClient,
   ThalovantAdmissionTimeoutError,
   ThalovantAlreadyLinkedError,
   ThalovantApiError,
@@ -88,7 +90,7 @@ function loadVectors<T>(name: string): T {
   return JSON.parse(readFileSync(new URL(`../../test/${name}`, import.meta.url), "utf8")) as T;
 }
 
-const DEVICE = loadVectors<{ cases: HttpCase[]; home_assistant_scopes: string[]; message_excludes: string[] }>(
+const DEVICE = loadVectors<{ cases: HttpCase[]; home_assistant_scopes: string[]; home_assistant_client_id: string; message_excludes: string[] }>(
   "device-login-vectors.json",
 );
 const KINDS = loadVectors<{ cases: HttpCase[]; message_excludes: string[] }>("connection-kinds-vectors.json");
@@ -96,13 +98,14 @@ const ADMISSION = loadVectors<{ cases: HttpCase[] }>("connection-admission-vecto
 const HOME = loadVectors<{
   cases: Array<{
     name: string;
-    kind: "reply_context" | "answer" | "deadline" | "speech";
+    kind: "reply_context" | "answer" | "deadline" | "speech" | "queued";
     context?: Json;
     request?: Json;
     handler?: Json;
     timeout_ms?: number;
     hub_timeout_ms?: number;
     send_ms?: number;
+    busy_ms?: number;
     text?: string;
     expect: Json | string;
   }>;
@@ -235,10 +238,15 @@ async function pollOnce(plane: ThalovantControlPlane, authorization: DeviceAutho
     if (error instanceof ThalovantDeviceLoginExpiredError) return { outcome: "expired", status: error.statusCode ?? null };
     if (error instanceof ThalovantDeviceLoginDeniedError) return { outcome: "denied", status: error.statusCode ?? null };
     assert.ok(error instanceof ThalovantApiError, String(error));
-    const produced: Json = { outcome: "error", status: error.statusCode ?? null };
-    if (error.statusCode !== undefined) Object.assign(produced, { code: error.code ?? null, detail: error.detail ?? null });
-    return produced;
+    return deviceError(error);
   }
+}
+
+/** A failure, with the api-errors fields when the API answered one. */
+function deviceError(error: ThalovantApiError): Json {
+  const produced: Json = { outcome: "error", status: error.statusCode ?? null };
+  if (error.statusCode !== undefined) Object.assign(produced, { code: error.code ?? null, detail: error.detail ?? null });
+  return produced;
 }
 
 for (const vector of DEVICE.cases) {
@@ -247,15 +255,40 @@ for (const vector of DEVICE.cases) {
       op: string;
       scopes?: string[];
       client_name?: string;
+      client_id?: string | null;
+      user_code?: string;
       authorization?: { device_code: string; interval: number };
       times?: number;
     };
     const { produced, api } = await scripted(vector.exchanges, async ({ url }) => {
-      const plane = new ThalovantControlPlane(url);
+      // Only the approver's read is signed in; a device signing in has no token yet.
+      const plane = new ThalovantControlPlane(url, call.op === "describe" ? { accessToken: "synthetic-token" } : {});
       const produced: Json[] = [];
+      if (call.op === "describe") {
+        try {
+          const request = await plane.describeDeviceLogin(call.user_code!);
+          produced.push({
+            outcome: "described",
+            scopes: [...request.scopes],
+            client_name: request.clientName,
+            client_id: request.clientId,
+            client_verified: request.clientVerified,
+            device_name: request.deviceName,
+          });
+        } catch (error) {
+          assertExcluded(error, DEVICE.message_excludes);
+          assert.ok(error instanceof ThalovantApiError, String(error));
+          produced.push(deviceError(error));
+        }
+        return produced;
+      }
       if (call.op === "begin") {
         try {
-          const grant = await plane.beginDeviceLogin({ scopes: call.scopes, clientName: call.client_name });
+          const grant = await plane.beginDeviceLogin({
+            scopes: call.scopes,
+            clientName: call.client_name,
+            clientId: call.client_id,
+          });
           produced.push({
             outcome: "started",
             user_code: grant.userCode,
@@ -270,7 +303,7 @@ for (const vector of DEVICE.cases) {
         } catch (error) {
           assertExcluded(error, DEVICE.message_excludes);
           assert.ok(error instanceof ThalovantApiError, String(error));
-          produced.push({ outcome: "error", status: error.statusCode ?? null });
+          produced.push(deviceError(error));
         }
         return produced;
       }
@@ -478,6 +511,8 @@ for (const vector of HOME.cases) {
       assert.deepEqual(vector.context, before, "the request's context is never changed");
     } else if (vector.kind === "speech") {
       produced = plainSpeech(vector.text);
+    } else if (vector.kind === "queued") {
+      produced = await queuedCase(vector);
     } else if (vector.kind === "deadline") {
       const replier = slowReplier(vector.send_ms ?? 0);
       const event = new ThalovantEvent(HOME_REQUEST, vector.request, { source: "skill" });
@@ -515,6 +550,65 @@ for (const vector of HOME.cases) {
     record("home-link-vectors.json", vector.name, produced);
     assert.deepEqual(produced, vector.expect);
   });
+}
+
+/**
+ * A reply that waits behind another frame, over a real WSS + Noise link: the
+ * send path is held for `busy_ms`, as a frame being written holds it, while
+ * the request is answered within the hub's bound.
+ */
+async function queuedCase(vector: (typeof HOME.cases)[number]): Promise<Json> {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  let connections = 0;
+  let hub: ReturnType<typeof createV3HubPeer> | undefined;
+  server.on("connection", (socket) => {
+    connections += 1;
+    hub = createV3HubPeer("secret", (data, binary) => socket.send(data, { binary }));
+    socket.on("message", (data: Buffer, isBinary: boolean) => hub!.onMessage(isBinary ? new Uint8Array(data) : data.toString()));
+    hub.start();
+  });
+  const noiseStateDir = await mkdtemp(join(tmpdir(), "thalovant-queued-"));
+  const client = new ThalovantClient(new ThalovantIdentity({
+    access_key: "access",
+    password: "secret",
+    site_id: "home-assistant",
+    default_master: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`,
+  }), { protocol: "wss", noiseStateDir });
+  try {
+    await client.connect(8000);
+    const bus = (type: string) => hub!.received.map((raw) => JSON.parse(raw) as { msg_type: string; payload: Json })
+      .filter((message) => message.msg_type === "bus" && message.payload.type === type)
+      .map((message) => message.payload.data);
+    // Another frame is being written: the send path is held for busy_ms.
+    const transport = (client as unknown as { transport: { sendChain: Promise<void> } }).transport;
+    let release!: () => void;
+    const busy = new Promise<void>((resolve) => { release = resolve; });
+    transport.sendChain = transport.sendChain.then(() => busy);
+    const written = new Promise<void>((resolve) => setTimeout(() => { release(); resolve(); }, vector.busy_ms));
+    const event = new ThalovantEvent(HOME_REQUEST, vector.request!, { source: "skill", destination: "ha" });
+    const sent = await answerHomeRequest(client, event, vectorHandler(vector.handler!), {
+      hubTimeoutMs: vector.hub_timeout_ms,
+    });
+    await written;
+    // Time enough for a withdrawn reply to go out late, if it would.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual(bus(HOME_RESPONSE), sent !== undefined ? [sent] : [], "never sent late, never twice");
+    // The same link still carries a message the hub decrypts.
+    await client.emit("thalovant.still.there", { probe: 1 });
+    await waitFor(() => (bus("thalovant.still.there").length ? true : undefined));
+    const produced: Json = {
+      replied: sent !== undefined,
+      link_kept: connections === 1 && client.connectionInfo().phase === "ready",
+    };
+    if (sent !== undefined) produced.response = sent;
+    return produced;
+  } finally {
+    await client.close();
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(noiseStateDir, { recursive: true, force: true });
+  }
 }
 
 test("home link: every answer case over a real WSS + Noise link, routed back as a reply", async (t) => {
@@ -608,6 +702,7 @@ test("the contract's lists are the SDK's", () => {
   assert.equal(HOME_REQUEST, HOME.request_type);
   assert.equal(HOME_RESPONSE, HOME.response_type);
   assert.equal(HOME_REQUEST_TIMEOUT_MS, HOME.reply_timeout_ms);
+  assert.equal(HOME_ASSISTANT_CLIENT_ID, DEVICE.home_assistant_client_id);
   assert.equal(DEFAULT_HOME_HANDLER_TIMEOUT_MS, 9_000);
   assert.deepEqual([...HOME_ASSISTANT_SCOPES], DEVICE.home_assistant_scopes);
   assert.equal(CONNECTION_TYPE_HOME_ASSISTANT, "home_assistant");

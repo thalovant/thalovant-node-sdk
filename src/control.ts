@@ -50,6 +50,13 @@ const MAX_REMEMBERED_DEVICE_CODES = 64;
  * approve.
  */
 export const HOME_ASSISTANT_SCOPES: readonly string[] = Object.freeze(["hubs:read", "clients:read", "clients:write"]);
+/**
+ * The registered app id Home Assistant signs in as (a device login's
+ * `clientId`). The approval screen then shows the platform's own name for it
+ * as verified, and approving it again replaces the token the last approval
+ * gave it instead of counting a second one against the plan.
+ */
+export const HOME_ASSISTANT_CLIENT_ID = "thalovant-home-assistant";
 /** `spec.connection_type` of a Home Assistant link. */
 export const CONNECTION_TYPE_HOME_ASSISTANT = "home_assistant";
 /** Milliseconds between two reads of an operation the caller is waiting on. */
@@ -177,6 +184,15 @@ export interface DeviceLoginOptions {
   scopes?: readonly string[];
   /** The name the dashboard shows for the token and on the approval page. */
   clientName?: string;
+  /**
+   * Sign in as a registered app, such as {@link HOME_ASSISTANT_CLIENT_ID}:
+   * the approval screen shows the platform's own name for the app as
+   * verified (`clientName` becomes the device's label beside it), and
+   * approving the app again replaces the token it already holds. Such an app
+   * may ask only for its own scopes, and an id the API does not know is
+   * refused (400 `unknown_client`). Left out of the request when not given.
+   */
+  clientId?: string | null;
 }
 
 /**
@@ -269,6 +285,72 @@ export class DeviceAuthorization {
 
   [customInspect](): string {
     return this.toString();
+  }
+}
+
+/**
+ * A pending device sign-in as the person approving it sees it, read with
+ * `describeDeviceLogin()`.
+ *
+ * `clientVerified` is true only when a registered app asked (it named its
+ * `clientId`): `clientName` is then the platform's own name for that app, and
+ * `deviceName` whatever the device called itself, which nothing checks.
+ * Otherwise `clientName` is the device's own claim.
+ */
+export class DeviceLoginRequest {
+  readonly scopes: readonly string[];
+  readonly clientName: string | null;
+  /** When the code stops working, exactly as the API wrote it (ISO 8601), or null. */
+  readonly expiresAt: string | null;
+  readonly clientId: string | null;
+  readonly clientVerified: boolean;
+  readonly deviceName: string | null;
+
+  private constructor(fields: {
+    scopes: readonly string[];
+    clientName: string | null;
+    expiresAt: string | null;
+    clientId: string | null;
+    clientVerified: boolean;
+    deviceName: string | null;
+  }) {
+    this.scopes = Object.freeze([...fields.scopes]);
+    this.clientName = fields.clientName;
+    this.expiresAt = fields.expiresAt;
+    this.clientId = fields.clientId;
+    this.clientVerified = fields.clientVerified;
+    this.deviceName = fields.deviceName;
+  }
+
+  /** Read a `GET /v1/auth/device/codes/{user_code}` answer. */
+  static fromResponse(payload: Record<string, unknown>): DeviceLoginRequest {
+    const text = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
+    const scopes = Array.isArray(payload.scopes)
+      ? payload.scopes.filter((scope): scope is string => typeof scope === "string")
+      : [];
+    const clientId = text(payload.client_id);
+    return new DeviceLoginRequest({
+      scopes,
+      clientName: text(payload.client_name),
+      expiresAt: text(payload.expires_at),
+      clientId,
+      // Verified only as the API says it, and only with the app named: a
+      // true without an id says nothing about who asked.
+      clientVerified: payload.client_verified === true && clientId !== null,
+      deviceName: text(payload.device_name),
+    });
+  }
+
+  /** The API's field names. */
+  toJSON(): Record<string, unknown> {
+    return {
+      scopes: [...this.scopes],
+      client_name: this.clientName,
+      expires_at: this.expiresAt,
+      client_id: this.clientId,
+      client_verified: this.clientVerified,
+      device_name: this.deviceName,
+    };
   }
 }
 
@@ -720,6 +802,8 @@ export interface LoginWithBrowserOptions {
   scopes?: string[];
   /** Human-readable name shown on the dashboard token list. */
   clientName?: string;
+  /** Sign in as a registered app; see {@link DeviceLoginOptions.clientId}. */
+  clientId?: string | null;
   /** Open `verification_uri_complete` in the default browser (best-effort). Default `true`. */
   openBrowser?: boolean;
   /** Present the sign-in instructions yourself instead of the default console message. */
@@ -881,6 +965,9 @@ export class ThalovantControlPlane {
     // scope and answers [] with a 422, and a missing field asks for its default.
     if (options.scopes?.length) body.scopes = [...options.scopes];
     if (options.clientName) body.client_name = options.clientName;
+    // Sent as given, an empty string included: the API refuses one (422),
+    // which is better than signing in unverified in silence.
+    if (options.clientId !== undefined && options.clientId !== null) body.client_id = options.clientId;
     const grant = await this.request("POST", "/v1/auth/device/authorize", { body, auth: false });
 
     // Parsed for its checks: the fields are there, and neither URL a browser
@@ -935,10 +1022,26 @@ export class ThalovantControlPlane {
     // scope and answers [] with a 422, and a missing field asks for its default.
     if (options.scopes?.length) body.scopes = [...options.scopes];
     if (options.clientName) body.client_name = options.clientName;
+    // Sent as given, an empty string included: the API refuses one (422),
+    // which is better than signing in unverified in silence.
+    if (options.clientId !== undefined && options.clientId !== null) body.client_id = options.clientId;
     const grant = await this.request("POST", "/v1/auth/device/authorize", { body, auth: false });
     const authorization = DeviceAuthorization.fromGrant(grant);
     this.rememberDeviceInterval(authorization.deviceCode, authorization.interval);
     return authorization;
+  }
+
+  /**
+   * Read a pending device sign-in by its `userCode`, as its approver sees it.
+   *
+   * `GET /v1/auth/device/codes/{userCode}`, signed in as the person who would
+   * approve it. Says which app asked and whether the platform vouches for its
+   * name (`clientVerified`). A code that is unknown, expired or already
+   * answered is a 404 `ThalovantApiError`.
+   */
+  async describeDeviceLogin(userCode: string): Promise<DeviceLoginRequest> {
+    const payload = await this.request("GET", `/v1/auth/device/codes/${encodeURIComponent(userCode)}`);
+    return DeviceLoginRequest.fromResponse(payload);
   }
 
   /**
@@ -1030,7 +1133,9 @@ export class ThalovantControlPlane {
       auth: false,
     });
     const text = await response.text();
-    const parsed = parseJsonBody(text)?.value;
+    // A refusal may echo the device code; it reaches neither the message nor
+    // `problem`, which is parsed from the scrubbed text.
+    const parsed = parseJsonBody(response.ok ? text : redactSecretsInText(text, [deviceCode]))?.value;
     if (response.ok) {
       if (!isRecord(parsed)) {
         // No status, like a 2xx that carries no token: the API did not
@@ -1068,7 +1173,7 @@ export class ThalovantControlPlane {
         { statusCode: response.status, problem },
       );
     }
-    throw apiError(response.status, text, undefined, response.headers);
+    throw apiError(response.status, text, [deviceCode], response.headers);
   }
 
   /**
@@ -1094,7 +1199,8 @@ export class ThalovantControlPlane {
       const text = await response.text();
       let parsed: unknown;
       try {
-        parsed = JSON.parse(text);
+        // An echoed device code never reaches an error: see deviceTokenOnce().
+        parsed = JSON.parse(response.ok ? text : redactSecretsInText(text, [deviceCode]));
       } catch {
         parsed = undefined;
       }
@@ -1120,7 +1226,7 @@ export class ThalovantControlPlane {
             "Call loginWithBrowser() again to request a new code.", { statusCode: response.status, problem },
         );
       } else if (error !== "authorization_pending") {
-        throw apiError(response.status, text, undefined, response.headers);
+        throw apiError(response.status, text, [deviceCode], response.headers);
       }
       const remaining = deadline - now();
       if (remaining <= 0) {

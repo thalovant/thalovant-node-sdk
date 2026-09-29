@@ -2,13 +2,14 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/control.ts": "02e17553b26e404441a5e7b34e82827059c0318e2f7b2f3e146903f92786e016",
-        "src/errors.ts": "af55b7706c60decde6b7cc849ff7b5daf52c030aba92a43724c91a93a10e146a"
+        "src/control.ts": "7d7fe32428a69f66f67c692db7aa04761e5d127c020a714f5598617abf508d6f",
+        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
+        "src/redact.ts": "2dfbdd623f2824bfcb81fdb67401555990d1f278ae879a34872ef19dae6737f0"
       },
-      "reason": "ThalovantApiError in src/errors.ts carries statusCode, code, detail and a non-enumerable problem, filled by apiError() in src/control.ts for every failed control-plane response, device-flow polling included; the message is unchanged. Run against the shared api-error vectors, each served by a loopback node:http peer and read back through getHub(), plus a device sign-in poll and a createClientIdentity() whose generated secrets stay redacted.",
+      "reason": "ThalovantApiError in src/errors.ts carries statusCode, code, detail and a non-enumerable problem, filled by apiError() in src/control.ts for every failed control-plane response, device-flow polling included; the message is unchanged. Run against the shared api-error vectors, each served by a loopback node:http peer and read back through getHub(), plus a device sign-in poll and a createClientIdentity() whose generated secrets stay redacted. Secrets the SDK sent are scrubbed from the body before it is parsed in every spelling a JSON body gives them (as sent, JSON-escaped, and with non-ASCII \\u-escaped in either case, src/redact.ts), and a device-token refusal scrubs the device code the same way; an echoed validation input is never repeated in a message, whatever its key.",
       "status": "required",
       "tests": {
-        "test/api-error-vectors.json": "f0d2d8e6e153811f071dac6e0611f00f3c32ed772b751ccccb31904d7dc936ec",
+        "test/api-error-vectors.json": "66fd70cd853e52cf29b1c2fad0e38f97a1f6c23b3640fca4e4cc02c3c341ca10",
         "test/api-error-vectors.test.ts": "5ac2531ff667672601ca111c838b3cffa2ea1b2cc1dda692ee676eaa62d5576a",
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346"
       },
@@ -18,16 +19,19 @@
     },
     "binary": {
       "implementation": {
-        "src/client.ts": "838f7e21686a3d0aa5d629e7420343052a1f7ae79e811b8d198c5275911cf13e",
+        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
         "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
-        "src/transport-core.ts": "18be6424076e272572a4140cc91a909a2c194cc5ad3900db289c8844f7e09a1e",
-        "src/wire.ts": "51c5487f79bf79c32512aac11a919bdc1aa7dbaad64fd48a1372a7a9a6314a0c"
+        "src/platform/browser.ts": "3feda8e53d2063092f7d09bab64cc16f60c331e872e0ea259fc423d0fe071ef7",
+        "src/platform/node.ts": "858280cb4f5622c85ebbb8f2e673eac9014f5f8c21e9d21ebdbedf841c06f4b0",
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8",
+        "src/wire.ts": "c18644a51168e22c2cec2869dcc3f5fdd4d283cab878c8504a04129fb93f95c8"
       },
-      "reason": "decodeHiveBinaryFrame branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than a frame this SDK built for itself.",
+      "reason": "decodeHiveBinaryFrame branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. A compressed part of any other frame -- its metadata or JSON payload -- inflates to at most 32 MiB (MAX_INFLATED_BYTES, zlib's maxOutputLength in src/platform/node.ts), and one that would inflate further, or is truncated, is refused; browsers refuse compressed parts outright. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than a frame this SDK built for itself, and test/wire-limits.test.ts for the inflation cap.",
       "status": "required",
       "tests": {
         "test/binary-vectors.test.ts": "8f3bd5aa423158a2b57b4a7881eb8d29d54b2db1cc01452f4c75d217dc8273f6",
-        "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346"
+        "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
+        "test/wire-limits.test.ts": "009871cfa136bfccd90ac26e29b185f18ae616511d2df9c67fc74b673ff155b8"
       },
       "vectors": {
         "binary-frames.json": "test/binary-frames.json",
@@ -40,16 +44,16 @@
     },
     "connection-admission": {
       "implementation": {
-        "src/control.ts": "02e17553b26e404441a5e7b34e82827059c0318e2f7b2f3e146903f92786e016",
-        "src/errors.ts": "af55b7706c60decde6b7cc849ff7b5daf52c030aba92a43724c91a93a10e146a"
+        "src/control.ts": "7d7fe32428a69f66f67c692db7aa04761e5d127c020a714f5598617abf508d6f",
+        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc"
       },
       "reason": "waitForAdmission() follows the create's operation with GET /v1/operations/{id}, every read bounded by what is left of the wait: ready resolves, failed and timed_out reject with ThalovantAdmissionFailedError(errorCode, no status), 404 and no operation resolve at once, a 5xx is ridden out, and a 429 waits max(poll interval, the problem's retry_after_seconds, else Retry-After, else RateLimit-Reset), a timeout at once when that is more than is left. 401 and 403 pass through as the API's own error (ThalovantAuthError), an API out of reach as ThalovantApiUnreachableError, and any other refusal of the wait is ThalovantAdmissionFailedError keeping statusCode, code, detail and problem. The deadline rejects with ThalovantAdmissionTimeoutError (instanceof both ThalovantConnectionError and ThalovantTimeoutError), ending \"it may still admit it later\"; waits are re-armed on the monotonic clock. A links.self on another origin (scheme, host, port) is never fetched. Run against the shared admission vectors over a loopback node:http peer that sends the case's headers, with {api_host}/{api_port} filled in and a closed port for an unreachable API.",
       "status": "required",
       "tests": {
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/connection-admission-vectors.json": "41eb4a83835bd50390d000fa7396b7067dafa24f3023b34985e6b254cf5fc259",
-        "test/home-link-vectors.test.ts": "016a75f49fa8585ee328d0d29ea1bc8c476786c09d98effc15cc3e9c6af4f0be",
-        "test/home-link.test.ts": "ddc2c32f0fae04f419716bdf4cf8a8636a7536ed0f226ff8a9e4c295cdfd348b"
+        "test/home-link-vectors.test.ts": "ff7820522d0898bee8ded5a7a67f69a045b4fc9a9fca19118175308e57b1b378",
+        "test/home-link.test.ts": "a976739d16bffac8611f2bfbefc243ddb0da68662e94cdc4f8e8a956ab0eebae"
       },
       "vectors": {
         "connection-admission-vectors.json": "test/connection-admission-vectors.json"
@@ -57,16 +61,16 @@
     },
     "connection-kinds": {
       "implementation": {
-        "src/control.ts": "02e17553b26e404441a5e7b34e82827059c0318e2f7b2f3e146903f92786e016",
-        "src/errors.ts": "af55b7706c60decde6b7cc849ff7b5daf52c030aba92a43724c91a93a10e146a"
+        "src/control.ts": "7d7fe32428a69f66f67c692db7aa04761e5d127c020a714f5598617abf508d6f",
+        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc"
       },
       "reason": "createClientIdentity(hub, { connectionType }) sends spec.connection_type and requireConnectionType() deletes (If-Match: the answer's etag) and refuses a client whose answer does not repeat it; a 422 whose detail or code, or a validation error's loc or msg (never its echoed input), names connection_type is ThalovantUnsupportedConnectionTypeError, and apiError() classes 402/403 plan_limit as ThalovantPlanError, 409 home_assistant_already_linked as ThalovantAlreadyLinkedError with clientId, and 401/423/403 'Insufficient scopes' as ThalovantAuthError, all keeping statusCode, code and detail. deleteClient() reads the etag when none is given, retries one 412 and counts 404 as deleted. Run against the shared connection-kinds vectors over a loopback node:http peer that checks method, path, body subset and If-Match of every request.",
       "status": "required",
       "tests": {
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/connection-kinds-vectors.json": "2baef508194472279ff2446105a1408e381b2f9e4bfc03e5f96d9c6529ddf604",
-        "test/home-link-vectors.test.ts": "016a75f49fa8585ee328d0d29ea1bc8c476786c09d98effc15cc3e9c6af4f0be",
-        "test/home-link.test.ts": "ddc2c32f0fae04f419716bdf4cf8a8636a7536ed0f226ff8a9e4c295cdfd348b"
+        "test/home-link-vectors.test.ts": "ff7820522d0898bee8ded5a7a67f69a045b4fc9a9fca19118175308e57b1b378",
+        "test/home-link.test.ts": "a976739d16bffac8611f2bfbefc243ddb0da68662e94cdc4f8e8a956ab0eebae"
       },
       "vectors": {
         "connection-kinds-vectors.json": "test/connection-kinds-vectors.json"
@@ -74,7 +78,7 @@
     },
     "control": {
       "implementation": {
-        "src/control.ts": "02e17553b26e404441a5e7b34e82827059c0318e2f7b2f3e146903f92786e016",
+        "src/control.ts": "7d7fe32428a69f66f67c692db7aa04761e5d127c020a714f5598617abf508d6f",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
         "src/native-auth.ts": "0ae7a17915f31a23c25d9d551cc7ce018a7f499921777741c1fa3855875e185d",
         "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d"
@@ -91,7 +95,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/client.ts": "838f7e21686a3d0aa5d629e7420343052a1f7ae79e811b8d198c5275911cf13e",
+        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
         "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
@@ -106,16 +110,16 @@
     },
     "device-login": {
       "implementation": {
-        "src/control.ts": "02e17553b26e404441a5e7b34e82827059c0318e2f7b2f3e146903f92786e016",
-        "src/errors.ts": "af55b7706c60decde6b7cc849ff7b5daf52c030aba92a43724c91a93a10e146a"
+        "src/control.ts": "7d7fe32428a69f66f67c692db7aa04761e5d127c020a714f5598617abf508d6f",
+        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc"
       },
-      "reason": "beginDeviceLogin() (an empty scope list left out, as in loginWithBrowser()) returns a DeviceAuthorization (DeviceAuthorization.fromGrant refuses a verification URL that is not http(s), has no host or carries credentials); each pollDeviceLogin() is one POST /v1/auth/device/token that resolves with an ApiToken kept as accessToken and tokenId, or rejects with ThalovantDeviceLoginPendingError (interval lengthened by five seconds for good per device code on slow_down), ThalovantDeviceLoginExpiredError or ThalovantDeviceLoginDeniedError, every other failure through apiError() with the api-errors fields; revokeApiToken() revokes and forgets the token the SDK signed in with, a 401 on its own revoke counting as revoked and a second revoke sending nothing; every sign-in (device, password, native) resets tokenId. Neither the device code nor the token is printed by an error, console.log or util.inspect. Run against the shared device-login vectors, each served in order by a loopback node:http peer that checks every request (body, Authorization) and read back through the public control plane.",
+      "reason": "beginDeviceLogin() (an empty scope list left out, as in loginWithBrowser(); clientId sent as client_id when given, HOME_ASSISTANT_CLIENT_ID for Home Assistant, and left out otherwise, in both) returns a DeviceAuthorization (DeviceAuthorization.fromGrant refuses a verification URL that is not http(s), has no host or carries credentials); each pollDeviceLogin() is one POST /v1/auth/device/token that resolves with an ApiToken kept as accessToken and tokenId, or rejects with ThalovantDeviceLoginPendingError (interval lengthened by five seconds for good per device code on slow_down), ThalovantDeviceLoginExpiredError or ThalovantDeviceLoginDeniedError, every other failure through apiError() with the api-errors fields; revokeApiToken() revokes and forgets the token the SDK signed in with, a 401 on its own revoke counting as revoked and a second revoke sending nothing; every sign-in (device, password, native) resets tokenId. describeDeviceLogin(userCode) reads GET /v1/auth/device/codes/{userCode} into a DeviceLoginRequest whose clientVerified is true only with a clientId. A 2xx token answer that is not a JSON object is an error with no status. Neither the device code nor the token is printed by an error (a refused poll scrubs the device code from the message and from problem), console.log or util.inspect. Run against the shared device-login vectors, each served in order by a loopback node:http peer that checks every request (body, Authorization) and read back through the public control plane.",
       "status": "required",
       "tests": {
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
-        "test/device-login-vectors.json": "8a2257cd80b5d2dfa9553420b51617c697b1ad4e6af60ba83e980e1731fa7854",
-        "test/home-link-vectors.test.ts": "016a75f49fa8585ee328d0d29ea1bc8c476786c09d98effc15cc3e9c6af4f0be",
-        "test/home-link.test.ts": "ddc2c32f0fae04f419716bdf4cf8a8636a7536ed0f226ff8a9e4c295cdfd348b"
+        "test/device-login-vectors.json": "8204aefe89b9dbcea146479d41e5c21ac61a05d809f8fc6a60f52913f45f1321",
+        "test/home-link-vectors.test.ts": "ff7820522d0898bee8ded5a7a67f69a045b4fc9a9fca19118175308e57b1b378",
+        "test/home-link.test.ts": "a976739d16bffac8611f2bfbefc243ddb0da68662e94cdc4f8e8a956ab0eebae"
       },
       "vectors": {
         "device-login-vectors.json": "test/device-login-vectors.json"
@@ -123,28 +127,28 @@
     },
     "home-link": {
       "implementation": {
-        "src/client.ts": "838f7e21686a3d0aa5d629e7420343052a1f7ae79e811b8d198c5275911cf13e",
-        "src/errors.ts": "af55b7706c60decde6b7cc849ff7b5daf52c030aba92a43724c91a93a10e146a",
+        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
+        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
         "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
         "src/home.ts": "8a83815a8ae578658908ff8c18edddc973bf20bd1428db3569a7ebbb32e0d308",
-        "src/link-keeping.ts": "d2a3ba87257c3747780ebb5bf140a950a78fce51811737fce08d126a941f6943",
-        "src/noise-store.ts": "e56db747fe6d1262b501ed0f3724ad7cf38cf38b6a044bce6d6afbcfb2c73822",
+        "src/link-keeping.ts": "466a3be7135437eeac402b7966da488fed753c01fd6da8ec969384ba605ac100",
+        "src/noise-store.ts": "03fefa0f4a6bd96d2b8d6267e1484a0705ba4f4f5cdf4eecae08355e64f9a447",
         "src/noise.ts": "859754e8db0a40f932d146eca48ec7e5f52f8444847f5b8396291473fda9fc26",
         "src/rich.ts": "79fbed3f733dfef47825ca5f376934de67ad7249a821bcd001db269303f37b8e",
-        "src/session.ts": "762b054dbc4e3013ca8960bfe02a44f26b25e6f839ce290cb9a38839e17d297d",
-        "src/transport-core.ts": "18be6424076e272572a4140cc91a909a2c194cc5ad3900db289c8844f7e09a1e",
+        "src/session.ts": "0169e76d3c1030a76b56e4700c046dbabfa8301d379a0da9e78e7bda67f5edad",
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8",
         "src/transport-mqtt.ts": "3ed2a66626af3ffe7ff27d154a4d1ab5d203f78fa94cf362f6227471ac7166db"
       },
-      "reason": "src/home.ts answers each thalovant.home.request at most once, never after the hub's 10 s counted from its arrival: the handler gets its 9 s or what is left of the bound (Promise.race against a timer, so a handler that ignores its AbortSignal cannot hold the answer back), and the reply's sending gets what the handler left, withdrawn at the bound through a SendOptions signal that ThalovantClient.reply()/emit() and the transports' send chain honour before encrypting. The reply is built by replyContext() in src/events.ts from the context exactly as the hub sent it (a destination with no source gives no destination). Speech is made by stripSsml() in src/rich.ts (real tags, comments and processing instructions only, scanned in one pass), decodeReferences() (numeric references, the XML five and nbsp only) and a White_Space collapse. Keeping the link: closeRefuses() and LinkSupervisor in src/link-keeping.ts are the pure close rule and supervisor; src/transport-core.ts reads a 1000/1005/1008 close as a refusal during any step of the handshake or within 750 ms after it, follows a refused KK attempt with one XX attempt at once in the same connect (WSS, HTTP and MQTT), classifies a Noise message that does not authenticate as ThalovantHubRefusedError and a pin mismatch (checked before message 3, and in pinHubKey) as ThalovantHubKeyChangedError; HubSession.run() in src/session.ts follows the supervisor and stops at once on a changed key. Run against the shared home-link vectors (directly and end to end over a real WSS + Noise link) and the link-keeping vectors: the pure rule, a loopback hub that records the patterns it sees, and the supervisor.",
+      "reason": "src/home.ts answers each thalovant.home.request at most once, never after the hub's 10 s counted from its arrival: the handler gets its 9 s or what is left of the bound (Promise.race against a timer, so a handler that ignores its AbortSignal cannot hold the answer back), and the reply's sending gets what the handler left, withdrawn at the bound through a SendOptions signal that ThalovantClient.reply()/emit() and the transports' send chain honour before encrypting. The reply is built by replyContext() in src/events.ts from the context exactly as the hub sent it (a destination with no source gives no destination). Speech is made by stripSsml() in src/rich.ts (real tags, comments and processing instructions only, scanned in one pass), decodeReferences() (numeric references, the XML five and nbsp only) and a White_Space collapse. Keeping the link: closeRefuses() and LinkSupervisor in src/link-keeping.ts are the pure close rule and supervisor; src/transport-core.ts reads a 1000/1005/1008 close as a refusal during any step of the handshake or within 750 ms after it, unless a frame from the hub decrypted first (heardFromHub; a close is judged after the frames that came before it are read), reads a refusal as an XX handshake ends -- a close, or an HTTPS request answered 401/403 while the last handshake frames go out or right after -- as ThalovantClientKeyRejectedError (a ThalovantHubRefusedError naming the key folder and the other likely one), follows a refused KK attempt with one XX attempt at once in the same connect (WSS, HTTP and MQTT), classifies a Noise message that does not authenticate as ThalovantHubRefusedError and a pin mismatch (checked before message 3, and in pinHubKey) as ThalovantHubKeyChangedError; HubSession.run() in src/session.ts follows the supervisor and stops at once on a changed key or a rejected client key. A reply withdrawn while it waits behind another frame is never sent and leaves the link as it was (the queued cases, over a real link). Run against the shared home-link vectors (directly and end to end over a real WSS + Noise link) and the link-keeping vectors: the pure rule, a loopback hub that records the patterns it sees and pins the client's key as hivemind-core does (connects made as a kept link makes them, the settle window included), and the supervisor.",
       "status": "required",
       "tests": {
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
-        "test/home-link-vectors.json": "3dc3d38020f3d1b7a2df61d0048fb13685a5361d2dff82710c1e1833cccc576f",
-        "test/home-link-vectors.test.ts": "016a75f49fa8585ee328d0d29ea1bc8c476786c09d98effc15cc3e9c6af4f0be",
-        "test/home-link.test.ts": "ddc2c32f0fae04f419716bdf4cf8a8636a7536ed0f226ff8a9e4c295cdfd348b",
-        "test/link-keeping-vectors.json": "b3be27131c051c527d7b917dd6d7d24692920a0f59694b1031f009724e3de4bc",
-        "test/link-keeping-vectors.test.ts": "aa954b8b5b1e52bf58e8513bccf7395ab0c5233cfff03208b523773d4c36ac81",
-        "test/v3-hub.ts": "6431050e3575bd8796c6f7f93287849a631c51413369014247047038073ef880"
+        "test/home-link-vectors.json": "bfaadf8f9c588ae79c02263743c8d3be0d80f8fad2db8ebce81158d0c336c547",
+        "test/home-link-vectors.test.ts": "ff7820522d0898bee8ded5a7a67f69a045b4fc9a9fca19118175308e57b1b378",
+        "test/home-link.test.ts": "a976739d16bffac8611f2bfbefc243ddb0da68662e94cdc4f8e8a956ab0eebae",
+        "test/link-keeping-vectors.json": "eea7f573e802cf447b6776868d513ad1fb086c1ec7300629ab5f9ec09c9c3257",
+        "test/link-keeping-vectors.test.ts": "2d53e5a17c886c786a45a6a611f47734bd67b7d7c4bee56f1e8f592ab575c0fd",
+        "test/v3-hub.ts": "b48ef9b4965cb31d8a44a0204e843c6fe57390714ff2ff4d15a6149f07e1fba1"
       },
       "vectors": {
         "home-link-vectors.json": "test/home-link-vectors.json",
@@ -153,13 +157,17 @@
     },
     "identity": {
       "implementation": {
-        "src/identity.ts": "58cd90af3017d6d36b6e3bcd4609aa79aa6bb1cf76f8fc7ff3f9849847d1b0fd",
+        "src/identity.ts": "188f6903b070c572349787923ece2006efc7a630c90616f084c9c14dd89b94a0",
+        "src/noise-store.ts": "03fefa0f4a6bd96d2b8d6267e1484a0705ba4f4f5cdf4eecae08355e64f9a447",
+        "src/platform/node.ts": "858280cb4f5622c85ebbb8f2e673eac9014f5f8c21e9d21ebdbedf841c06f4b0",
         "src/protocols.ts": "9e672a0feb0ff5566cdd055cc37c475866244f5b941d4aea6da991ac60ec57f9",
-        "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d"
+        "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d",
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. ThalovantIdentity.fromFile()/fromConfig() keep sourcePath (never serialized or compared); with no noiseStateDir, a transport keeps the Noise key and pins in that file's folder when it can write there (identityNoiseStateDir in src/platform/node.ts; the shared default when the file already sits in it; a browser keeps localStorage), and adoptNoiseState() in src/noise-store.ts copies -- never moves -- the key and pins from the shared default the first time, only when that key has a pin for the hub this connect reached. test/noise-key-folder.test.ts runs it against a loopback hub.",
       "status": "required",
       "tests": {
+        "test/noise-key-folder.test.ts": "08f4693de6572ad97a4008b6cafc9aeddc06bc451bd1b3bf57121ade0e8927e9",
         "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8",
         "test/sdk.test.ts": "5b7b16bc0bfc9fa47fee3051f97ca2ab5627a9322812c5c3e62944547d703267",
         "test/slashes.test.ts": "dee6bc93205fbdd387bc6113325cc1b9943d39068d06787b634dd2023c6d0fbf"
@@ -168,8 +176,8 @@
     "inventory": {
       "implementation": {
         "src/inventory.ts": "fafa87e316d0351736b05d833a1b54379ee114d3cea748b031acb5e8c03adab2",
-        "src/platform/browser.ts": "c136d997b8526464106fa6c5dd8b78a99eb97ccfd912391fdd06e36ce6b232d5",
-        "src/platform/node.ts": "d00d04ddfb8707a4546b5133d31a7a7c93e8ef0c398547ce7e06591b89b11def"
+        "src/platform/browser.ts": "3feda8e53d2063092f7d09bab64cc16f60c331e872e0ea259fc423d0fe071ef7",
+        "src/platform/node.ts": "858280cb4f5622c85ebbb8f2e673eac9014f5f8c21e9d21ebdbedf841c06f4b0"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
       "status": "required",
@@ -179,6 +187,27 @@
       },
       "vectors": {
         "inventory-vectors.json": "test/inventory-vectors.json"
+      }
+    },
+    "link-carriers": {
+      "implementation": {
+        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
+        "src/noise-store.ts": "03fefa0f4a6bd96d2b8d6267e1484a0705ba4f4f5cdf4eecae08355e64f9a447",
+        "src/session.ts": "0169e76d3c1030a76b56e4700c046dbabfa8301d379a0da9e78e7bda67f5edad",
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8",
+        "src/transport-mqtt.ts": "3ed2a66626af3ffe7ff27d154a4d1ab5d203f78fa94cf362f6227471ac7166db"
+      },
+      "reason": "withXxFallback() in src/transport-core.ts wraps every carrier's connect (HiveMindHttpTransport, HiveMindWSSTransport, and HiveMindMqttTransport in src/transport-mqtt.ts): a refused KK attempt -- an answer that does not authenticate, or over HTTPS polling a request answered 401/403 during the exchange -- drops the stale PSK and is followed at once by one XX attempt in the same connect, and the XX attempt's outcome is the connect's. Over HTTPS a 401/403 while the final XX frames go out, or on a poll right after before the hub sent anything, is ThalovantClientKeyRejectedError. MQTT has only the first: a broker relays no refusal. The browser build has no MQTT transport (every entry point throws), so there is nothing there to follow. Run against the shared link-carrier vectors through the SDK's real HTTP and MQTT transports, with test/carrier-hub.ts -- a hivemind-core responder behind a hivemind-http-protocol fetch double and an in-memory broker -- and each connect made as a kept link makes it.",
+      "status": "required",
+      "tests": {
+        "test/carrier-hub.ts": "707938941a752604ae158768093279842bfe611910a44573d5e15a40267c34ac",
+        "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
+        "test/link-carrier-vectors.json": "dae55b50c45c69b47a1c08eec472dd2e8eb2844251d1dc2951e7c5440f87e260",
+        "test/link-carrier-vectors.test.ts": "5ad0976e5f358be5fe6d65c99d7c8afb59d8888795d4cf31347a3bbdf51c2235",
+        "test/link-keeping-vectors.json": "eea7f573e802cf447b6776868d513ad1fb086c1ec7300629ab5f9ec09c9c3257"
+      },
+      "vectors": {
+        "link-carrier-vectors.json": "test/link-carrier-vectors.json"
       }
     },
     "listing": {
@@ -198,9 +227,9 @@
     },
     "mesh": {
       "implementation": {
-        "src/client.ts": "838f7e21686a3d0aa5d629e7420343052a1f7ae79e811b8d198c5275911cf13e",
+        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
         "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
-        "src/transport-core.ts": "18be6424076e272572a4140cc91a909a2c194cc5ad3900db289c8844f7e09a1e"
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
@@ -214,8 +243,8 @@
     },
     "refusal": {
       "implementation": {
-        "src/client.ts": "838f7e21686a3d0aa5d629e7420343052a1f7ae79e811b8d198c5275911cf13e",
-        "src/errors.ts": "af55b7706c60decde6b7cc849ff7b5daf52c030aba92a43724c91a93a10e146a",
+        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
+        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
         "src/refusal.ts": "b691a17793e8e837e59fb7301f0dad20797e297e9104e59b80be4b5b08aca235"
       },
       "reason": "refusalBelongsToAsk() and failureError() in src/refusal.ts, used by ask() in client.ts, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish rejects. Both helpers are exported so thalovant-mcp can run the same vectors against the version it resolves. Run against the shared refusal vectors plus five end-to-end asks over a fake transport.",
@@ -230,10 +259,10 @@
     },
     "runtime": {
       "implementation": {
-        "src/client.ts": "838f7e21686a3d0aa5d629e7420343052a1f7ae79e811b8d198c5275911cf13e",
+        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
         "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
         "src/noise.ts": "859754e8db0a40f932d146eca48ec7e5f52f8444847f5b8396291473fda9fc26",
-        "src/transport-core.ts": "18be6424076e272572a4140cc91a909a2c194cc5ad3900db289c8844f7e09a1e"
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
       "status": "required",
@@ -250,14 +279,14 @@
     },
     "session": {
       "implementation": {
-        "src/link-keeping.ts": "d2a3ba87257c3747780ebb5bf140a950a78fce51811737fce08d126a941f6943",
-        "src/session.ts": "762b054dbc4e3013ca8960bfe02a44f26b25e6f839ce290cb9a38839e17d297d"
+        "src/link-keeping.ts": "466a3be7135437eeac402b7966da488fed753c01fd6da8ec969384ba605ac100",
+        "src/session.ts": "0169e76d3c1030a76b56e4700c046dbabfa8301d379a0da9e78e7bda67f5edad"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The connected-client factory owns failed connection cleanup; Python performs that dial internally and retains failed retirement before replacement. HubSession.run() keeps the link by the policy (HubSessionPolicy, now defined in src/link-keeping.ts beside LinkSupervisor, whose decisions run() follows: probe cadence, retry ladder, a settle window that reads a close right after the handshake as a refusal, refusalGraceSeconds before ThalovantHubRefusedError, and a stop at once on ThalovantHubKeyChangedError), exercised in test/home-link.test.ts and test/link-keeping-vectors.test.ts.",
       "status": "required",
       "tests": {
-        "test/home-link.test.ts": "ddc2c32f0fae04f419716bdf4cf8a8636a7536ed0f226ff8a9e4c295cdfd348b",
-        "test/link-keeping-vectors.test.ts": "aa954b8b5b1e52bf58e8513bccf7395ab0c5233cfff03208b523773d4c36ac81",
+        "test/home-link.test.ts": "a976739d16bffac8611f2bfbefc243ddb0da68662e94cdc4f8e8a956ab0eebae",
+        "test/link-keeping-vectors.test.ts": "2d53e5a17c886c786a45a6a611f47734bd67b7d7c4bee56f1e8f592ab575c0fd",
         "test/session.test.ts": "c5c7b84ec471163f5079bc2dfee231a610a8cc434f68f8aa370cbfe9cd122a67"
       }
     }
@@ -275,7 +304,9 @@
     "76bc1eb9957da5a6fdf03e89f3905f8d37d3ef2fe7c841ba751718105ca30a45",
     "34a21f2ad875b220a571613e25b6a6e5f3d8de1a776f4949a7ab63ba93e07b16",
     "f79d99e9acd2fe299e3b313102541e47b366751defe5fa0dcfa44053aa7f007d",
-    "2460eb90bd56b1b182be3db365ba29bfef712d4ea2748061652ba0f28dcf6f50"
+    "2460eb90bd56b1b182be3db365ba29bfef712d4ea2748061652ba0f28dcf6f50",
+    "d33dc2be8b0074be4e16d89a4b615f0e6bc32d99fb513cb75e20c09cd0fab4b6",
+    "3b0acf7c8b2f03bec95d9e9bba4f82e88c79ad3d98590988852e6c06deb48af0"
   ],
   "schema_version": 1
 }

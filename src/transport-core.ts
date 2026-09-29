@@ -1,6 +1,12 @@
 import { base64FromUtf8, base64ToBytes, bytesToBase64, bytesToHex, hexToBytes, utf8Decode, utf8Encode } from "./bytes.js";
 import { DEFAULT_USER_AGENT } from "./constants.js";
-import { ThalovantConnectionError, ThalovantHubKeyChangedError, ThalovantHubRefusedError, ThalovantRuntimeError } from "./errors.js";
+import {
+  ThalovantClientKeyRejectedError,
+  ThalovantConnectionError,
+  ThalovantHubKeyChangedError,
+  ThalovantHubRefusedError,
+  ThalovantRuntimeError,
+} from "./errors.js";
 import {
   buildPrologue,
   canonicalJson,
@@ -8,20 +14,23 @@ import {
   NoiseHandshake,
   NoiseSession,
   NOISE_PATTERN_KK,
+  NOISE_PATTERN_XX,
   noiseProtocolName,
   selectNoiseOptions,
 } from "./noise.js";
 import {
+  adoptNoiseState,
   forgetCachedPsk,
   loadCachedPsk,
   loadNoisePin,
   loadOrCreateNoiseKey,
+  noiseStateDir as defaultNoiseStateDir,
   pinHubKey,
   saveCachedPsk,
 } from "./noise-store.js";
 import { BusPayload, EventContext, type ThalovantBinary } from "./events.js";
 import { ThalovantIdentity } from "./identity.js";
-import { createPlatformWebSocket, randomUUID } from "./platform/node.js";
+import { createPlatformWebSocket, identityNoiseStateDir, randomUUID } from "./platform/node.js";
 import type { PlatformWebSocket } from "./platform/types.js";
 import { decodeHiveBinaryFrame } from "./wire.js";
 import { closeRefuses } from "./link-keeping.js";
@@ -75,6 +84,45 @@ export interface TransportConnectionInfo {
    * the same code later is an ordinary drop. `HubSession.run()` reads it.
    */
   refused?: boolean;
+  /**
+   * Whether that refusal came as an XX handshake ended: the hub refusing this
+   * client's own key, because it pinned another one for the connection. See
+   * {@link ThalovantClientKeyRejectedError}.
+   */
+  clientKeyRejected?: boolean;
+  /** The folder this client's Noise key is in, when the platform keeps it in one. */
+  keyFolder?: string;
+  /** Where another program reading the same identity likely keeps its key. */
+  otherKeyFolder?: string;
+}
+
+/**
+ * The error for a link the hub closed right after its handshake, with a
+ * refusal: {@link ThalovantClientKeyRejectedError} when it came as an XX
+ * handshake ended, a plain {@link ThalovantHubRefusedError} otherwise.
+ *
+ * @internal
+ */
+export function refusalAfterHandshake(info: TransportConnectionInfo): ThalovantHubRefusedError {
+  if (!info.clientKeyRejected) {
+    return new ThalovantHubRefusedError(
+      "The hub closed the link right after the handshake: it does not accept these credentials, or not yet.",
+    );
+  }
+  return clientKeyRejected(info.keyFolder, info.otherKeyFolder);
+}
+
+function clientKeyRejected(keyFolder?: string, otherKeyFolder?: string): ThalovantClientKeyRejectedError {
+  const here = keyFolder ? ` This client's key is in ${keyFolder}.` : "";
+  const elsewhere = otherKeyFolder
+    ? ` Another program that reads the same identity may keep its key in ${otherKeyFolder}, and the hub may have pinned that one.`
+    : "";
+  return new ThalovantClientKeyRejectedError(
+    "The hub refused this client's Noise key: it pinned a different key for this connection when it first " +
+      `connected.${here}${elsewhere} A new handshake cannot fix this. Re-pair, or share the key folder: point every ` +
+      "program that uses this identity at the folder holding the key the hub trusts (noiseStateDir).",
+    { keyFolder, otherKeyFolder },
+  );
 }
 
 export interface HiveMindRuntimeTransport extends EventTarget {
@@ -99,7 +147,7 @@ export class HiveMindHttpTransport extends EventTarget {
   private polling = false;
   private cookies = "";
   protected connectionEpoch = 0;
-  private receiveChain: Promise<void> = Promise.resolve();
+  protected receiveChain: Promise<void> = Promise.resolve();
   protected readonly sendTimeoutMs: number;
   /**
    * Where the Noise static key and the pin file live. Undefined uses the
@@ -107,6 +155,12 @@ export class HiveMindHttpTransport extends EventTarget {
    * namespace in a browser.
    */
   private readonly noiseStateDir?: string;
+  /**
+   * The shared folder an SDK before 0.9.1 kept this identity's key in, when
+   * its key now lives beside its identity file instead; copied from once, on
+   * first use (see `adoptNoiseState`).
+   */
+  private readonly legacyNoiseStateDir?: string;
 
   /**
    * The hub's cleartext HELLO payload, kept verbatim because it is bound into
@@ -124,6 +178,19 @@ export class HiveMindHttpTransport extends EventTarget {
   private attemptPin?: string;
   /** When the handshake completed (monotonic ms), to tell a refusal close from a drop. */
   private handshakeCompletedAt = 0;
+  /**
+   * Whether the hub has sent a frame that decrypted under this connection's
+   * session keys. A hub refuses a key before it sends anything, so once it
+   * has, no close is a refusal.
+   */
+  protected heardFromHub = false;
+  /** Whether this client finished its side of the handshake: XX message 3 sent, or KK message 2 read. */
+  private handshakeDoneHere = false;
+  /**
+   * Whether the hub closed the socket. From then on the close decides how the
+   * connection ended: a send that fails on the closed socket does not.
+   */
+  protected peerClosed = false;
 
   /**
    * Deriving the pre-shared key costs 64 MiB and a few hundred milliseconds,
@@ -181,7 +248,36 @@ export class HiveMindHttpTransport extends EventTarget {
     this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
     this.sendTimeoutMs = options.sendTimeoutMs ?? 10000;
-    this.noiseStateDir = options.noiseStateDir;
+    // An identity read from a file keeps its key in that file's folder, so
+    // every program that reads the file presents the same key to the hub.
+    const beside = options.noiseStateDir === undefined && identity.sourcePath
+      ? identityNoiseStateDir(identity.sourcePath)
+      : undefined;
+    this.noiseStateDir = options.noiseStateDir ?? beside;
+    this.legacyNoiseStateDir = beside ? defaultNoiseStateDir() : undefined;
+  }
+
+  /**
+   * The folder this client's Noise key is in, and the other folder where a
+   * program reading the same identity would likely keep its own: beside the
+   * identity file, or the shared default.
+   */
+  protected keyFolders(): { keyFolder?: string; otherKeyFolder?: string } {
+    const used = this.noiseStateDir ?? defaultNoiseStateDir();
+    const candidates = [
+      this.identity.sourcePath ? identityNoiseStateDir(this.identity.sourcePath) : undefined,
+      defaultNoiseStateDir(),
+    ];
+    return { keyFolder: used, otherKeyFolder: candidates.find((candidate) => candidate && candidate !== used) };
+  }
+
+  /** The refusal for this attempt: the client's own key, when it came as XX ended. */
+  protected handshakeRefusal(message: string): ThalovantHubRefusedError {
+    if (this.attemptPattern === NOISE_PATTERN_XX && this.handshakeDoneHere) {
+      const { keyFolder, otherKeyFolder } = this.keyFolders();
+      return clientKeyRejected(keyFolder, otherKeyFolder);
+    }
+    return new ThalovantHubRefusedError(message);
   }
 
   get baseUrl(): string {
@@ -236,7 +332,11 @@ export class HiveMindHttpTransport extends EventTarget {
       // (HTTP) -- is followed by XX. MQTT has only the first: a broker relays
       // no refusal of its own. A KK attempt that ran out of time is not
       // retried: the caller's budget is spent.
-      if (!(error instanceof ThalovantHubRefusedError) || this.attemptPattern !== NOISE_PATTERN_KK) throw error;
+      // A KK handshake this client completed was not refused over its key or
+      // password: the hub could only complete it with the ones it pinned.
+      if (!(error instanceof ThalovantHubRefusedError) || this.attemptPattern !== NOISE_PATTERN_KK || this.handshakeDoneHere) {
+        throw error;
+      }
       this.refusedDuringHandshake();
       this.forceXx = true;
       try {
@@ -369,6 +469,10 @@ export class HiveMindHttpTransport extends EventTarget {
         if (epoch === this.connectionEpoch) {
           this.stopPolling();
           this.rejectHandshake(error);
+          // A poll answered 401 or 403 before the hub sent anything: the hub's
+          // listener refusing the session it aborted, as a WebSocket close with
+          // a refusal code right after the handshake does.
+          if (error instanceof ThalovantHubRefusedError && !this.heardFromHub) this.markRefused();
         }
       }).finally(() => { if (epoch === this.connectionEpoch) this.polling = false; });
     }, this.pollIntervalMs);
@@ -488,6 +592,9 @@ export class HiveMindHttpTransport extends EventTarget {
         throw new ThalovantConnectionError("A text frame arrived on an established v3 Noise session.");
       }
       const frame = this.session.decryptFrame(bytes);
+      // Any frame that decrypts, a chunk included: the hub has accepted this
+      // client's credentials.
+      this.heardFromHub = true;
       if (!frame.complete) return;
       decoded = frame.isJson ? utf8Decode(frame.payload) : frame.payload;
     }
@@ -558,6 +665,15 @@ export class HiveMindHttpTransport extends EventTarget {
     }
     const epoch = this.connectionEpoch;
     if (this.noiseHandshake || this.session) throw new ThalovantConnectionError("Duplicate Noise negotiation.");
+    if (this.legacyNoiseStateDir && this.noiseStateDir) {
+      // Keep the key this identity's hub already pinned, from the folder an
+      // SDK before 0.9.1 kept it in. An old folder it cannot read is no
+      // reason to fail (that copies nothing), but a copy that fails here is:
+      // going on would make a key of this client's own beside the pins it
+      // just copied, which the hub refuses, and the copy would never be made
+      // again. Failing leaves no key, so the next connect copies again.
+      await adoptNoiseState(this.noiseStateDir, this.legacyNoiseStateDir, this.nodeId);
+    }
     const pinned = await loadNoisePin(this.noiseStateDir, this.nodeId);
     // After a KK attempt the hub refused, XX: the pin is still checked when it
     // completes, below and in pinHubKey().
@@ -634,38 +750,54 @@ export class HiveMindHttpTransport extends EventTarget {
       throw new ThalovantHubKeyChangedError("The hub's Noise static key is not the one pinned for it; refusing the connection.");
     }
 
-    if (!handshake.isFinished) {
-      // XXpsk2 message 3: our encrypted static key and the final DH mix. The
-      // pattern and suite are named only on message 1.
-      const final = handshake.writeMessage();
-      await this.sendCleartext({
-        msg_type: "shake",
-        payload: { noise: { msg: bytesToHex(final) } },
+    try {
+      if (!handshake.isFinished) {
+        // XXpsk2 message 3: our encrypted static key and the final DH mix. The
+        // pattern and suite are named only on message 1.
+        const final = handshake.writeMessage();
+        // Done here from the moment message 3 exists: a refusal while it goes
+        // out -- a 401 to it, a close before its send settles -- comes after
+        // the hub has read this client's key, as one right after it does.
+        this.handshakeDoneHere = true;
+        await this.sendCleartext({
+          msg_type: "shake",
+          payload: { noise: { msg: bytesToHex(final) } },
+          metadata: {},
+          route: [],
+        });
+      }
+      this.handshakeDoneHere = true;
+
+      this.assertConnection(epoch);
+      const session = handshake.intoSession();
+      if (session.remoteStaticKey) {
+        await pinHubKey(this.noiseStateDir, nodeId, session.remoteStaticKey);
+      }
+      if (epoch !== this.connectionEpoch || !this.connected) return;
+      this.session = session;
+      this.noiseHandshake = undefined;
+
+      // The first Noise transport message is the encrypted HELLO.
+      await this.sendHiveMessage({
+        msg_type: "hello",
+        payload: {
+          pubkey: this.identity.publicKey ?? "",
+          session: { session_id: `thalovant-node-${randomUUID()}` },
+          site_id: this.identity.siteId,
+        },
         metadata: {},
         route: [],
       });
+    } catch (error) {
+      // Refused while the last frames of a handshake this client completed
+      // were going out -- an HTTPS hub answers them with 401 once it has
+      // aborted on the key XX just showed it. After XX that is the hub
+      // refusing this client's own key.
+      if (error instanceof ThalovantHubRefusedError && !(error instanceof ThalovantClientKeyRejectedError)) {
+        throw this.handshakeRefusal(error.message);
+      }
+      throw error;
     }
-
-    this.assertConnection(epoch);
-    const session = handshake.intoSession();
-    if (session.remoteStaticKey) {
-      await pinHubKey(this.noiseStateDir, nodeId, session.remoteStaticKey);
-    }
-    if (epoch !== this.connectionEpoch || !this.connected) return;
-    this.session = session;
-    this.noiseHandshake = undefined;
-
-    // The first Noise transport message is the encrypted HELLO.
-    await this.sendHiveMessage({
-      msg_type: "hello",
-      payload: {
-        pubkey: this.identity.publicKey ?? "",
-        session: { session_id: `thalovant-node-${randomUUID()}` },
-        site_id: this.identity.siteId,
-      },
-      metadata: {},
-      route: [],
-    });
     if (epoch === this.connectionEpoch && this.connected) this.completeHandshake();
   }
 
@@ -720,6 +852,9 @@ export class HiveMindHttpTransport extends EventTarget {
     this.clearNoiseState();
     this.connected = false;
     this.handshakeComplete = false;
+    this.heardFromHub = false;
+    this.handshakeDoneHere = false;
+    this.peerClosed = false;
     this.lastError = undefined;
     this.connectStartedMs = Date.now();
     this.transportOpenedMs = 0;
@@ -807,16 +942,35 @@ export class HiveMindHttpTransport extends EventTarget {
   }
 
   /**
-   * The hub closed an established link with `code`. Whether that is a refusal
-   * is decided by the close's own time: within the settle window after the
-   * handshake, a refusal code is the hub's answer to the credentials.
+   * The hub closed an established link with `code`, at `closedAt` (monotonic
+   * ms). Whether that is a refusal is decided by the close's own time: within
+   * the settle window after the handshake, before the hub has sent anything
+   * that decrypts, a refusal code is the hub's answer to the credentials. A
+   * WebSocket learns a close's code with the close itself, so it is never late.
    */
-  protected markClosedBy(code: number): void {
+  protected markClosedBy(code: number, closedAt = performance.now()): void {
+    const refused = closeRefuses(code, {
+      closedAfterHandshakeMs: closedAt - this.handshakeCompletedAt,
+      codeLateMs: 0,
+      afterAuthenticatedFrame: this.heardFromHub,
+    });
     this.currentConnection = {
       ...this.currentConnection,
       phase: "closed",
       closeCode: code,
-      refused: closeRefuses(code, { closedAfterHandshakeMs: performance.now() - this.handshakeCompletedAt }),
+      refused,
+    };
+    if (refused) this.markRefused();
+  }
+
+  /** The link just ended with a refusal: record whether it was of this client's key, and where the key is. */
+  protected markRefused(): void {
+    const keyRejected = this.attemptPattern === NOISE_PATTERN_XX;
+    this.currentConnection = {
+      ...this.currentConnection,
+      refused: true,
+      clientKeyRejected: keyRejected,
+      ...(keyRejected ? this.keyFolders() : {}),
     };
   }
 
@@ -852,7 +1006,11 @@ export class HiveMindHttpTransport extends EventTarget {
           this.assertConnection(epoch);
         }
       } catch (error) {
-        if (epoch === this.connectionEpoch) this.failConnection(error instanceof Error ? error : new Error("Noise send failed."));
+        // A send that fails because the hub closed the socket leaves the
+        // verdict to the close, which reads the frames that came before it.
+        if (epoch === this.connectionEpoch && !this.peerClosed) {
+          this.failConnection(error instanceof Error ? error : new Error("Noise send failed."));
+        }
         throw error;
       }
     });
@@ -908,6 +1066,8 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
       const receivedEpoch = this.connectionEpoch;
       this.receiveRawMessage(data).catch((error: Error) => {
         if (socket !== this.socket || receivedEpoch !== this.connectionEpoch) return;
+        // Failed because the hub closed the socket meanwhile: the close decides.
+        if (this.peerClosed) return;
         this.lastError = error;
         this.connected = false;
         this.rejectHandshake(error);
@@ -916,21 +1076,29 @@ export class HiveMindWSSTransport extends HiveMindHttpTransport {
     });
     socket.onClose((code, reason) => {
       if (socket !== this.socket) return;
-      this.connected = false;
-      if (!this.handshakeComplete) {
-        const suffix = reason ? `: ${reason}` : "";
-        // Any step of the handshake, the hub's HELLO and its offer included.
-        const refused = closeRefuses(code);
-        this.rejectHandshake(
-          refused
-            ? new ThalovantHubRefusedError(`The hub refused this connection's credentials (${code}).`)
-            : new ThalovantConnectionError(`HiveMind WSS closed before handshake completed (${code})${suffix}.`),
-        );
-      } else {
-        this.handshakeComplete = false;
-        this.clearNoiseState();
-        this.markClosedBy(code);
-      }
+      const closedAt = performance.now();
+      this.peerClosed = true;
+      // Frames the hub sent before it closed may still be on their way through
+      // the receive chain, and one that decrypts shows the hub accepted the
+      // credentials: the verdict waits for them.
+      void this.receiveChain.then(() => {
+        if (socket !== this.socket) return;
+        this.connected = false;
+        if (!this.handshakeComplete) {
+          const suffix = reason ? `: ${reason}` : "";
+          // Any step of the handshake, the hub's HELLO and its offer included.
+          const refused = closeRefuses(code, { afterAuthenticatedFrame: this.heardFromHub });
+          this.rejectHandshake(
+            refused
+              ? this.handshakeRefusal(`The hub refused this connection's credentials (${code}).`)
+              : new ThalovantConnectionError(`HiveMind WSS closed before handshake completed (${code})${suffix}.`),
+          );
+        } else {
+          this.handshakeComplete = false;
+          this.clearNoiseState();
+          this.markClosedBy(code, closedAt);
+        }
+      });
     });
     socket.onError(error => {
       if (socket !== this.socket) return;
