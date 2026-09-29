@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,6 +130,37 @@ test("the key this hub already pinned is copied from the old shared folder, once
   await writeFile(join(legacy, NOISE_KEY_FILENAME), "22".repeat(32), { mode: 0o600 });
   await connectOnce(identity);
   assert.equal((await readFile(join(folder, NOISE_KEY_FILENAME), "utf8")).trim(), OLD_CLIENT_KEY);
+});
+
+test("a copy cut short before the key fails the connection, and the next connect copies again", async (t) => {
+  const { root, url, legacy, clientKeys } = await scene(t);
+  await legacyKey(legacy, V3_HUB_NODE_ID);
+  const folder = join(root, "elsewhere");
+  const identity = await ThalovantIdentity.fromFile(await identityFile(folder, url));
+  // The pins are copied, then writing the key fails once (a full disk, say).
+  const fs = createRequire(import.meta.url)("node:fs/promises") as { rename: (from: string, to: string) => Promise<void> };
+  const rename = fs.rename;
+  let failures = 1;
+  fs.rename = async (from, to) => {
+    if (failures > 0 && to.endsWith(NOISE_KEY_FILENAME)) {
+      failures -= 1;
+      throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    }
+    return rename(from, to);
+  };
+  syncBuiltinESMExports();
+  t.after(() => {
+    fs.rename = rename;
+    syncBuiltinESMExports();
+  });
+  await assert.rejects(connectOnce(identity));
+  assert.equal(failures, 0, "the copy reached the key");
+  assert.ok(await exists(join(folder, NOISE_PINS_FILENAME)), "the pins went first");
+  assert.equal(await exists(join(folder, NOISE_KEY_FILENAME)), false, "no key of its own the hub would refuse");
+  assert.deepEqual(clientKeys, []);
+  await connectOnce(identity);
+  assert.equal((await readFile(join(folder, NOISE_KEY_FILENAME), "utf8")).trim(), OLD_CLIENT_KEY);
+  assert.deepEqual(clientKeys, [oldPublicKey()], "the hub sees the key it pinned");
 });
 
 test("an old key that never met this hub is not copied", async (t) => {

@@ -23,7 +23,7 @@
         "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
         "src/platform/browser.ts": "3feda8e53d2063092f7d09bab64cc16f60c331e872e0ea259fc423d0fe071ef7",
         "src/platform/node.ts": "858280cb4f5622c85ebbb8f2e673eac9014f5f8c21e9d21ebdbedf841c06f4b0",
-        "src/transport-core.ts": "1eafca9e2dc0669d46b3175183c70a69fbc8fde8d455b8d362f36577c566bd2a",
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8",
         "src/wire.ts": "c18644a51168e22c2cec2869dcc3f5fdd4d283cab878c8504a04129fb93f95c8"
       },
       "reason": "decodeHiveBinaryFrame branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. A compressed part of any other frame -- its metadata or JSON payload -- inflates to at most 32 MiB (MAX_INFLATED_BYTES, zlib's maxOutputLength in src/platform/node.ts), and one that would inflate further, or is truncated, is refused; browsers refuse compressed parts outright. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than a frame this SDK built for itself, and test/wire-limits.test.ts for the inflation cap.",
@@ -136,7 +136,7 @@
         "src/noise.ts": "859754e8db0a40f932d146eca48ec7e5f52f8444847f5b8396291473fda9fc26",
         "src/rich.ts": "79fbed3f733dfef47825ca5f376934de67ad7249a821bcd001db269303f37b8e",
         "src/session.ts": "0169e76d3c1030a76b56e4700c046dbabfa8301d379a0da9e78e7bda67f5edad",
-        "src/transport-core.ts": "1eafca9e2dc0669d46b3175183c70a69fbc8fde8d455b8d362f36577c566bd2a",
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8",
         "src/transport-mqtt.ts": "3ed2a66626af3ffe7ff27d154a4d1ab5d203f78fa94cf362f6227471ac7166db"
       },
       "reason": "src/home.ts answers each thalovant.home.request at most once, never after the hub's 10 s counted from its arrival: the handler gets its 9 s or what is left of the bound (Promise.race against a timer, so a handler that ignores its AbortSignal cannot hold the answer back), and the reply's sending gets what the handler left, withdrawn at the bound through a SendOptions signal that ThalovantClient.reply()/emit() and the transports' send chain honour before encrypting. The reply is built by replyContext() in src/events.ts from the context exactly as the hub sent it (a destination with no source gives no destination). Speech is made by stripSsml() in src/rich.ts (real tags, comments and processing instructions only, scanned in one pass), decodeReferences() (numeric references, the XML five and nbsp only) and a White_Space collapse. Keeping the link: closeRefuses() and LinkSupervisor in src/link-keeping.ts are the pure close rule and supervisor; src/transport-core.ts reads a 1000/1005/1008 close as a refusal during any step of the handshake or within 750 ms after it, unless a frame from the hub decrypted first (heardFromHub; a close is judged after the frames that came before it are read), reads a refusal as an XX handshake ends -- a close, or an HTTPS request answered 401/403 while the last handshake frames go out or right after -- as ThalovantClientKeyRejectedError (a ThalovantHubRefusedError naming the key folder and the other likely one), follows a refused KK attempt with one XX attempt at once in the same connect (WSS, HTTP and MQTT), classifies a Noise message that does not authenticate as ThalovantHubRefusedError and a pin mismatch (checked before message 3, and in pinHubKey) as ThalovantHubKeyChangedError; HubSession.run() in src/session.ts follows the supervisor and stops at once on a changed key or a rejected client key. A reply withdrawn while it waits behind another frame is never sent and leaves the link as it was (the queued cases, over a real link). Run against the shared home-link vectors (directly and end to end over a real WSS + Noise link) and the link-keeping vectors: the pure rule, a loopback hub that records the patterns it sees and pins the client's key as hivemind-core does (connects made as a kept link makes them, the settle window included), and the supervisor.",
@@ -162,12 +162,12 @@
         "src/platform/node.ts": "858280cb4f5622c85ebbb8f2e673eac9014f5f8c21e9d21ebdbedf841c06f4b0",
         "src/protocols.ts": "9e672a0feb0ff5566cdd055cc37c475866244f5b941d4aea6da991ac60ec57f9",
         "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d",
-        "src/transport-core.ts": "1eafca9e2dc0669d46b3175183c70a69fbc8fde8d455b8d362f36577c566bd2a"
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. ThalovantIdentity.fromFile()/fromConfig() keep sourcePath (never serialized or compared); with no noiseStateDir, a transport keeps the Noise key and pins in that file's folder when it can write there (identityNoiseStateDir in src/platform/node.ts; the shared default when the file already sits in it; a browser keeps localStorage), and adoptNoiseState() in src/noise-store.ts copies -- never moves -- the key and pins from the shared default the first time, only when that key has a pin for the hub this connect reached. test/noise-key-folder.test.ts runs it against a loopback hub.",
       "status": "required",
       "tests": {
-        "test/noise-key-folder.test.ts": "fdb534187fc89dddd1d23e7fea5c1b22e89dc5d4eb355682d61aa694b6446de8",
+        "test/noise-key-folder.test.ts": "08f4693de6572ad97a4008b6cafc9aeddc06bc451bd1b3bf57121ade0e8927e9",
         "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8",
         "test/sdk.test.ts": "5b7b16bc0bfc9fa47fee3051f97ca2ab5627a9322812c5c3e62944547d703267",
         "test/slashes.test.ts": "dee6bc93205fbdd387bc6113325cc1b9943d39068d06787b634dd2023c6d0fbf"
@@ -194,7 +194,7 @@
         "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
         "src/noise-store.ts": "03fefa0f4a6bd96d2b8d6267e1484a0705ba4f4f5cdf4eecae08355e64f9a447",
         "src/session.ts": "0169e76d3c1030a76b56e4700c046dbabfa8301d379a0da9e78e7bda67f5edad",
-        "src/transport-core.ts": "1eafca9e2dc0669d46b3175183c70a69fbc8fde8d455b8d362f36577c566bd2a",
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8",
         "src/transport-mqtt.ts": "3ed2a66626af3ffe7ff27d154a4d1ab5d203f78fa94cf362f6227471ac7166db"
       },
       "reason": "withXxFallback() in src/transport-core.ts wraps every carrier's connect (HiveMindHttpTransport, HiveMindWSSTransport, and HiveMindMqttTransport in src/transport-mqtt.ts): a refused KK attempt -- an answer that does not authenticate, or over HTTPS polling a request answered 401/403 during the exchange -- drops the stale PSK and is followed at once by one XX attempt in the same connect, and the XX attempt's outcome is the connect's. Over HTTPS a 401/403 while the final XX frames go out, or on a poll right after before the hub sent anything, is ThalovantClientKeyRejectedError. MQTT has only the first: a broker relays no refusal. The browser build has no MQTT transport (every entry point throws), so there is nothing there to follow. Run against the shared link-carrier vectors through the SDK's real HTTP and MQTT transports, with test/carrier-hub.ts -- a hivemind-core responder behind a hivemind-http-protocol fetch double and an in-memory broker -- and each connect made as a kept link makes it.",
@@ -203,7 +203,7 @@
         "test/carrier-hub.ts": "707938941a752604ae158768093279842bfe611910a44573d5e15a40267c34ac",
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
         "test/link-carrier-vectors.json": "dae55b50c45c69b47a1c08eec472dd2e8eb2844251d1dc2951e7c5440f87e260",
-        "test/link-carrier-vectors.test.ts": "43c4ba4deb79cadd9c3ff5f39c58a00bd70acdc22660aeaf8472082bb8bfe20f",
+        "test/link-carrier-vectors.test.ts": "5ad0976e5f358be5fe6d65c99d7c8afb59d8888795d4cf31347a3bbdf51c2235",
         "test/link-keeping-vectors.json": "eea7f573e802cf447b6776868d513ad1fb086c1ec7300629ab5f9ec09c9c3257"
       },
       "vectors": {
@@ -229,7 +229,7 @@
       "implementation": {
         "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
         "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
-        "src/transport-core.ts": "1eafca9e2dc0669d46b3175183c70a69fbc8fde8d455b8d362f36577c566bd2a"
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
@@ -262,7 +262,7 @@
         "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
         "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
         "src/noise.ts": "859754e8db0a40f932d146eca48ec7e5f52f8444847f5b8396291473fda9fc26",
-        "src/transport-core.ts": "1eafca9e2dc0669d46b3175183c70a69fbc8fde8d455b8d362f36577c566bd2a"
+        "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
       "status": "required",

@@ -136,3 +136,28 @@ for (const spoke of [false, true]) {
     if (!spoke) assert.equal(info.keyFolder, directory);
   });
 }
+
+test("over HTTPS, a 401 to the request carrying XX message 3 is a refusal of this client's key", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "thalovant-link-carrier-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const hub = httpsHub();
+  // The client's second cleartext "shake" is XX message 3, which carries its
+  // static key: the hub reads it, aborts on it, and answers that very request 401.
+  let shakes = 0;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const message = new URLSearchParams(String(init?.body ?? "")).get("message") ?? "";
+    if (new URL(String(input)).pathname === "/send_message" && message.includes('"msg_type":"shake"')) {
+      shakes += 1;
+      if (shakes === 2) {
+        await hub.fetch(input, init);
+        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
+      }
+    }
+    return hub.fetch(input, init);
+  });
+  const transport = new HiveMindHttpTransport(hub.identity(), { noiseStateDir: directory, pollIntervalMs: 5 });
+  t.after(() => transport.disconnect());
+  const error = await transport.connect(10_000).then(() => undefined, (caught: unknown) => caught);
+  assert.equal(shakes, 2, "message 3 went out");
+  assert.ok(error instanceof ThalovantClientKeyRejectedError, String(error));
+});

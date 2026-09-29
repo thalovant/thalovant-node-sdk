@@ -667,8 +667,12 @@ export class HiveMindHttpTransport extends EventTarget {
     if (this.noiseHandshake || this.session) throw new ThalovantConnectionError("Duplicate Noise negotiation.");
     if (this.legacyNoiseStateDir && this.noiseStateDir) {
       // Keep the key this identity's hub already pinned, from the folder an
-      // SDK before 0.9.1 kept it in. Never a reason to fail the connection.
-      await adoptNoiseState(this.noiseStateDir, this.legacyNoiseStateDir, this.nodeId).catch(() => false);
+      // SDK before 0.9.1 kept it in. An old folder it cannot read is no
+      // reason to fail (that copies nothing), but a copy that fails here is:
+      // going on would make a key of this client's own beside the pins it
+      // just copied, which the hub refuses, and the copy would never be made
+      // again. Failing leaves no key, so the next connect copies again.
+      await adoptNoiseState(this.noiseStateDir, this.legacyNoiseStateDir, this.nodeId);
     }
     const pinned = await loadNoisePin(this.noiseStateDir, this.nodeId);
     // After a KK attempt the hub refused, XX: the pin is still checked when it
@@ -751,6 +755,10 @@ export class HiveMindHttpTransport extends EventTarget {
         // XXpsk2 message 3: our encrypted static key and the final DH mix. The
         // pattern and suite are named only on message 1.
         const final = handshake.writeMessage();
+        // Done here from the moment message 3 exists: a refusal while it goes
+        // out -- a 401 to it, a close before its send settles -- comes after
+        // the hub has read this client's key, as one right after it does.
+        this.handshakeDoneHere = true;
         await this.sendCleartext({
           msg_type: "shake",
           payload: { noise: { msg: bytesToHex(final) } },
