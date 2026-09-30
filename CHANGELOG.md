@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.3 — 2026-09-30
+
+A skill may now positively claim a reply the pipeline itself would still call fallback-tier. `ThalovantReply.claimed` treated every fallback-stage reply as "nothing matched," because OVOS's own fallback priority band (`match_low`, 90-101) puts a skill that vocabulary-gates its own narrow answers in the same tier as the fleet's generic catch-all -- the pipeline id alone cannot tell them apart. Seen live: `thalovant-skill-home` genuinely turned a light off from the fallback tier, and a satellite listening without a wake word read the reply as unclaimed and stayed silent.
+
+- A skill's own `speak` event may set `data.meta.thalovant_claimed = true` (`thalovant-skillkit`'s `speak_to`/`emit_speech` already thread a `meta` object onto that message, so this is additive to something already there). `replyClaimMetadata()` now checks for a literal `true` under the new `THALOVANT_CLAIMED_META_KEY` constant, read only from that skill's own `speak`/`ovos.utterance.speak` event, before falling back to the existing pipeline-tier substring rule.
+- Opt-in and additive: a reply whose skill never sets the key -- the fleet's own generic catch-all included -- is judged exactly as before this change. Only a literal boolean `true` counts; `false`, a string, a number or the key missing are all inert. The check runs only after the existing handled/ok/no-failure gate, so it can never turn a failed or unhandled reply into a claimed one -- it only ever turns a would-be `false` into `true`.
+- Caught in review before this shipped further: `hasAssertedClaim` originally scanned every event this reply collected, not only the skill's own speak, so a correlated `ovos.utterance.handled` carrying the same meta shape could wrongly assert a claim the skill never made (CodeRabbit, PR #90). The scan is now restricted to `EVENT_SPEAK`/`EVENT_OVOS_UTTERANCE_SPEAK`, never the wider media-events set. The reference digest moves again (`50d65c1596a9` → `841f3bbeec23`), both kept in `contracts/sdk-parity.json`'s `reference_digests` during the coordinated rollout.
+- Vendors the Python reference's eight new `reply-claim-vectors.json` cases (asserted claim on a fallback reply, the unasserted generic-catch-all shape, false/non-boolean assertions, a second-event assertion, a failed reply an assertion cannot rescue, an intent-reply no-op, and a correlated non-speak event whose assertion must be ignored); the sixteen pre-existing cases are unchanged. All 24 recorded the same as the reference's.
+
 ## 0.9.1 — 2026-09-28
 
 Sign in as a registered app, keep an identity's Noise key beside its file, and tell a hub refusing this client's own key from any other refusal. Every addition is new API; nothing that existed changes shape.

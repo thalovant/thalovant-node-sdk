@@ -20,7 +20,7 @@
     "binary": {
       "implementation": {
         "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
-        "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
+        "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752",
         "src/platform/browser.ts": "3feda8e53d2063092f7d09bab64cc16f60c331e872e0ea259fc423d0fe071ef7",
         "src/platform/node.ts": "858280cb4f5622c85ebbb8f2e673eac9014f5f8c21e9d21ebdbedf841c06f4b0",
         "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8",
@@ -96,7 +96,7 @@
     "conversation": {
       "implementation": {
         "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
-        "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50"
+        "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
       "status": "required",
@@ -129,7 +129,7 @@
       "implementation": {
         "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
         "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
-        "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
+        "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752",
         "src/home.ts": "8a83815a8ae578658908ff8c18edddc973bf20bd1428db3569a7ebbb32e0d308",
         "src/link-keeping.ts": "466a3be7135437eeac402b7966da488fed753c01fd6da8ec969384ba605ac100",
         "src/noise-store.ts": "03fefa0f4a6bd96d2b8d6267e1484a0705ba4f4f5cdf4eecae08355e64f9a447",
@@ -228,7 +228,7 @@
     "mesh": {
       "implementation": {
         "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
-        "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
+        "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752",
         "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
@@ -260,18 +260,18 @@
     "runtime": {
       "implementation": {
         "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
-        "src/events.ts": "adebecd05282539170e8f009f8aa81160fc5023a33ed1fbafb581e67d1593f50",
+        "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752",
         "src/noise.ts": "859754e8db0a40f932d146eca48ec7e5f52f8444847f5b8396291473fda9fc26",
         "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs. A skill's own speak event may now assert `data.meta.thalovant_claimed === true` to positively claim a fallback-tier reply; `replyClaimMetadata` checks that first, only after the handled/ok/no-failure gate, so it can only turn a would-be false into true and a reply whose skill never sets it is judged exactly as before. The assertion scan is restricted to the skill's own `speak`/`ovos.utterance.speak` event (never the wider media-events set, and never another correlated event such as `ovos.utterance.handled` that this reply happens to carry with the same meta shape).",
       "status": "required",
       "tests": {
         "test/ask-wait-deadlines.test.ts": "29aa6e61ce7b0ef25d987e295d80d37bc9aeca6fa5253a348446fa8203f011f7",
         "test/noise-transports.test.ts": "06ddd7ada87e9032c9c5f5de82576fdd848d555a955c143d77efb8617179c9a2",
         "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8",
-        "test/reply-claim-vectors.json": "45f2731589e612d5a849376d94073c57b0fef426a92e1d065c58c48442b1ffdc",
-        "test/reply-claims.test.ts": "8f2071035b281cca9fcfd8a3934cc9baf7c550ce6284021a95df9b40a0c7f540"
+        "test/reply-claim-vectors.json": "303bc10666baafbc85e67d7a9dcd6e0fbb16a99e539aed6d829fb0f4744c96b8",
+        "test/reply-claims.test.ts": "4952c6ec63cf0144cf87d8e20999e8e6a952576e2912b1d55fa41d25ca5742f4"
       },
       "vectors": {
         "reply-claim-vectors.json": "test/reply-claim-vectors.json"
@@ -306,7 +306,9 @@
     "f79d99e9acd2fe299e3b313102541e47b366751defe5fa0dcfa44053aa7f007d",
     "2460eb90bd56b1b182be3db365ba29bfef712d4ea2748061652ba0f28dcf6f50",
     "d33dc2be8b0074be4e16d89a4b615f0e6bc32d99fb513cb75e20c09cd0fab4b6",
-    "3b0acf7c8b2f03bec95d9e9bba4f82e88c79ad3d98590988852e6c06deb48af0"
+    "3b0acf7c8b2f03bec95d9e9bba4f82e88c79ad3d98590988852e6c06deb48af0",
+    "50d65c1596a99e5db78c38c0898ca01bfbb105da305e9804f394f08756af7f50",
+    "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a"
   ],
   "schema_version": 1
 }

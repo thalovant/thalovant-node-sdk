@@ -38,3 +38,13 @@ export const FAILURE_EVENTS = new Set([
 
 /** Data-plane user agent. Derived from the one version constant, never pinned. */
 export const DEFAULT_USER_AGENT = USER_AGENT;
+
+/**
+ * The `data.meta` key a skill's own `speak` event sets to positively assert
+ * that it genuinely answered, even from the fallback tier (OVOS `match_low`,
+ * 90-101) that a vocabulary-gated fallback skill shares with the fleet's
+ * generic catch-all. `thalovant-skillkit`'s `speak_to`/`emit_speech` already
+ * thread a `meta` dict onto that message, so this is additive to something
+ * already there. Only a literal boolean `true` under this key counts.
+ */
+export const THALOVANT_CLAIMED_META_KEY = "thalovant_claimed";
