@@ -264,7 +264,7 @@
         "src/noise.ts": "859754e8db0a40f932d146eca48ec7e5f52f8444847f5b8396291473fda9fc26",
         "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs. A skill's own speak event may now assert `data.meta.thalovant_claimed === true` to positively claim a fallback-tier reply; `replyClaimMetadata` checks that first, only after the handled/ok/no-failure gate, so it can only turn a would-be false into true and a reply whose skill never sets it is judged exactly as before.",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs. A skill's own speak event may now assert `data.meta.thalovant_claimed === true` to positively claim a fallback-tier reply; `replyClaimMetadata` checks that first, only after the handled/ok/no-failure gate, so it can only turn a would-be false into true and a reply whose skill never sets it is judged exactly as before. The assertion scan is restricted to the skill's own `speak`/`ovos.utterance.speak` event (never the wider media-events set, and never another correlated event such as `ovos.utterance.handled` that this reply happens to carry with the same meta shape).",
       "status": "required",
       "tests": {
         "test/ask-wait-deadlines.test.ts": "29aa6e61ce7b0ef25d987e295d80d37bc9aeca6fa5253a348446fa8203f011f7",
@@ -307,7 +307,8 @@
     "2460eb90bd56b1b182be3db365ba29bfef712d4ea2748061652ba0f28dcf6f50",
     "d33dc2be8b0074be4e16d89a4b615f0e6bc32d99fb513cb75e20c09cd0fab4b6",
     "3b0acf7c8b2f03bec95d9e9bba4f82e88c79ad3d98590988852e6c06deb48af0",
-    "50d65c1596a99e5db78c38c0898ca01bfbb105da305e9804f394f08756af7f50"
+    "50d65c1596a99e5db78c38c0898ca01bfbb105da305e9804f394f08756af7f50",
+    "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a"
   ],
   "schema_version": 1
 }

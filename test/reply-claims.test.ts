@@ -6,9 +6,10 @@ import { record } from "./conformance-record.js";
 const vectors = JSON.parse(readFileSync(new URL("../../test/reply-claim-vectors.json", import.meta.url), "utf8"));
 for (const row of vectors.cases) test(`reply claim: ${row.name}`, () => {
   const metas: Array<Record<string, unknown> | null> = row.metas ?? row.contexts.map(() => null);
+  const names: string[] = row.names ?? row.contexts.map(() => "speak");
   const reply = { events: row.contexts.map((context: EventContext, index: number) => {
       const meta = metas[index];
-      return new ThalovantEvent("speak", meta ? { meta } : {}, context);
+      return new ThalovantEvent(names[index] ?? "speak", meta ? { meta } : {}, context);
     }),
     handled: row.handled, ok: row.handled && !row.failed,
     failureEvent: row.failed ? new ThalovantEvent("failure") : undefined };

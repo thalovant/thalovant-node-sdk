@@ -1,4 +1,4 @@
-import { FAILURE_EVENTS, EVENT_AUDIO_QUEUE, MAX_AUDIO_CLIP_BYTES, MAX_REPLY_MEDIA_BYTES, THALOVANT_CLAIMED_META_KEY } from "./constants.js";
+import { FAILURE_EVENTS, EVENT_AUDIO_QUEUE, EVENT_SPEAK, EVENT_OVOS_UTTERANCE_SPEAK, MAX_AUDIO_CLIP_BYTES, MAX_REPLY_MEDIA_BYTES, THALOVANT_CLAIMED_META_KEY } from "./constants.js";
 import { displayItemsFromEventData, richMediaFromData, stripSsml, ThalovantDisplayItem } from "./rich.js";
 
 export interface SessionContext {
@@ -153,14 +153,21 @@ export interface ThalovantReply {
 }
 
 /**
- * True when some event in the reply carries a literal `true` under
+ * True when the reply's own `speak` event carries a literal `true` under
  * `data.meta[THALOVANT_CLAIMED_META_KEY]`: a skill's own positive assertion
  * that it genuinely answered. Opt-in and additive - `false`, a string, a
  * number or the key missing are all inert, and a reply whose skill never sets
  * it is judged exactly as before this signal existed.
+ *
+ * Scoped to `speak`/`ovos.utterance.speak` events only. A reply can carry
+ * other correlated events (`ovos.utterance.handled`, an audio clip, ...)
+ * whose `data.meta` happens to share this shape without meaning anything as
+ * a claim; scanning every event let one of those wrongly assert a claim the
+ * skill never made.
  */
 function hasAssertedClaim(events: ThalovantEvent[]): boolean {
   return events.some(event => {
+    if (event.name !== EVENT_SPEAK && event.name !== EVENT_OVOS_UTTERANCE_SPEAK) return false;
     const meta = event.data.meta;
     return isPlainRecord(meta) && meta[THALOVANT_CLAIMED_META_KEY] === true;
   });
