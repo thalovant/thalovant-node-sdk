@@ -1,4 +1,4 @@
-import { FAILURE_EVENTS, EVENT_AUDIO_QUEUE, MAX_AUDIO_CLIP_BYTES, MAX_REPLY_MEDIA_BYTES } from "./constants.js";
+import { FAILURE_EVENTS, EVENT_AUDIO_QUEUE, MAX_AUDIO_CLIP_BYTES, MAX_REPLY_MEDIA_BYTES, THALOVANT_CLAIMED_META_KEY } from "./constants.js";
 import { displayItemsFromEventData, richMediaFromData, stripSsml, ThalovantDisplayItem } from "./rich.js";
 
 export interface SessionContext {
@@ -152,6 +152,20 @@ export interface ThalovantReply {
   displayItems(options?: { maxTextChars?: number }): ThalovantDisplayItem[];
 }
 
+/**
+ * True when some event in the reply carries a literal `true` under
+ * `data.meta[THALOVANT_CLAIMED_META_KEY]`: a skill's own positive assertion
+ * that it genuinely answered. Opt-in and additive - `false`, a string, a
+ * number or the key missing are all inert, and a reply whose skill never sets
+ * it is judged exactly as before this signal existed.
+ */
+function hasAssertedClaim(events: ThalovantEvent[]): boolean {
+  return events.some(event => {
+    const meta = event.data.meta;
+    return isPlainRecord(meta) && meta[THALOVANT_CLAIMED_META_KEY] === true;
+  });
+}
+
 /** Ordered string stamps and advisory claim status; never proof of peer identity. */
 export function replyClaimMetadata(reply: Pick<ThalovantReply, "events" | "handled" | "ok" | "failureEvent">): {
   pipelineIds: string[]; skillIds: string[]; claimed: boolean;
@@ -159,8 +173,13 @@ export function replyClaimMetadata(reply: Pick<ThalovantReply, "events" | "handl
   const ids = (key: string): string[] => [...new Set(reply.events.map(event => event.context[key])
     .filter((value): value is string => typeof value === "string" && value.length > 0))];
   const pipelineIds = ids("pipeline_id");
-  return { pipelineIds, skillIds: ids("skill_id"), claimed: reply.handled && reply.ok && !reply.failureEvent
-    && (pipelineIds.length === 0 || pipelineIds.some(stage => !stage.includes("fallback"))) };
+  // The asserted claim is checked only after the handled/ok/no-failure gate,
+  // so it can never turn a failed or unhandled reply into a claimed one - it
+  // only ever turns a would-be `false` into `true`, never the reverse.
+  const ok = reply.handled && reply.ok && !reply.failureEvent;
+  const claimed = ok && (hasAssertedClaim(reply.events)
+    || pipelineIds.length === 0 || pipelineIds.some(stage => !stage.includes("fallback")));
+  return { pipelineIds, skillIds: ids("skill_id"), claimed };
 }
 
 export function newSessionId(): string {

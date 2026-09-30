@@ -204,6 +204,34 @@
         "the ladder doubles to its ceiling": "ed05e19c02597a8209bb4bbece8d76a459cab4632f7047b46a4eee82d12e3471",
         "the settle window's last moment still counts": "dad9044d4c206437ff827003f9c445cbe1d348c4c66ad21128316845f0469def"
       }
+    },
+    "reply-claim-vectors.json": {
+      "digest": "1fceb8d4077181c19922e9f34d6ce6e8999c202a77b9e985dc89a85b8f05a566",
+      "cases": {
+        "assertion-cannot-rescue-a-failed-reply": "10df6ab4f4ec448b2a18c2730fddcd36380cf7f429c7d01156afeb6c9daad4ec",
+        "assertion-on-an-intent-reply-is-a-no-op": "5c10b87881883c0175942968881365b2a5797b36b163073d98aa44fc42423344",
+        "case-sensitive-stage": "1f1382580851c911e6756b9e45b0e53c888ad1b6000276c05cb70b7f744be560",
+        "empty": "0604a78179bd4a89871ecdb971072b6e2caee39256ed547e9dd1f87dffdc4bbb",
+        "empty-stamps": "0604a78179bd4a89871ecdb971072b6e2caee39256ed547e9dd1f87dffdc4bbb",
+        "failed": "6c28fb20ebbc82343b502b7f6d1790e418c73a8c9bcdba4a3c81fae7c6de15ce",
+        "failed-without-stamps": "09ca468b16531b702368847804cde70e12598c74a24f515325da25cb60e2a145",
+        "fallback": "7cb677dd75d039196753dae590aeac26288a49cc74e305cd08269631917298e4",
+        "fallback-claim-asserted": "12c1ac6c5937a9f1d4707e2a648ce47be62b25f80ae31ec4dabeed60dd5aa94a",
+        "fallback-claim-false-is-inert": "7cb677dd75d039196753dae590aeac26288a49cc74e305cd08269631917298e4",
+        "fallback-claim-non-bool-is-inert": "7cb677dd75d039196753dae590aeac26288a49cc74e305cd08269631917298e4",
+        "fallback-claim-on-second-event-still-counts": "a9b94151a41bd220ada4b081cc2c7dc47ecf22228c07b5bfaf4fa2f5bf629e84",
+        "fallback-generic-catch-all-unasserted": "fbdd82a546f5c7d2a0b576765941c4b8bc834b98237f409aca99a7d7da70b999",
+        "fallback-then-converse": "100e29dcb82c63dcaac0d95cfbac844cda1e79b785c62340098984741b4e8504",
+        "intent": "5c10b87881883c0175942968881365b2a5797b36b163073d98aa44fc42423344",
+        "legacy": "0604a78179bd4a89871ecdb971072b6e2caee39256ed547e9dd1f87dffdc4bbb",
+        "malformed-plus-fallback": "6acedf603a7ec4a4f4ed401fab9e58c6d4a92a6c6b84066b105ef826b514ddc3",
+        "malformed-stamps": "0604a78179bd4a89871ecdb971072b6e2caee39256ed547e9dd1f87dffdc4bbb",
+        "ordered-duplicates": "836d7030f22167d53eca625900b8493200973e9c1419f0831f5baa0679d30ced",
+        "substring": "52e132e7365cffc9541c713b5b294e21f5e01c8c49b3fe11333c420f22b07d12",
+        "unhandled": "09ca468b16531b702368847804cde70e12598c74a24f515325da25cb60e2a145",
+        "unicode": "da1f98adb92c5d751a44e5b4aea7b809d705b36399f8ac793970b98fd40fae8e",
+        "whitespace-preserved": "809213466de588134317fcfed0511c9f317e747d447f937c254acfc157d8716c"
+      }
     }
   }
 }
