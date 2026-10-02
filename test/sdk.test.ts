@@ -562,6 +562,42 @@ test("control plane bootstrap keeps generated secrets local", async () => {
   }
 });
 
+test("bootstrap result.asObject() strips userinfo from the selected endpoint unless secrets are requested", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/v1/auth/token")) {
+      return jsonResponse(200, { access_token: "token", expires_in: 3600 });
+    }
+    if (String(url).endsWith("/v1/hubs/hub-1")) {
+      return jsonResponse(200, {
+        id: "hub-1",
+        name: "joke-garden",
+        domain: "jokes.thalovant.io",
+        spec: { protocols: { wss: { enabled: true }, http: { enabled: true }, mqtt: { enabled: false } } },
+      });
+    }
+    if (String(url).endsWith("/v1/clients")) {
+      return jsonResponse(201, { id: "client-1", name: "kiosk", hub_id: "hub-1", spec: { version: "1" } });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  try {
+    const api = new ThalovantControlPlane("https://dash.example.com/api");
+    await api.login("ada@example.com", "secret");
+    const result = await api.createClientIdentity("hub-1", { name: "kiosk" });
+    const endpoint = result.endpoint;
+    assert.ok(endpoint);
+    // Pin the raw endpoint to one with credentials, as a broker URL can have.
+    (endpoint as { endpoint: string }).endpoint = "wss://ada:hunter2@jokes.thalovant.io";
+    const safe = result.asObject().selectedEndpoint;
+    assert.equal(safe, "wss://jokes.thalovant.io/");
+    assert.doesNotMatch(JSON.stringify(result.asObject()), /hunter2/);
+    assert.equal(result.asObject({ includeSecrets: true }).selectedEndpoint, "wss://ada:hunter2@jokes.thalovant.io");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("control plane uses public API default and normalizes v1 roots", () => {
   assert.equal(new ThalovantControlPlane().apiUrl, "https://api.thalovant.com/");
   assert.equal(

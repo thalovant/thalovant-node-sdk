@@ -81,12 +81,11 @@ hubs, skills, events, context, sessions, reply claims and common issues.
 
 ### Not yet in the online docs
 
-These topics were only in the previous long README and are not covered by the
-docs page yet. They remain readable in
+These topics were only in the previous long README and are covered by the docs
+page only in passing, or not at all. They remain readable in
 [the README as of this change](https://github.com/thalovant/thalovant-node-sdk/blob/1aeb471609de46dafdcd00529b566401262d4b1e/README.md):
-linking Home Assistant, durable memory and workspace analytics, transport
-security details, realtime query timing, rich responses, reading an API error,
-the API shape, and language data refresh.
+linking Home Assistant, durable memory and workspace analytics, reading an API
+error, the API shape, and language data refresh.
 
 ## Development
 
