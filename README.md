@@ -1,5 +1,7 @@
 # Thalovant Node.js SDK
 
+[![npm](https://img.shields.io/npm/v/@thalovant/sdk)](https://www.npmjs.com/package/@thalovant/sdk) [![CI](https://github.com/thalovant/thalovant-node-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/thalovant/thalovant-node-sdk/actions/workflows/ci.yml) [![Licence](https://img.shields.io/github/license/thalovant/thalovant-node-sdk)](LICENSE) [![Docs](https://img.shields.io/badge/docs-docs.thalovant.com-5c6bc0)](https://docs.thalovant.com/developers/sdks/node/)
+
 TypeScript SDK for connecting Node.js apps, services, and agents to Thalovant
 hubs.
 
