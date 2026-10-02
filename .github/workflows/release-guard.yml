@@ -32,6 +32,5 @@ jobs:
             package.json
             package-lock.json
             tsconfig.json
-            README.md
             LICENSE
         run: python .github/scripts/release_guard.py
