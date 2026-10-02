@@ -26,7 +26,7 @@ import {
   SelectedHubEndpoint,
   selectDataPlaneEndpoint,
 } from "./protocols.js";
-import { REDACTED, redactSecretsInText, redactUrlUserinfo, withoutSecretKeys } from "./redact.js";
+import { REDACTED, redactSecretsInText, withoutSecretKeys } from "./redact.js";
 import { USER_AGENT } from "./version.js";
 import { trimSlashes, trimTrailingSlashes } from "./slashes.js";
 
@@ -1930,9 +1930,7 @@ export class ThalovantControlPlane {
           hub: includeSecrets ? hubResource : withoutSecretKeys(hubResource),
           client: includeSecrets ? client : withoutSecretKeys(client),
           selectedProtocol: endpoint?.protocol,
-          // The endpoint can carry `user:pass@` userinfo, so the safe-to-log
-          // form strips it, like the identity's own endpoints.
-          selectedEndpoint: endpoint === undefined || includeSecrets ? endpoint?.endpoint : redactUrlUserinfo(endpoint.endpoint),
+          selectedEndpoint: endpoint?.endpoint,
           operation: operation ?? null,
         };
       },

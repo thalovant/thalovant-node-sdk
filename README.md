@@ -62,9 +62,10 @@ a different URL only for local development or a self-hosted control plane.
 
 Keep `result.identity` secret: it holds the client credentials the hub uses. The
 raw hub and client records carry bootstrap credentials too. `result.asObject()`
-redacts them and is safe to log; `result.asObject({ includeSecrets: true })`
-returns the real credentials, so use it only to persist the identity and never
-log it.
+redacts the identity, hub and client credentials, and `result.asObject({
+includeSecrets: true })` returns the real ones, so use it only to persist the
+identity and never log it. The `selectedEndpoint` it reports is the URL as the
+API returned it, so do not log an endpoint that embeds credentials.
 
 ## Documentation
 
