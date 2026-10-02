@@ -2,7 +2,7 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/control.ts": "7d7fe32428a69f66f67c692db7aa04761e5d127c020a714f5598617abf508d6f",
+        "src/control.ts": "cf326be937a6053c6f88f4c167232de60bf476a7cbbd223b09519d317f632275",
         "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
         "src/redact.ts": "2dfbdd623f2824bfcb81fdb67401555990d1f278ae879a34872ef19dae6737f0"
       },
@@ -44,7 +44,7 @@
     },
     "connection-admission": {
       "implementation": {
-        "src/control.ts": "7d7fe32428a69f66f67c692db7aa04761e5d127c020a714f5598617abf508d6f",
+        "src/control.ts": "cf326be937a6053c6f88f4c167232de60bf476a7cbbd223b09519d317f632275",
         "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc"
       },
       "reason": "waitForAdmission() follows the create's operation with GET /v1/operations/{id}, every read bounded by what is left of the wait: ready resolves, failed and timed_out reject with ThalovantAdmissionFailedError(errorCode, no status), 404 and no operation resolve at once, a 5xx is ridden out, and a 429 waits max(poll interval, the problem's retry_after_seconds, else Retry-After, else RateLimit-Reset), a timeout at once when that is more than is left. 401 and 403 pass through as the API's own error (ThalovantAuthError), an API out of reach as ThalovantApiUnreachableError, and any other refusal of the wait is ThalovantAdmissionFailedError keeping statusCode, code, detail and problem. The deadline rejects with ThalovantAdmissionTimeoutError (instanceof both ThalovantConnectionError and ThalovantTimeoutError), ending \"it may still admit it later\"; waits are re-armed on the monotonic clock. A links.self on another origin (scheme, host, port) is never fetched. Run against the shared admission vectors over a loopback node:http peer that sends the case's headers, with {api_host}/{api_port} filled in and a closed port for an unreachable API.",
@@ -61,7 +61,7 @@
     },
     "connection-kinds": {
       "implementation": {
-        "src/control.ts": "7d7fe32428a69f66f67c692db7aa04761e5d127c020a714f5598617abf508d6f",
+        "src/control.ts": "cf326be937a6053c6f88f4c167232de60bf476a7cbbd223b09519d317f632275",
         "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc"
       },
       "reason": "createClientIdentity(hub, { connectionType }) sends spec.connection_type and requireConnectionType() deletes (If-Match: the answer's etag) and refuses a client whose answer does not repeat it; a 422 whose detail or code, or a validation error's loc or msg (never its echoed input), names connection_type is ThalovantUnsupportedConnectionTypeError, and apiError() classes 402/403 plan_limit as ThalovantPlanError, 409 home_assistant_already_linked as ThalovantAlreadyLinkedError with clientId, and 401/423/403 'Insufficient scopes' as ThalovantAuthError, all keeping statusCode, code and detail. deleteClient() reads the etag when none is given, retries one 412 and counts 404 as deleted. Run against the shared connection-kinds vectors over a loopback node:http peer that checks method, path, body subset and If-Match of every request.",
@@ -78,7 +78,7 @@
     },
     "control": {
       "implementation": {
-        "src/control.ts": "7d7fe32428a69f66f67c692db7aa04761e5d127c020a714f5598617abf508d6f",
+        "src/control.ts": "cf326be937a6053c6f88f4c167232de60bf476a7cbbd223b09519d317f632275",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
         "src/native-auth.ts": "0ae7a17915f31a23c25d9d551cc7ce018a7f499921777741c1fa3855875e185d",
         "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d"
@@ -110,7 +110,7 @@
     },
     "device-login": {
       "implementation": {
-        "src/control.ts": "7d7fe32428a69f66f67c692db7aa04761e5d127c020a714f5598617abf508d6f",
+        "src/control.ts": "cf326be937a6053c6f88f4c167232de60bf476a7cbbd223b09519d317f632275",
         "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc"
       },
       "reason": "beginDeviceLogin() (an empty scope list left out, as in loginWithBrowser(); clientId sent as client_id when given, HOME_ASSISTANT_CLIENT_ID for Home Assistant, and left out otherwise, in both) returns a DeviceAuthorization (DeviceAuthorization.fromGrant refuses a verification URL that is not http(s), has no host or carries credentials); each pollDeviceLogin() is one POST /v1/auth/device/token that resolves with an ApiToken kept as accessToken and tokenId, or rejects with ThalovantDeviceLoginPendingError (interval lengthened by five seconds for good per device code on slow_down), ThalovantDeviceLoginExpiredError or ThalovantDeviceLoginDeniedError, every other failure through apiError() with the api-errors fields; revokeApiToken() revokes and forgets the token the SDK signed in with, a 401 on its own revoke counting as revoked and a second revoke sending nothing; every sign-in (device, password, native) resets tokenId. describeDeviceLogin(userCode) reads GET /v1/auth/device/codes/{userCode} into a DeviceLoginRequest whose clientVerified is true only with a clientId. A 2xx token answer that is not a JSON object is an error with no status. Neither the device code nor the token is printed by an error (a refused poll scrubs the device code from the message and from problem), console.log or util.inspect. Run against the shared device-login vectors, each served in order by a loopback node:http peer that checks every request (body, Authorization) and read back through the public control plane.",
@@ -169,7 +169,7 @@
       "tests": {
         "test/noise-key-folder.test.ts": "08f4693de6572ad97a4008b6cafc9aeddc06bc451bd1b3bf57121ade0e8927e9",
         "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8",
-        "test/sdk.test.ts": "5b7b16bc0bfc9fa47fee3051f97ca2ab5627a9322812c5c3e62944547d703267",
+        "test/sdk.test.ts": "0ed06a3b3576fdd11d4c8ef8b91737b95edb30396c47d84651cc9dadc608eecb",
         "test/slashes.test.ts": "dee6bc93205fbdd387bc6113325cc1b9943d39068d06787b634dd2023c6d0fbf"
       }
     },
