@@ -60,8 +60,11 @@ try {
 `new ThalovantControlPlane()` uses `https://api.thalovant.com` by default. Pass
 a different URL only for local development or a self-hosted control plane.
 
-Keep `result.identity` secret. It contains the client credentials used by the
-hub.
+Keep `result.identity` secret: it holds the client credentials the hub uses. The
+raw hub and client records carry bootstrap credentials too. `result.asObject()`
+redacts them and is safe to log; `result.asObject({ includeSecrets: true })`
+returns the real credentials, so use it only to persist the identity and never
+log it.
 
 ## Documentation
 
@@ -94,7 +97,7 @@ npm test
 
 ## Security
 
-See [SECURITY.md](https://github.com/thalovant/.github/blob/main/SECURITY.md).
+See [SECURITY.md](SECURITY.md).
 
 ## Licence
 
