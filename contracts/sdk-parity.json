@@ -164,7 +164,7 @@
         "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d",
         "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. ThalovantIdentity.fromFile()/fromConfig() keep sourcePath (never serialized or compared); with no noiseStateDir, a transport keeps the Noise key and pins in that file's folder when it can write there (identityNoiseStateDir in src/platform/node.ts; the shared default when the file already sits in it; a browser keeps localStorage), and adoptNoiseState() in src/noise-store.ts copies -- never moves -- the key and pins from the shared default the first time, only when that key has a pin for the hub this connect reached. test/noise-key-folder.test.ts runs it against a loopback hub.",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. ThalovantIdentity.fromFile()/fromConfig() keep sourcePath (never serialized or compared); with no noiseStateDir, a transport keeps the Noise key and pins in that file's folder when it can write there (identityNoiseStateDir in src/platform/node.ts; the shared default when the file already sits in it; a browser keeps localStorage), and adoptNoiseState() in src/noise-store.ts copies -- never moves -- the key and pins from the shared default the first time, only when that key has a pin for the hub this connect reached. test/noise-key-folder.test.ts runs it against a loopback hub. 0.9.5 reference (3f37b7453397): Python now reads a wss:// or ws:// default_master as the WSS endpoint when none is named; this SDK already did, case-insensitively, with the same precedence (explicit endpoint first, never for MQTT, protocols still gate the automatic choice, while an explicitly requested WSS transport uses the master as the reference does) and its identity tests cover it. No code change.",
       "status": "required",
       "tests": {
         "test/noise-key-folder.test.ts": "08f4693de6572ad97a4008b6cafc9aeddc06bc451bd1b3bf57121ade0e8927e9",
@@ -308,7 +308,8 @@
     "d33dc2be8b0074be4e16d89a4b615f0e6bc32d99fb513cb75e20c09cd0fab4b6",
     "3b0acf7c8b2f03bec95d9e9bba4f82e88c79ad3d98590988852e6c06deb48af0",
     "50d65c1596a99e5db78c38c0898ca01bfbb105da305e9804f394f08756af7f50",
-    "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a"
+    "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a",
+    "3f37b7453397f577a1db5cf2db7f709ffa4b09194869e07970d0881239b7a218"
   ],
   "schema_version": 1
 }
