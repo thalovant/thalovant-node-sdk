@@ -56,6 +56,11 @@ interface FakeHubOptions {
   repeats?: number;
   /** Deliver replies inside `emitBus` itself instead of on a later tick. */
   sync?: boolean;
+  /** Keyword (adapt) rows per folded language: listed, never described with sentences. */
+  keywords?: Record<string, Array<[skillId: string, intentName: string]>>;
+  /** Folded languages whose `ovos.intent.list` gets no answer, or `ok: false`. */
+  listSilentIn?: string[];
+  listFailsIn?: string[];
 }
 
 /** A hub session: answers the manifest, or refuses it, twice over. */
@@ -69,6 +74,9 @@ class FakeHubTransport extends EventTarget {
   readonly echoRequestId: boolean;
   readonly repeats: number;
   readonly sync: boolean;
+  readonly keywords: Record<string, Array<[skillId: string, intentName: string]>>;
+  readonly listSilentIn: string[];
+  readonly listFailsIn: string[];
   connected = false;
   /** Describes emitted but not yet answered, and the high-water mark. */
   inFlightDescribes = 0;
@@ -86,6 +94,9 @@ class FakeHubTransport extends EventTarget {
     this.echoRequestId = options.echoRequestId ?? true;
     this.repeats = options.repeats ?? 2;
     this.sync = options.sync ?? false;
+    this.keywords = options.keywords ?? {};
+    this.listSilentIn = options.listSilentIn ?? [];
+    this.listFailsIn = options.listFailsIn ?? [];
   }
 
   async connect(): Promise<void> {
@@ -130,8 +141,12 @@ class FakeHubTransport extends EventTarget {
     const lang = String(data.lang ?? "").toLowerCase().replaceAll("_", "-");
     if (eventType === EVENT_FALLBACK_LIST) {
       this.deliver("ovos.skills.fallback.list.response", { fallbacks: this.fallbacks }, context);
+    } else if (eventType === EVENT_INTENT_LIST && this.listSilentIn.includes(lang)) {
+      return;
+    } else if (eventType === EVENT_INTENT_LIST && this.listFailsIn.includes(lang)) {
+      this.deliver("ovos.intent.list.response", { ok: false, error: "listing failed" }, context);
     } else if (eventType === EVENT_INTENT_LIST) {
-      const rows = (this.registrations[lang] ?? []).map(([skillId, intentName, samples]) => {
+      const rows: Array<Record<string, unknown>> = (this.registrations[lang] ?? []).map(([skillId, intentName, samples]) => {
         const row: Record<string, unknown> = {
           skill_id: skillId,
           intent_name: intentName,
@@ -146,6 +161,9 @@ class FakeHubTransport extends EventTarget {
         }
         return row;
       });
+      for (const [skillId, intentName] of this.keywords[lang] ?? []) {
+        rows.push({ skill_id: skillId, intent_name: intentName, lang, method: "keyword", enabled: true, session_id: "default" });
+      }
       this.deliver("ovos.intent.list.response", { ok: true, intents: rows }, context);
     } else if (eventType === EVENT_INTENT_DESCRIBE) {
       if (this.inFlightDescribes === 0) this.describeWindows += 1;
@@ -878,3 +896,62 @@ for (const firstReply of [{ ok: false, error: "unknown intent" }, { ok: true, de
     }
   }
 }
+
+// The Pop Culture hub on 2026-10-11: one skill registers keyword vocabulary in
+// 63 regional tags, every other skill only in en-US. Its en-CA listing was
+// five keyword rows -- not empty, and nothing a person can say.
+const SCOUT = "thalovant-skill-source-scout.thalovant";
+const SCOUT_KEYWORDS: Array<[string, string]> = [[SCOUT, "SourceScoutTopicIntent"], [SCOUT, "SourceScoutRealPromptIntent"]];
+
+function listedLanguages(hub: FakeHubTransport): unknown[] {
+  return emittedOf(hub, EVENT_INTENT_LIST).map(entry => entry.data.lang);
+}
+
+test("a tag with only keyword rows is listed under its usual form", async () => {
+  const hub = new FakeHubTransport({ keywords: { "en-ca": SCOUT_KEYWORDS, "en-us": SCOUT_KEYWORDS } });
+  const inventory = await client(hub).intents(["en-CA"]);
+
+  assert.deepEqual(inventory.listedIn, ["en-us"], "the usual form has sentences, en-CA has none");
+  assert.equal(inventory.hasPhrases, true);
+  assert.deepEqual(inventory.skills.map(skill => skill.skillId), [SHADOW, SCOUT, WEATHER]);
+  assert.deepEqual(listedLanguages(hub), ["en-CA", "en-us"]);
+});
+
+test("keyword rows are kept when the usual form has no sentences either", async () => {
+  const hub = new FakeHubTransport({ registrations: {}, keywords: { "en-ca": SCOUT_KEYWORDS, "en-us": SCOUT_KEYWORDS.slice(0, 1) } });
+  const inventory = await client(hub).intents(["en-CA"]);
+
+  assert.deepEqual(inventory.listedIn, ["en-CA"], "nothing better to take");
+  assert.deepEqual(inventory.intents.map(intent => intent.name), ["SourceScoutRealPromptIntent", "SourceScoutTopicIntent"]);
+});
+
+test("a listing with sentences is not retried for its keyword rows", async () => {
+  const hub = new FakeHubTransport({
+    registrations: { "en-ca": REGISTRATIONS["en-us"], "en-us": REGISTRATIONS["en-us"] },
+    keywords: { "en-ca": SCOUT_KEYWORDS },
+  });
+  const inventory = await client(hub).intents(["en-CA"]);
+
+  assert.deepEqual(listedLanguages(hub), ["en-CA"]);
+  assert.deepEqual(inventory.listedIn, ["en-CA"]);
+});
+
+for (const failure of ["silent", "refused"] as const) {
+  test(`a ${failure} retry keeps the names the first listing gave`, async () => {
+    const hub = new FakeHubTransport({
+      keywords: { "en-ca": SCOUT_KEYWORDS },
+      listSilentIn: failure === "silent" ? ["en-us"] : [],
+      listFailsIn: failure === "refused" ? ["en-us"] : [],
+    });
+    const inventory = await client(hub).intents(["en-CA"], { timeoutMs: 200 });
+
+    assert.equal(inventory.source, SOURCE_MANIFEST);
+    assert.deepEqual(inventory.listedIn, ["en-CA"]);
+    assert.deepEqual(inventory.intents.map(intent => intent.name), ["SourceScoutRealPromptIntent", "SourceScoutTopicIntent"]);
+  });
+}
+
+test("a failed retry after an empty listing still fails as before", async () => {
+  const hub = new FakeHubTransport({ registrations: {}, listFailsIn: ["en-us"] });
+  await assert.rejects(client(hub).intents(["en-CA"], { timeoutMs: 200 }), ThalovantRuntimeError);
+});

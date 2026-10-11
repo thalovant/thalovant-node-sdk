@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `intents()` asks the language's usual form when the first listing has no sentences, not only when it is empty. The Pop Culture hub lists five Source Scout keyword intents under `en-CA` (that skill registers keyword vocabulary in 63 regional tags) and 141 intents with sentences under `en-US`, so a phone in Canada was shown five names. The usual form is now asked whenever the first listing has no enabled template row, and taken when it has one, or when the first was empty. A listing with a template row is still asked once, keyword names are never traded for other names, and a retry that times out or is refused keeps the first listing's names (it fails as before only after an empty first listing). Ports thalovant-python-sdk#103.
+
 ## 0.9.3 — 2026-09-30
 
 A skill may now positively claim a reply the pipeline itself would still call fallback-tier. `ThalovantReply.claimed` treated every fallback-stage reply as "nothing matched," because OVOS's own fallback priority band (`match_low`, 90-101) puts a skill that vocabulary-gates its own narrow answers in the same tier as the fleet's generic catch-all -- the pipeline id alone cannot tell them apart. Seen live: `thalovant-skill-home` genuinely turned a light off from the fallback tier, and a satellite listening without a wake word read the reply as unclaimed and stayed silent.
