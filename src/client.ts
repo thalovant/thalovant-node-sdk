@@ -1081,7 +1081,13 @@ export class ThalovantClient {
    *
    * `ovos.intent.describe` is needed only when the sentences are wanted, which
    * is the default; `{ describe: false }` skips descriptions. The optional
-   * fallback-skill probe adds at most 1500ms and preserves unknown versus empty.
+   * fallback-skill probe (`ovos.skills.list`) adds at most 1500ms and
+   * preserves unknown versus empty; it serves no priority.
+   *
+   * With `nearest` on (the default), a language with no sentences is listed
+   * under its usual form and, failing that, under the closest language the hub
+   * loaded (asked once with no `lang`). `listedIn` names the tag each language
+   * was listed under, so a caller can say which language the sentences are in.
    *
    * Rejects with `ThalovantPolicyDeniedError` when the hub refuses a query.
    * The engines' manifests are the fallback when the hub refuses or ignores

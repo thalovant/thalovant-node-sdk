@@ -18,8 +18,22 @@ export const EVENT_QUERY_TIMEOUT = "hive.query.timeout";
  * The hub runtime's intent manifest (OVOS-INTENT-4 section 10) and the
  * engines' own manifests. See `./intents.js`.
  */
+/**
+ * Which skills answer whatever nothing else matched. ovos-core #951 added this
+ * query and #988 took it out again the same day, so no runtime answers it.
+ * Kept so code that imports the names does not break; the inventory asks
+ * `EVENT_SKILLS_LIST` instead.
+ */
 export const EVENT_FALLBACK_LIST = "ovos.skills.fallback.list";
 export const EVENT_FALLBACK_LIST_RESPONSE = "ovos.skills.fallback.list.response";
+/**
+ * Every skill the runtime loaded and what it declared it can do
+ * (OVOS-INTENT-4 section 10.3): `{ok, skills: [{skill_id, session_id,
+ * capabilities, intents}]}`. A skill whose capabilities include `fallback` is
+ * offered whatever nothing else matched.
+ */
+export const EVENT_SKILLS_LIST = "ovos.skills.list";
+export const EVENT_SKILLS_LIST_RESPONSE = "ovos.skills.list.response";
 export const EVENT_INTENT_LIST = "ovos.intent.list";
 export const EVENT_INTENT_LIST_RESPONSE = "ovos.intent.list.response";
 export const EVENT_INTENT_DESCRIBE = "ovos.intent.describe";

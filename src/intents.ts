@@ -28,7 +28,7 @@
  * the fallback for a hub allowed for those alone.
  */
 import { closestLanguage, defaultListing, type ListingRules } from "./listing.js";
-import { usualForm } from "./language-matching.js";
+import { closestLanguage as closestLang, usualForm } from "./language-matching.js";
 import type { ThalovantClient } from "./client.js";
 import {
   EVENT_ADAPT_MANIFEST,
@@ -37,11 +37,11 @@ import {
   EVENT_INTENT_DESCRIBE_RESPONSE,
   EVENT_INTENT_LIST,
   EVENT_INTENT_LIST_RESPONSE,
-  EVENT_FALLBACK_LIST,
-  EVENT_FALLBACK_LIST_RESPONSE,
   EVENT_PADATIOUS_MANIFEST,
   EVENT_PADATIOUS_MANIFEST_GET,
   EVENT_POLICY_DENIED,
+  EVENT_SKILLS_LIST,
+  EVENT_SKILLS_LIST_RESPONSE,
 } from "./constants.js";
 import { ThalovantConnectionError, ThalovantPolicyDeniedError, ThalovantRuntimeError, ThalovantTimeoutError } from "./errors.js";
 import { EventContext, newRequestId, ThalovantEvent } from "./events.js";
@@ -55,6 +55,8 @@ export type HubIntentSource = typeof SOURCE_MANIFEST | typeof SOURCE_ENGINES;
 const DEFAULT_TIMEOUT_MS = 5000;
 /** Unsupported optional fallback discovery must not consume a full query timeout. */
 export const FALLBACK_PROBE_TIMEOUT_MS = 1500;
+/** The capability a skill announces in `ovos.skills.list` when it takes what nothing else matched. */
+export const FALLBACK_CAPABILITY = "fallback";
 const ENGINE_BY_METHOD: Record<string, string> = { template: "padatious", keyword: "adapt" };
 
 /**
@@ -209,9 +211,26 @@ export class HubSkillIntents {
   }
 }
 
-/** One fallback skill, tried in ascending priority order by the runtime. */
+/**
+ * A skill that answers whatever nothing else matched.
+ *
+ * It has no sentences to publish for that, so a caller can learn that it
+ * exists and nothing more. That is still the difference between "no skill
+ * handles this" and "something will try".
+ *
+ * `priority` is `null` whenever the SDK read the hub: no runtime serves it.
+ * `ovos.skills.list` says which skills declared the fallback capability and
+ * not in what order they are tried, and the query that would have carried the
+ * order (`ovos.skills.fallback.list`, ovos-core #951) was reverted the same
+ * day it landed. A number here would be invented, so there is none; the list
+ * is in skill id order and says nothing about who goes first.
+ */
 export class HubFallback {
-  constructor(readonly skillId: string, readonly priority: number) {}
+  readonly priority: number | null;
+
+  constructor(readonly skillId: string, priority?: number | null) {
+    this.priority = priority ?? null;
+  }
 
   asObject(): Record<string, unknown> {
     return { skill_id: this.skillId, priority: this.priority };
@@ -235,9 +254,14 @@ export class HubIntentInventory {
   /** False means the optional probe was unsupported, denied or unanswered. */
   readonly fallbacksKnown: boolean;
   /** The tag the hub actually listed each language under, in `languages` order.
-   * Equal to `languages` unless a listing came back empty and the language's
-   * usual form answered instead. Callers rendering sentences must read them
-   * from the tag that answered. */
+   * Equal to `languages` unless the listing in that language had no sentences
+   * and another answered instead: the language's usual form (`en-CA` ->
+   * `en-US`), or else one of the languages the hub loaded -- the same language
+   * in another region first, then the hub's own -- because a hub lists nothing
+   * under a language it did not load and still answers a person speaking it.
+   * A caller showing these sentences should say which language they are in
+   * when this differs from what was asked in a way the person would notice.
+   * Callers rendering sentences must read them from the tag that answered. */
   readonly listedIn: readonly string[];
 
   constructor(options: {
@@ -651,6 +675,99 @@ function canCarrySentences(rows: readonly IntentRegistration[]): boolean {
   return rows.some(row => row.enabled && row.method === "template");
 }
 
+function sentenceRows(rows: Iterable<IntentRegistration>): number {
+  let count = 0;
+  for (const row of rows) if (row.enabled && row.method === "template") count += 1;
+  return count;
+}
+
+/**
+ * The hub's whole manifest, by the language each row was registered in.
+ *
+ * `byLang` keeps the hub's own spelling and the order it listed them in.
+ * `sessionLang` is the language the hub stamped on its reply's session: a
+ * request that names no language is answered in a session the hub opened in
+ * its default language, the nearest thing to "the hub's own language" the bus
+ * offers. It is a hint, not a promise, so it only ever breaks a choice between
+ * languages the hub actually listed.
+ */
+interface HubLanguages {
+  byLang: Map<string, IntentRegistration[]>;
+  sessionLang?: string;
+}
+
+/**
+ * `ovos.intent.list` with no `lang`: every language the hub loaded.
+ *
+ * `null` when the hub refused, failed or did not answer: this is only ever
+ * asked to improve an answer, and an answer it cannot improve stands.
+ */
+async function listHubLanguages(
+  client: ThalovantClient,
+  options: { timeoutMs?: number; includeDefinitions?: boolean },
+): Promise<HubLanguages | null> {
+  const data: Record<string, unknown> = {};
+  if (options.includeDefinitions) data.include_definitions = true;
+  let event: ThalovantEvent;
+  try {
+    event = await requestReply(client, EVENT_INTENT_LIST, EVENT_INTENT_LIST_RESPONSE, data, { timeoutMs: options.timeoutMs });
+  } catch (error) {
+    if (error instanceof ThalovantTimeoutError || error instanceof ThalovantPolicyDeniedError || error instanceof ThalovantRuntimeError) return null;
+    throw error;
+  }
+  if (event.data.ok === false) return null;
+  const raw = event.data.intents;
+  const byLang = new Map<string, IntentRegistration[]>();
+  for (const row of Array.isArray(raw) ? raw : []) {
+    const entry = registrationFromRow(row);
+    if (entry === undefined || !entry.lang.trim()) continue;
+    const key = [...byLang.keys()].find(seen => sameLanguage(seen, entry.lang)) ?? entry.lang;
+    const rows = byLang.get(key) ?? [];
+    rows.push(entry);
+    byLang.set(key, rows);
+  }
+  const session = event.context.session;
+  const sessionLang = isRecord(session) && typeof session.lang === "string" && session.lang.trim() ? session.lang : undefined;
+  return { byLang, sessionLang };
+}
+
+/**
+ * Which of the hub's languages to list in, for a person who asked in `asked`.
+ *
+ * Only a language with a sentence to show is a candidate. The same language
+ * first, by the matcher the rest of OVOS uses (`de-AT` takes `de-DE`); then
+ * the hub's own language, `hubLang`, when the hub listed it; then the language
+ * with the most sentences, the first listed on a tie. `undefined` when no
+ * language the hub listed carries a sentence.
+ *
+ * The hub does not say which language is its own. A person asking in a
+ * language the hub never loaded is answered all the same -- in the hub's
+ * language, by its fallback or persona -- so the sentences worth showing them
+ * are the ones in that language, and the order above is the closest this can
+ * get to it without inventing a fact.
+ */
+export function nearestHubLanguage(
+  asked: string,
+  listed: ReadonlyMap<string, Iterable<IntentRegistration>> | Readonly<Record<string, Iterable<IntentRegistration>>>,
+  hubLang?: string | null,
+): string | undefined {
+  const entries = listed instanceof Map ? [...listed.entries()] : Object.entries(listed);
+  const counts = new Map<string, number>();
+  for (const [tag, rows] of entries) counts.set(tag, sentenceRows(rows));
+  const candidates = [...counts.keys()].filter(tag => (counts.get(tag) ?? 0) > 0);
+  if (candidates.length === 0) return undefined;
+  const match = closestLang(asked, candidates);
+  if (match !== undefined) return match;
+  if (hubLang) {
+    const own = closestLang(hubLang, candidates);
+    if (own !== undefined) return own;
+  }
+  // Strictly greater: a tie keeps the first listed.
+  let best = candidates[0];
+  for (const tag of candidates) if ((counts.get(tag) ?? 0) > (counts.get(best) ?? 0)) best = tag;
+  return best;
+}
+
 /**
  * Everything the hub can be asked, in each language, grouped by skill.
  *
@@ -680,6 +797,8 @@ export async function intentInventory(
   const listed = new Map<string, IntentRegistration[]>();
   const answered = new Map<string, string>();
   const nearest = options.nearest ?? true;
+  // The hub's whole manifest: asked at most once, and only when needed.
+  let hubLanguages: HubLanguages | null | undefined;
   try {
     for (const lang of asked) {
       const listingOptions = { timeoutMs: options.timeoutMs, includeDefinitions: describe };
@@ -718,6 +837,31 @@ export async function intentInventory(
           if (canCarrySentences(retried) || (retried.length > 0 && rows.length === 0)) { rows = retried; tag = usual; }
         }
       }
+      if (nearest && !canCarrySentences(rows)) {
+        // Still nothing a person can say: the hub did not load this language.
+        // A hub loads its `lang` and `secondary_langs` (en-US and fr-FR on
+        // most public hubs) and lists nothing under any other tag, so a phone
+        // set to Spanish, Japanese or German was shown an empty list -- by a
+        // hub that answered every one of those people, in its own language.
+        // Measured on all 13 public hubs on 2026-10-11.
+        //
+        // The listing without a language names every language the hub loaded;
+        // list in the closest of them and say so in `listedIn`. Asked once per
+        // inventory, only here, and taken only when it has sentences, so it
+        // never replaces names with fewer names. A hub that cannot answer it
+        // leaves the result exactly as it was.
+        if (hubLanguages === undefined) hubLanguages = await listHubLanguages(client, listingOptions);
+        if (hubLanguages !== null) {
+          const chosen = nearestHubLanguage(lang, hubLanguages.byLang, hubLanguages.sessionLang);
+          if (chosen !== undefined) {
+            rows = hubLanguages.byLang.get(chosen) ?? rows;
+            tag = chosen;
+          }
+        }
+      }
+      // One key per language: en-us asked and en-US chosen for another tag are
+      // the same listing, and two keys would split its phrases.
+      tag = [...listed.keys()].find(seen => sameLanguage(seen, tag)) ?? tag;
       listed.set(tag, rows);
       answered.set(lang, tag);
     }
@@ -775,24 +919,53 @@ export async function intentInventory(
   }), options.timeoutMs);
 }
 
-/** @internal The optional runtime fallback catalogue; null means unknown. */
+/**
+ * The fallback skills in an `ovos.skills.list` answer, in skill id order.
+ *
+ * Only the hub's own skills: a row in another session ("default" is where the
+ * runtime loads every installed skill) is somebody else's, and a row with no
+ * session is taken as the hub's, which is what the runtime means by leaving
+ * it out. A malformed row is skipped and the rest kept.
+ */
+function fallbacksFromSkills(rows: unknown): HubFallback[] {
+  const found = new Set<string>();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!isRecord(row)) continue;
+    const skillId = row.skill_id;
+    if (typeof skillId !== "string" || !skillId.trim()) continue;
+    const session = row.session_id;
+    if (!(session === undefined || session === null || session === "" || session === "default")) continue;
+    if (!Array.isArray(row.capabilities)) continue;
+    if (row.capabilities.includes(FALLBACK_CAPABILITY)) found.add(skillId.trim());
+  }
+  return [...found].sort(compare).map(skillId => new HubFallback(skillId));
+}
+
+/**
+ * Which skills answer whatever nothing else matched, or `null` if unknowable.
+ *
+ * Read from `ovos.skills.list`: every skill the hub loaded, with the
+ * capabilities it declared; a fallback is one declaring `fallback`. It used to
+ * ask `ovos.skills.fallback.list`, which ovos-core added in #951 and removed in
+ * #988 the same day, so no hub ever answered it.
+ *
+ * `null` and `[]` are deliberately different answers: `[]` means the hub said
+ * it has no fallbacks; `null` means it could not say -- a runtime without
+ * `ovos.skills.list`, a connection not allowed to publish it, or a hub that did
+ * not reply. No priority comes back: see `HubFallback`.
+ *
+ * @internal
+ */
 export async function listFallbacks(client: ThalovantClient, options: { timeoutMs?: number } = {}): Promise<HubFallback[] | null> {
   let event: ThalovantEvent;
   try {
-    event = await requestReply(client, EVENT_FALLBACK_LIST, EVENT_FALLBACK_LIST_RESPONSE, {}, options);
+    event = await requestReply(client, EVENT_SKILLS_LIST, EVENT_SKILLS_LIST_RESPONSE, {}, options);
   } catch (error) {
     if (error instanceof ThalovantPolicyDeniedError || error instanceof ThalovantTimeoutError) return null;
     throw error;
   }
-  if (event.data.ok === false || !Array.isArray(event.data.fallbacks)) return null;
-  const found: HubFallback[] = [];
-  for (const row of event.data.fallbacks) {
-    if (!isRecord(row) || typeof row.skill_id !== "string" || row.skill_id.length === 0) continue;
-    if (typeof row.priority === "number" && !Number.isFinite(row.priority)) continue;
-    const priority = typeof row.priority === "number" ? Math.trunc(row.priority) : typeof row.priority === "boolean" ? Number(row.priority) : 0;
-    found.push(new HubFallback(row.skill_id, priority));
-  }
-  return found.sort((a, b) => a.priority - b.priority || compare(a.skillId, b.skillId));
+  if (event.data.ok === false || !Array.isArray(event.data.skills)) return null;
+  return fallbacksFromSkills(event.data.skills);
 }
 
 async function withFallbacks(client: ThalovantClient, inventory: HubIntentInventory, timeoutMs?: number): Promise<HubIntentInventory> {
