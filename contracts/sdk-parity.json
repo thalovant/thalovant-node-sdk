@@ -19,7 +19,7 @@
     },
     "binary": {
       "implementation": {
-        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
+        "src/client.ts": "c565d166e87513e9e98ad0b7d2de936eecd4e15b3575831202979cbf9a688811",
         "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752",
         "src/platform/browser.ts": "3feda8e53d2063092f7d09bab64cc16f60c331e872e0ea259fc423d0fe071ef7",
         "src/platform/node.ts": "858280cb4f5622c85ebbb8f2e673eac9014f5f8c21e9d21ebdbedf841c06f4b0",
@@ -95,7 +95,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
+        "src/client.ts": "c565d166e87513e9e98ad0b7d2de936eecd4e15b3575831202979cbf9a688811",
         "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
@@ -127,7 +127,7 @@
     },
     "home-link": {
       "implementation": {
-        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
+        "src/client.ts": "c565d166e87513e9e98ad0b7d2de936eecd4e15b3575831202979cbf9a688811",
         "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
         "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752",
         "src/home.ts": "8a83815a8ae578658908ff8c18edddc973bf20bd1428db3569a7ebbb32e0d308",
@@ -212,7 +212,7 @@
     },
     "listing": {
       "implementation": {
-        "src/intents.ts": "a561e505a25520d3048a09df2629cb95b41fabf94cd918cbafb8c16ff4c86a14",
+        "src/intents.ts": "7c770e230d62b05db356ec90c5f7f635033ada8b6b4b381e1bd2b25d59165f85",
         "src/listing.ts": "defbeb95769a0a2140b056b4e969afe3b4c1b46fdaaf8f7773e2a54827f688f2"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
@@ -227,7 +227,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
+        "src/client.ts": "c565d166e87513e9e98ad0b7d2de936eecd4e15b3575831202979cbf9a688811",
         "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752",
         "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
       },
@@ -243,7 +243,7 @@
     },
     "refusal": {
       "implementation": {
-        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
+        "src/client.ts": "c565d166e87513e9e98ad0b7d2de936eecd4e15b3575831202979cbf9a688811",
         "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
         "src/refusal.ts": "b691a17793e8e837e59fb7301f0dad20797e297e9104e59b80be4b5b08aca235"
       },
@@ -259,7 +259,7 @@
     },
     "runtime": {
       "implementation": {
-        "src/client.ts": "2dfeb90e586ee6533af6317e0f809189739e2dc2e3f74f984ae42500aa6c945d",
+        "src/client.ts": "c565d166e87513e9e98ad0b7d2de936eecd4e15b3575831202979cbf9a688811",
         "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752",
         "src/noise.ts": "859754e8db0a40f932d146eca48ec7e5f52f8444847f5b8396291473fda9fc26",
         "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8"
@@ -310,7 +310,8 @@
     "50d65c1596a99e5db78c38c0898ca01bfbb105da305e9804f394f08756af7f50",
     "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a",
     "3f37b7453397f577a1db5cf2db7f709ffa4b09194869e07970d0881239b7a218",
-    "600b10e7e159f6ca9c1d59d7f2a4103c2e1c66a0894b587e0224e4d9c0e66bd1"
+    "600b10e7e159f6ca9c1d59d7f2a4103c2e1c66a0894b587e0224e4d9c0e66bd1",
+    "5b973a65ab583082069afaa67e2baf7257cbc4950a89460c9912851821258d16"
   ],
   "schema_version": 1
 }
