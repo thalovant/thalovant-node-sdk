@@ -646,6 +646,11 @@ function inventoryFromNames(names: Record<string, string[]>, languages: readonly
   return new HubIntentInventory({ languages, skills: skillsFrom(bySkill), source: SOURCE_ENGINES, denied: [denied] });
 }
 
+/** Whether a listing has an enabled template row: the only kind with sentences. */
+function canCarrySentences(rows: readonly IntentRegistration[]): boolean {
+  return rows.some(row => row.enabled && row.method === "template");
+}
+
 /**
  * Everything the hub can be asked, in each language, grouped by skill.
  *
@@ -680,20 +685,37 @@ export async function intentInventory(
       const listingOptions = { timeoutMs: options.timeoutMs, includeDefinitions: describe };
       let rows = await listIntents(client, lang, listingOptions);
       let tag = lang;
-      if (rows.length === 0 && nearest) {
+      if (nearest && !canCarrySentences(rows)) {
         // Listing and asking do not agree about languages. The hub matches an
         // utterance to the closest language it knows, so a phone set to en-CA
         // is understood by skills registered under en-US; the manifest is
         // keyed by exact tag, so the same hub lists nothing for en-CA -- and a
         // person is shown an empty hub by the hub that is answering them.
         //
-        // Once only, and only on an empty listing: a hub that answered is
-        // never asked twice, and a language whose usual form is itself has
-        // nothing to retry with.
+        // Not only on an empty listing: on a listing with no template row,
+        // which can never carry a sentence. The Pop Culture hub (2026-10-11)
+        // listed five keyword intents of one skill under en-CA -- that skill
+        // registers keyword vocabulary in 63 regional tags -- and 141 intents
+        // with sentences under en-US; five names is not an answer a person
+        // can use.
+        //
+        // Once only: a listing with a template row is never asked twice, a
+        // language whose usual form is itself has nothing to retry with, and
+        // the usual form's listing is taken only when it can carry sentences
+        // (or the first was empty), so keyword names are never traded for
+        // other names. A retry that times out or is refused never makes the
+        // answer worse: the first listing's names stand, and only an empty
+        // first listing lets the failure through, as before.
         const usual = usualForm(lang);
         if (usual !== undefined) {
-          const retried = await listIntents(client, usual, listingOptions);
-          if (retried.length > 0) { rows = retried; tag = usual; }
+          let retried: IntentRegistration[];
+          try {
+            retried = await listIntents(client, usual, listingOptions);
+          } catch (error) {
+            if (rows.length === 0 || !(error instanceof ThalovantTimeoutError || error instanceof ThalovantRuntimeError)) throw error;
+            retried = [];
+          }
+          if (canCarrySentences(retried) || (retried.length > 0 && rows.length === 0)) { rows = retried; tag = usual; }
         }
       }
       listed.set(tag, rows);
