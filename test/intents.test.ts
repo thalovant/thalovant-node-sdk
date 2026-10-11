@@ -16,11 +16,12 @@ import {
   EVENT_FALLBACK_LIST,
   EVENT_PADATIOUS_MANIFEST_GET,
   EVENT_POLICY_DENIED,
+  EVENT_SKILLS_LIST,
 } from "../src/constants.js";
 import { ThalovantPolicyDeniedError, ThalovantRuntimeError, ThalovantTimeoutError } from "../src/errors.js";
 import { EventContext, ThalovantEvent } from "../src/events.js";
 import { ThalovantIdentity } from "../src/identity.js";
-import { DESCRIBE_BATCH, describeMany, HubFallback, HubIntent, HubSkillIntents, HubIntentInventory, listFallbacks, sameLanguage, SOURCE_ENGINES, SOURCE_MANIFEST } from "../src/intents.js";
+import { DESCRIBE_BATCH, describeMany, HubFallback, HubIntent, HubSkillIntents, HubIntentInventory, listFallbacks, nearestHubLanguage, sameLanguage, SOURCE_ENGINES, SOURCE_MANIFEST, type IntentRegistration } from "../src/intents.js";
 
 const WEATHER = "thalovant-skill-weather.thalovant";
 const SHADOW = "thalovant-skill-custos-shadow.thalovant";
@@ -48,7 +49,18 @@ interface Emitted {
 
 interface FakeHubOptions {
   registrations?: Registrations;
+  /**
+   * The short way to say what `ovos.skills.list` answers: each skill id (or
+   * `{skill_id}` row, its priority ignored -- no runtime serves one) becomes a
+   * loaded skill declaring the fallback capability. `null` means the hub never
+   * answers. `ovos.skills.fallback.list` is never answered: ovos-core added it
+   * in #951 and took it out again in #988.
+   */
   fallbacks?: unknown;
+  /** `ovos.skills.list` rows exactly as the hub sends them; overrides `fallbacks`. */
+  skills?: unknown;
+  /** The hub's default language, stamped on the session of a reply to a listing that named none. */
+  hubLang?: string;
   refuse?: string[];
   silent?: string[];
   definitionsInList?: boolean;
@@ -68,6 +80,8 @@ class FakeHubTransport extends EventTarget {
   readonly emitted: Emitted[] = [];
   readonly registrations: Registrations;
   readonly fallbacks: unknown;
+  readonly skills: unknown;
+  readonly hubLang?: string;
   readonly refuse: string[];
   readonly silent: string[];
   readonly definitionsInList: boolean;
@@ -88,6 +102,15 @@ class FakeHubTransport extends EventTarget {
     super();
     this.registrations = options.registrations ?? REGISTRATIONS;
     this.fallbacks = options.fallbacks === undefined ? [] : options.fallbacks;
+    this.skills = options.skills !== undefined ? options.skills : Array.isArray(this.fallbacks)
+      ? this.fallbacks.map(row => ({
+        skill_id: typeof row === "object" && row !== null ? (row as Record<string, unknown>).skill_id : row,
+        session_id: "default",
+        capabilities: ["fallback", "converse"],
+        intents: 0,
+      }))
+      : this.fallbacks;
+    this.hubLang = options.hubLang;
     this.refuse = options.refuse ?? [];
     this.silent = options.silent ?? [];
     this.definitionsInList = options.definitionsInList ?? false;
@@ -139,8 +162,36 @@ class FakeHubTransport extends EventTarget {
     // The runtime folds the tag it is asked for; the fake keys registrations
     // by the folded form and answers with the standardised one.
     const lang = String(data.lang ?? "").toLowerCase().replaceAll("_", "-");
-    if (eventType === EVENT_FALLBACK_LIST) {
-      this.deliver("ovos.skills.fallback.list.response", { fallbacks: this.fallbacks }, context);
+    if (eventType === EVENT_SKILLS_LIST) {
+      // A runtime without the handler simply never answers.
+      if (this.skills !== null) this.deliver("ovos.skills.list.response", { ok: true, skills: this.skills }, context);
+    } else if (eventType === EVENT_INTENT_LIST && !("lang" in data)) {
+      // Every language the hub loaded, in the hub's spelling. "" in
+      // listSilentIn / listFailsIn is this listing.
+      if (this.listSilentIn.includes("")) return;
+      if (this.listFailsIn.includes("")) {
+        this.deliver("ovos.intent.list.response", { ok: false, error: "listing failed" }, context);
+        return;
+      }
+      const rows: Array<Record<string, unknown>> = [];
+      for (const [tag, registered] of Object.entries(this.registrations)) {
+        const [base, region] = tag.split("-");
+        const spelled = region ? `${base}-${region.toUpperCase()}` : base;
+        for (const [skillId, intentName, samples] of registered) {
+          const row: Record<string, unknown> = {
+            skill_id: skillId, intent_name: intentName, lang: spelled, method: "template", enabled: true, session_id: "default",
+          };
+          if (this.definitionsInList && data.include_definitions) {
+            row.definition = { skill_id: skillId, intent_name: intentName, lang: spelled, samples };
+          }
+          rows.push(row);
+        }
+      }
+      const replyContext: EventContext = { ...context };
+      if (this.hubLang) replyContext.session = { session_id: "s", lang: this.hubLang };
+      this.deliver("ovos.intent.list.response", { ok: true, intents: rows }, replyContext);
+    } else if (eventType === EVENT_FALLBACK_LIST) {
+      return;
     } else if (eventType === EVENT_INTENT_LIST && this.listSilentIn.includes(lang)) {
       return;
     } else if (eventType === EVENT_INTENT_LIST && this.listFailsIn.includes(lang)) {
@@ -489,7 +540,7 @@ test("the fallback keeps the first engine that names an intent", async () => {
 
   const hub = new BothEngines({ refuse: [EVENT_INTENT_LIST] });
   const inventory = await client(hub).intents(["en-us"]);
-  assert.deepEqual(hub.emitted.map(entry => entry.eventType).slice(1), [EVENT_ADAPT_MANIFEST_GET, EVENT_PADATIOUS_MANIFEST_GET, EVENT_FALLBACK_LIST]);
+  assert.deepEqual(hub.emitted.map(entry => entry.eventType).slice(1), [EVENT_ADAPT_MANIFEST_GET, EVENT_PADATIOUS_MANIFEST_GET, EVENT_SKILLS_LIST]);
   const weather = inventory.intents.find(intent => intent.name === "current.weather");
   assert.equal(weather?.engine, "adapt");
   assert.equal(inventory.intents.find(intent => intent.name === "custos.incidents")?.engine, "padatious");
@@ -714,14 +765,18 @@ test("bare language strings form one language and an empty string defaults to En
   }
 });
 
-test("fallbacks are sorted, serialized, and allow languages without intent phrases", async () => {
+test("fallbacks are in skill id order with no priority, and allow languages without intent phrases", async () => {
   const hub = new FakeHubTransport({ fallbacks: [
     { skill_id: "fallback.z", priority: 50 }, { skill_id: "fallback.a", priority: 50 },
-    { skill_id: "fallback.first", priority: 1 },
+    { skill_id: "fallback.first", priority: 1 }, "fallback.a",
   ] });
   const inventory = await client(hub).intents(["en-us"]);
-  assert.deepEqual(inventory.fallbacks.map(row => row.skillId), ["fallback.first", "fallback.a", "fallback.z"]);
+  assert.deepEqual(inventory.fallbacks.map(row => [row.skillId, row.priority]), [
+    ["fallback.a", null], ["fallback.first", null], ["fallback.z", null],
+  ], "skill id order, de-duplicated, and no priority: the hub does not serve one");
   assert.ok(inventory.fallbacks[0] instanceof HubFallback);
+  assert.deepEqual(inventory.fallbacks[0].asObject(), { skill_id: "fallback.a", priority: null });
+  assert.equal(emittedOf(hub, EVENT_FALLBACK_LIST).length, 0, "no runtime answers it, and asking cost every listing 1.5 s");
   assert.equal(inventory.fallbacksKnown, true);
   assert.equal(inventory.mayAnswer("ja-jp"), true);
   assert.deepEqual(inventory.asObject().fallbacks, inventory.fallbacks.map(row => row.asObject()));
@@ -734,7 +789,7 @@ test("known empty and unknown fallback sets keep distinct answerability semantic
   assert.equal(empty.mayAnswer("en_US"), true);
   assert.equal(empty.mayAnswer("ja-jp"), false);
   for (const options of [
-    { refuse: [EVENT_FALLBACK_LIST] }, { silent: [EVENT_FALLBACK_LIST] }, { fallbacks: null },
+    { refuse: [EVENT_SKILLS_LIST] }, { silent: [EVENT_SKILLS_LIST] }, { fallbacks: null }, { skills: "not a list" },
   ]) {
     const inventory = await client(new FakeHubTransport(options)).intents(["en-us"], { timeoutMs: 25 });
     assert.equal(inventory.fallbacksKnown, false);
@@ -751,18 +806,34 @@ test("disabled intent phrases do not imply answerability", () => {
   assert.equal(inventory.mayAnswer("en-us"), false);
 });
 
-test("malformed fallback rows cannot corrupt the inventory", async () => {
-  const hub = new FakeHubTransport({ fallbacks: [null, "bad", {}, { skill_id: "", priority: 1 },
-    { skill_id: 42, priority: 1 }, { skill_id: "nan", priority: NaN }, { skill_id: "inf", priority: Infinity },
-    { skill_id: "fraction", priority: -1.9 }, { skill_id: "default", priority: "bad" }, { skill_id: "large", priority: 1e30 },
+test("only the hub's own fallback skills are listed and malformed rows are skipped", async () => {
+  const hub = new FakeHubTransport({ skills: [
+    { skill_id: "thalovant-skill-memory.thalovant", session_id: "default", capabilities: ["fallback", "converse"], intents: 0 },
+    { skill_id: "thalovant-skill-weather.thalovant", session_id: "default", capabilities: [], intents: 16 },
+    { skill_id: "someone-elses.fallback", session_id: "another-session", capabilities: ["fallback"], intents: 0 },
+    { skill_id: "custos-fallback.thalovant", capabilities: ["fallback"] },
+    { skill_id: "empty-session.thalovant", session_id: "", capabilities: ["fallback"] },
+    { skill_id: "", session_id: "default", capabilities: ["fallback"] },
+    { skill_id: 42, session_id: "default", capabilities: ["fallback"] },
+    { skill_id: "no-capabilities.thalovant", session_id: "default", capabilities: null },
+    { skill_id: "string-capabilities.thalovant", session_id: "default", capabilities: "fallback" },
+    null, "not a row",
   ] });
   assert.deepEqual((await listFallbacks(client(hub)))?.map(row => row.asObject()), [
-    { skill_id: "fraction", priority: -1 }, { skill_id: "default", priority: 0 }, { skill_id: "large", priority: 1e30 },
+    { skill_id: "custos-fallback.thalovant", priority: null },
+    { skill_id: "empty-session.thalovant", priority: null },
+    { skill_id: "thalovant-skill-memory.thalovant", priority: null },
   ]);
+  assert.equal(emittedOf(hub, EVENT_FALLBACK_LIST).length, 0);
+});
+
+test("a fallback built by hand keeps the priority it was given", () => {
+  assert.equal(new HubFallback("x", 5).priority, 5);
+  assert.equal(new HubFallback("x").priority, null);
 });
 
 test("the unsupported optional probe uses its own small ceiling", async () => {
-  const hub = new FakeHubTransport({ silent: [EVENT_FALLBACK_LIST] });
+  const hub = new FakeHubTransport({ silent: [EVENT_SKILLS_LIST] });
   const started = performance.now();
   const inventory = await client(hub).intents(["en-us"], { timeoutMs: 10000 });
   assert.equal(inventory.fallbacksKnown, false);
@@ -801,8 +872,8 @@ test("describe never accepts a foreign request ID by matching its definition", a
 test("explicitly failed fallback discovery is unknown even with an empty list", async () => {
   class Failed extends FakeHubTransport {
     override async emitBus(type: string, data: Record<string, unknown>, context: EventContext) {
-      if (type === EVENT_FALLBACK_LIST) {
-        this.deliver("ovos.skills.fallback.list.response", { ok: false, fallbacks: [] }, context);
+      if (type === EVENT_SKILLS_LIST) {
+        this.deliver("ovos.skills.list.response", { ok: false, skills: [] }, context);
         return;
       }
       return super.emitBus(type, data, context);
@@ -834,7 +905,7 @@ test("optional probe deadline includes reconnect and retains retired connect own
     assert.ok(performance.now() - started < 250);
     await assert.rejects(sdk.connect(20));
     assert.equal(hub.connects, 2, "retry must wait for the retired attempt");
-    assert.equal(emittedOf(hub, EVENT_FALLBACK_LIST).length, 0);
+    assert.equal(emittedOf(hub, EVENT_SKILLS_LIST).length, 0);
     release();
     await sdk.connect(200);
     assert.equal(hub.connects, 3);
@@ -849,7 +920,7 @@ test("optional probe deadline includes a held send and removes its listeners", a
   const gate = new Promise<void>(resolve => { release = resolve; });
   class HeldSend extends FakeHubTransport {
     override async emitBus(type: string, data: Record<string, unknown>, context: EventContext) {
-      if (type === EVENT_FALLBACK_LIST) await gate;
+      if (type === EVENT_SKILLS_LIST) await gate;
       return super.emitBus(type, data, context);
     }
   }
@@ -940,8 +1011,8 @@ for (const failure of ["silent", "refused"] as const) {
   test(`a ${failure} retry keeps the names the first listing gave`, async () => {
     const hub = new FakeHubTransport({
       keywords: { "en-ca": SCOUT_KEYWORDS },
-      listSilentIn: failure === "silent" ? ["en-us"] : [],
-      listFailsIn: failure === "refused" ? ["en-us"] : [],
+      listSilentIn: failure === "silent" ? ["en-us", ""] : [],
+      listFailsIn: failure === "refused" ? ["en-us", ""] : [],
     });
     const inventory = await client(hub).intents(["en-CA"], { timeoutMs: 200 });
 
@@ -951,7 +1022,167 @@ for (const failure of ["silent", "refused"] as const) {
   });
 }
 
+for (const failure of ["silent", "refused"] as const) {
+  test(`the hub's own listing answers when a ${failure} usual form leaves keyword rows`, async () => {
+    const hub = new FakeHubTransport({
+      keywords: { "en-ca": SCOUT_KEYWORDS },
+      listSilentIn: failure === "silent" ? ["en-us"] : [],
+      listFailsIn: failure === "refused" ? ["en-us"] : [],
+    });
+    const inventory = await client(hub).intents(["en-CA"], { timeoutMs: 200 });
+
+    assert.deepEqual(inventory.listedIn, ["en-US"]);
+    assert.equal(inventory.hasPhrases, true);
+  });
+}
+
 test("a failed retry after an empty listing still fails as before", async () => {
   const hub = new FakeHubTransport({ registrations: {}, listFailsIn: ["en-us"] });
   await assert.rejects(client(hub).intents(["en-CA"], { timeoutMs: 200 }), ThalovantRuntimeError);
+});
+
+// A language the hub never loaded ---------------------------------------------
+//
+// Measured on all 13 public hubs on 2026-10-11: a hub loads its `lang` and
+// `secondary_langs` (en-US and fr-FR on most) and lists nothing under any other
+// tag. A phone set to Spanish, Japanese or German asked in its own language,
+// then its usual form, got nothing twice and showed an empty list -- while the
+// hub answered those people in its own language.
+
+const BOTH: Registrations = { "en-us": REGISTRATIONS["en-us"], "fr-fr": REGISTRATIONS["fr-fr"] };
+// The hub's own listing order on Daily Desk and Rewrite Forge: French first.
+const FRENCH_FIRST: Registrations = { "fr-fr": REGISTRATIONS["fr-fr"], "en-us": REGISTRATIONS["en-us"] };
+
+for (const phone of ["es-ES", "ja-JP", "de-DE"]) {
+  test(`a ${phone} phone is listed in the language the hub answers it in`, async () => {
+    const hub = new FakeHubTransport({ registrations: FRENCH_FIRST, hubLang: "en-US" });
+    const inventory = await client(hub).intents([phone]);
+
+    assert.deepEqual(inventory.languages, [phone]);
+    assert.deepEqual(inventory.listedIn, ["en-US"], "the language the hub answers that person in");
+    assert.equal(inventory.hasPhrases, true);
+    assert.deepEqual(inventory.skills.map(skill => skill.skillId), [SHADOW, WEATHER]);
+    const weather = inventory.skills[1].intents[0];
+    assert.equal(weather.phrasesFor(inventory.listedIn[0])[0], "what is the weather");
+    const asked = emittedOf(hub, EVENT_INTENT_LIST).map(entry => entry.data);
+    assert.equal(asked.filter(data => !("lang" in data)).length, 1, "the hub's own listing is asked once");
+    const whole = emittedOf(hub, EVENT_INTENT_LIST).find(entry => !("lang" in entry.data));
+    assert.equal(whole?.context.lang, undefined, "no language in the context either");
+    assert.deepEqual(whole?.data, { include_definitions: true });
+  });
+}
+
+test("the same language in another region comes before the hub's own", async () => {
+  // en-CA's usual form is en-US; a hub that loaded en-GB has neither.
+  const hub = new FakeHubTransport({ registrations: { "fr-fr": REGISTRATIONS["fr-fr"], "en-gb": REGISTRATIONS["en-us"] }, hubLang: "fr-FR" });
+  const inventory = await client(hub).intents(["en-CA"]);
+  assert.deepEqual(inventory.listedIn, ["en-GB"], "English before the hub's own French");
+});
+
+test("without a session hint the language with the most sentences wins", async () => {
+  const inventory = await client(new FakeHubTransport({ registrations: FRENCH_FIRST })).intents(["ja-JP"]);
+  assert.deepEqual(inventory.listedIn, ["en-US"], "two intents in English, one in French");
+});
+
+test("nearestHubLanguage: a tie goes to the first listed and a hint must be listed", () => {
+  const rows = (lang: string, method = "template"): IntentRegistration[] => [
+    { skillId: "s", intentName: "i", lang, method, engine: "padatious", enabled: true, sessionId: "default" },
+  ];
+  const listed = new Map([["fr-FR", rows("fr-FR")], ["en-US", rows("en-US")]]);
+  assert.equal(nearestHubLanguage("ja-JP", listed), "fr-FR");
+  assert.equal(nearestHubLanguage("ja-JP", listed, "en-US"), "en-US");
+  assert.equal(nearestHubLanguage("ja-JP", listed, "ko-KR"), "fr-FR", "a hint the hub never listed is no hint");
+  assert.equal(nearestHubLanguage("fr-CA", listed, "en-US"), "fr-FR");
+  assert.equal(nearestHubLanguage("ja-JP", { "en-US": rows("en-US", "keyword") }), undefined);
+  const disabled = rows("en-US").map(row => ({ ...row, enabled: false }));
+  assert.equal(nearestHubLanguage("ja-JP", { "en-US": disabled, "fr-FR": rows("fr-FR") }), "fr-FR", "a disabled row carries no sentence");
+});
+
+test("a language the hub loaded never asks the whole manifest", async () => {
+  const hub = new FakeHubTransport({ registrations: BOTH, hubLang: "en-US" });
+  const inventory = await client(hub).intents(["fr-fr", "en-us"]);
+  assert.deepEqual(inventory.listedIn, ["fr-fr", "en-us"]);
+  assert.ok(emittedOf(hub, EVENT_INTENT_LIST).every(entry => "lang" in entry.data));
+});
+
+test("two languages that land on the same hub language share one listing", async () => {
+  const hub = new FakeHubTransport({ registrations: BOTH, hubLang: "en-US" });
+  const inventory = await client(hub).intents(["en-us", "ja-JP"]);
+  assert.deepEqual(inventory.listedIn, ["en-us", "en-us"], "one key per language, not en-us and en-US");
+  const weather = inventory.intents.find(intent => intent.skillId === WEATHER);
+  assert.deepEqual(Object.keys(weather?.phrases ?? {}), ["en-us"]);
+});
+
+test("two languages without sentences ask the hub's own listing once", async () => {
+  const hub = new FakeHubTransport({ registrations: BOTH, hubLang: "en-US" });
+  const inventory = await client(hub).intents(["ja-JP", "es-ES"]);
+  assert.deepEqual(inventory.listedIn, ["en-US", "en-US"]);
+  assert.equal(emittedOf(hub, EVENT_INTENT_LIST).filter(entry => !("lang" in entry.data)).length, 1);
+});
+
+for (const failure of ["silent", "refused", "denied"] as const) {
+  test(`a hub that cannot list its languages (${failure}) leaves the answer as it was`, async () => {
+    class Hub extends FakeHubTransport {
+      override async emitBus(eventType: string, data: Record<string, unknown>, context: EventContext): Promise<void> {
+        if (eventType === EVENT_INTENT_LIST && !("lang" in data) && failure === "denied") {
+          this.emitted.push({ eventType, data: { ...data }, context: { ...context } });
+          this.deliver(EVENT_POLICY_DENIED, { denied_type: eventType }, context);
+          return;
+        }
+        return super.emitBus(eventType, data, context);
+      }
+    }
+    const hub = new Hub({
+      registrations: BOTH,
+      keywords: { "ja-jp": SCOUT_KEYWORDS },
+      listSilentIn: failure === "silent" ? [""] : [],
+      listFailsIn: failure === "refused" ? [""] : [],
+    });
+    const inventory = await client(hub).intents(["ja-JP"], { timeoutMs: 200 });
+
+    assert.equal(inventory.source, SOURCE_MANIFEST);
+    assert.deepEqual(inventory.listedIn, ["ja-JP"]);
+    assert.deepEqual(inventory.intents.map(intent => intent.name), ["SourceScoutRealPromptIntent", "SourceScoutTopicIntent"]);
+  });
+}
+
+test("an empty hub stays empty rather than failing", async () => {
+  const inventory = await client(new FakeHubTransport({ registrations: {} })).intents(["ja-JP"]);
+  assert.deepEqual(inventory.skills, []);
+  assert.deepEqual(inventory.listedIn, ["ja-JP"]);
+});
+
+test("the hub's own listing is not asked when nearest is off", async () => {
+  const hub = new FakeHubTransport({ registrations: BOTH });
+  const inventory = await client(hub).intents(["ja-JP"], { nearest: false });
+  assert.deepEqual(inventory.skills, []);
+  assert.deepEqual(emittedOf(hub, EVENT_INTENT_LIST).map(entry => entry.data), [{ lang: "ja-JP", include_definitions: true }]);
+});
+
+test("the hub's own listing sends no include_definitions when not describing", async () => {
+  const hub = new FakeHubTransport({ registrations: BOTH, hubLang: "en-US" });
+  const inventory = await client(hub).intents(["es-ES"], { describe: false });
+  assert.deepEqual(inventory.listedIn, ["en-US"]);
+  assert.deepEqual(emittedOf(hub, EVENT_INTENT_LIST).find(entry => !("lang" in entry.data))?.data, {});
+});
+
+test("definitions from the hub's own listing need no describe", async () => {
+  const hub = new FakeHubTransport({ registrations: BOTH, definitionsInList: true, hubLang: "en-US" });
+  const inventory = await client(hub).intents(["es-ES"]);
+  assert.equal(inventory.hasPhrases, true);
+  assert.equal(emittedOf(hub, EVENT_INTENT_DESCRIBE).length, 0);
+});
+
+test("rows without a definition are described under the chosen tag", async () => {
+  const hub = new FakeHubTransport({ registrations: BOTH, hubLang: "en-US" });
+  const inventory = await client(hub).intents(["es-ES"]);
+  assert.ok(emittedOf(hub, EVENT_INTENT_DESCRIBE).every(entry => entry.data.lang === "en-US"));
+  assert.equal(inventory.hasPhrases, true);
+});
+
+test("the serialised inventory says which language it listed in", async () => {
+  const hub = new FakeHubTransport({ registrations: BOTH, hubLang: "en-US" });
+  const payload = (await client(hub).intents(["es-ES"])).asObject();
+  assert.deepEqual(payload.languages, ["es-ES"]);
+  assert.deepEqual(payload.listed_in, ["en-US"]);
 });

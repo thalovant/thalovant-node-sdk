@@ -22,6 +22,7 @@ export {
   HubIntent,
   HubIntentInventory,
   HubSkillIntents,
+  nearestHubLanguage,
   sameLanguage,
   speakable,
   SOURCE_ENGINES,
