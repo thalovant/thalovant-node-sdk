@@ -138,8 +138,9 @@ test("problem is readable but never printed with the error", async () => {
     (error as { problem?: unknown }).problem = { leaked: true };
   }, TypeError);
   assert.deepEqual(error.problem, vector.expect.problem);
-  // The fields a log does show are the ones that are safe to.
-  assert.deepEqual(JSON.parse(JSON.stringify(error)), { statusCode: 422, detail: "Request validation failed" });
+  // The fields a log does show are the ones that are safe to: `fields` holds
+  // names the API listed, never values, and is empty when it listed none.
+  assert.deepEqual(JSON.parse(JSON.stringify(error)), { statusCode: 422, detail: "Request validation failed", fields: [] });
 });
 
 test("a device sign-in poll that fails carries what the API said", async () => {

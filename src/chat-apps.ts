@@ -71,11 +71,6 @@ export class SecretValue {
     return this.#value;
   }
 
-  /** Whether it wraps the empty string. */
-  get empty(): boolean {
-    return this.#value.length === 0;
-  }
-
   /** Always `[redacted]`. */
   toString(): string {
     return REDACTED;
@@ -433,7 +428,7 @@ export interface BridgeWriteOptions {
 // Request bodies (package-internal)
 // ---------------------------------------------------------------------------
 
-/** A request body and the secret values in it, for scrubbing from any error. */
+/** @internal A request body and the secret values in it, for scrubbing from any error. */
 export interface SecretBody {
   body: JsonRecord;
   secrets: string[];
@@ -528,12 +523,11 @@ function secretValues(secrets: unknown, method: string): Record<string, string> 
   if (!isRecord(secrets) || Object.keys(secrets).length === 0) {
     throw new ThalovantApiError(`${method} needs at least one secret.`);
   }
-  const values: Record<string, string> = {};
-  for (const [key, value] of Object.entries(secrets)) {
-    // The key is a name the connector publishes, never a value: safe to say.
-    values[key] = secretOf(value, `secret ${JSON.stringify(key)}`).reveal();
-  }
-  return values;
+  // Own data properties whatever the key, `__proto__` included. The key is a
+  // name the connector publishes, never a value: safe to say in a refusal.
+  return Object.fromEntries(
+    Object.entries(secrets).map(([key, value]) => [key, secretOf(value, `secret ${JSON.stringify(key)}`).reveal()]),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -764,9 +758,9 @@ function strings(value: unknown): string[] {
 }
 
 function localized(value: unknown, key: string, what: string): LocalizedText {
-  const text = record(value, key, what);
-  if (typeof text.en !== "string") throw new ThalovantApiError(`Thalovant API returned a ${what} without ${key}.en.`);
-  return { en: text.en, fr: optionalText(text.fr) };
+  const entry = record(value, key, what);
+  if (typeof entry.en !== "string") throw new ThalovantApiError(`Thalovant API returned a ${what} without ${key}.en.`);
+  return { en: entry.en, fr: optionalText(entry.fr) };
 }
 
 /** A whole number within 2**53, or null. */

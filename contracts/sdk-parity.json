@@ -2,15 +2,15 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/control.ts": "cf326be937a6053c6f88f4c167232de60bf476a7cbbd223b09519d317f632275",
-        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
+        "src/control.ts": "bd9726c505560efb4710d201a5ed9dd28104b3c836f0bbdfb429f91f4495f52a",
+        "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939",
         "src/redact.ts": "2dfbdd623f2824bfcb81fdb67401555990d1f278ae879a34872ef19dae6737f0"
       },
-      "reason": "ThalovantApiError in src/errors.ts carries statusCode, code, detail and a non-enumerable problem, filled by apiError() in src/control.ts for every failed control-plane response, device-flow polling included; the message is unchanged. Run against the shared api-error vectors, each served by a loopback node:http peer and read back through getHub(), plus a device sign-in poll and a createClientIdentity() whose generated secrets stay redacted. Secrets the SDK sent are scrubbed from the body before it is parsed in every spelling a JSON body gives them (as sent, JSON-escaped, and with non-ASCII \\u-escaped in either case, src/redact.ts), and a device-token refusal scrubs the device code the same way; an echoed validation input is never repeated in a message, whatever its key.",
+      "reason": "ThalovantApiError in src/errors.ts carries statusCode, code, detail and a non-enumerable problem, filled by apiError() in src/control.ts for every failed control-plane response, device-flow polling included; the message is unchanged. Run against the shared api-error vectors, each served by a loopback node:http peer and read back through getHub(), plus a device sign-in poll and a createClientIdentity() whose generated secrets stay redacted. Secrets the SDK sent are scrubbed from the body before it is parsed in every spelling a JSON body gives them (as sent, JSON-escaped, and with non-ASCII \\u-escaped in either case, src/redact.ts), and a device-token refusal scrubs the device code the same way; an echoed validation input is never repeated in a message, whatever its key. It also carries fields, the setting or secret names a refusal lists in the problem's fields at its top or inside an object detail (strings only, never values, empty when absent), which the error's JSON shows beside statusCode and detail.",
       "status": "required",
       "tests": {
         "test/api-error-vectors.json": "66fd70cd853e52cf29b1c2fad0e38f97a1f6c23b3640fca4e4cc02c3c341ca10",
-        "test/api-error-vectors.test.ts": "5ac2531ff667672601ca111c838b3cffa2ea1b2cc1dda692ee676eaa62d5576a",
+        "test/api-error-vectors.test.ts": "080bd6f39cbc911ec3022e32a332fb04a1a666de765e0429c79bbaf72963be5f",
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346"
       },
       "vectors": {
@@ -38,14 +38,26 @@
         "binary-vectors.json": "test/binary-vectors.json"
       }
     },
+    "chat-apps": {
+      "implementation": {
+        "src/chat-apps.ts": "589116416f064e4760c6339fc258c594e3c899761fecee463f09ea28fe8a8905",
+        "src/control.ts": "bd9726c505560efb4710d201a5ed9dd28104b3c836f0bbdfb429f91f4495f52a",
+        "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939"
+      },
+      "reason": "ThalovantControlPlane in src/control.ts calls every owner route under /v1/bridges (listChatAppConnectors, getBridgeNetworks, listBridges, createBridge, getBridge, updateBridge with If-Match only when an etag is given, replaceBridgeToken, replaceBridgeSecrets, listBridgeChats, sendBridgeTestMessage, getBridgeAvatar as bytes and content type, deleteBridge); src/chat-apps.ts holds the snake_case models, their readers (open enumerations, documented defaults for absent optional members), the request bodies (exactly one of token and secrets, refused locally otherwise; connector, never network) and SecretValue, which prints [redacted] in every form and is read with reveal() only to build a body. ThalovantApiError.fields in src/errors.ts reads the problem's fields at its top or inside an object detail, strings only. test/chat-apps.test.ts drives each route through a scripted fetch and proves a fake token or secret never reaches the SecretValue's printed forms, the caller's options, an error the API echoed it in, or a network failure.",
+      "status": "required",
+      "tests": {
+        "test/chat-apps.test.ts": "305cc5f108c79046d9f5822ce85aa1f1cdad6882c924b236e7c78f0d977dc3d0"
+      }
+    },
     "cli": {
       "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools.",
       "status": "not-applicable"
     },
     "connection-admission": {
       "implementation": {
-        "src/control.ts": "cf326be937a6053c6f88f4c167232de60bf476a7cbbd223b09519d317f632275",
-        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc"
+        "src/control.ts": "bd9726c505560efb4710d201a5ed9dd28104b3c836f0bbdfb429f91f4495f52a",
+        "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939"
       },
       "reason": "waitForAdmission() follows the create's operation with GET /v1/operations/{id}, every read bounded by what is left of the wait: ready resolves, failed and timed_out reject with ThalovantAdmissionFailedError(errorCode, no status), 404 and no operation resolve at once, a 5xx is ridden out, and a 429 waits max(poll interval, the problem's retry_after_seconds, else Retry-After, else RateLimit-Reset), a timeout at once when that is more than is left. 401 and 403 pass through as the API's own error (ThalovantAuthError), an API out of reach as ThalovantApiUnreachableError, and any other refusal of the wait is ThalovantAdmissionFailedError keeping statusCode, code, detail and problem. The deadline rejects with ThalovantAdmissionTimeoutError (instanceof both ThalovantConnectionError and ThalovantTimeoutError), ending \"it may still admit it later\"; waits are re-armed on the monotonic clock. A links.self on another origin (scheme, host, port) is never fetched. Run against the shared admission vectors over a loopback node:http peer that sends the case's headers, with {api_host}/{api_port} filled in and a closed port for an unreachable API.",
       "status": "required",
@@ -61,8 +73,8 @@
     },
     "connection-kinds": {
       "implementation": {
-        "src/control.ts": "cf326be937a6053c6f88f4c167232de60bf476a7cbbd223b09519d317f632275",
-        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc"
+        "src/control.ts": "bd9726c505560efb4710d201a5ed9dd28104b3c836f0bbdfb429f91f4495f52a",
+        "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939"
       },
       "reason": "createClientIdentity(hub, { connectionType }) sends spec.connection_type and requireConnectionType() deletes (If-Match: the answer's etag) and refuses a client whose answer does not repeat it; a 422 whose detail or code, or a validation error's loc or msg (never its echoed input), names connection_type is ThalovantUnsupportedConnectionTypeError, and apiError() classes 402/403 plan_limit as ThalovantPlanError, 409 home_assistant_already_linked as ThalovantAlreadyLinkedError with clientId, and 401/423/403 'Insufficient scopes' as ThalovantAuthError, all keeping statusCode, code and detail. deleteClient() reads the etag when none is given, retries one 412 and counts 404 as deleted. Run against the shared connection-kinds vectors over a loopback node:http peer that checks method, path, body subset and If-Match of every request.",
       "status": "required",
@@ -78,7 +90,7 @@
     },
     "control": {
       "implementation": {
-        "src/control.ts": "cf326be937a6053c6f88f4c167232de60bf476a7cbbd223b09519d317f632275",
+        "src/control.ts": "bd9726c505560efb4710d201a5ed9dd28104b3c836f0bbdfb429f91f4495f52a",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
         "src/native-auth.ts": "0ae7a17915f31a23c25d9d551cc7ce018a7f499921777741c1fa3855875e185d",
         "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d"
@@ -110,8 +122,8 @@
     },
     "device-login": {
       "implementation": {
-        "src/control.ts": "cf326be937a6053c6f88f4c167232de60bf476a7cbbd223b09519d317f632275",
-        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc"
+        "src/control.ts": "bd9726c505560efb4710d201a5ed9dd28104b3c836f0bbdfb429f91f4495f52a",
+        "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939"
       },
       "reason": "beginDeviceLogin() (an empty scope list left out, as in loginWithBrowser(); clientId sent as client_id when given, HOME_ASSISTANT_CLIENT_ID for Home Assistant, and left out otherwise, in both) returns a DeviceAuthorization (DeviceAuthorization.fromGrant refuses a verification URL that is not http(s), has no host or carries credentials); each pollDeviceLogin() is one POST /v1/auth/device/token that resolves with an ApiToken kept as accessToken and tokenId, or rejects with ThalovantDeviceLoginPendingError (interval lengthened by five seconds for good per device code on slow_down), ThalovantDeviceLoginExpiredError or ThalovantDeviceLoginDeniedError, every other failure through apiError() with the api-errors fields; revokeApiToken() revokes and forgets the token the SDK signed in with, a 401 on its own revoke counting as revoked and a second revoke sending nothing; every sign-in (device, password, native) resets tokenId. describeDeviceLogin(userCode) reads GET /v1/auth/device/codes/{userCode} into a DeviceLoginRequest whose clientVerified is true only with a clientId. A 2xx token answer that is not a JSON object is an error with no status. Neither the device code nor the token is printed by an error (a refused poll scrubs the device code from the message and from problem), console.log or util.inspect. Run against the shared device-login vectors, each served in order by a loopback node:http peer that checks every request (body, Authorization) and read back through the public control plane.",
       "status": "required",
@@ -128,7 +140,7 @@
     "home-link": {
       "implementation": {
         "src/client.ts": "c565d166e87513e9e98ad0b7d2de936eecd4e15b3575831202979cbf9a688811",
-        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
+        "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939",
         "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752",
         "src/home.ts": "8a83815a8ae578658908ff8c18edddc973bf20bd1428db3569a7ebbb32e0d308",
         "src/link-keeping.ts": "466a3be7135437eeac402b7966da488fed753c01fd6da8ec969384ba605ac100",
@@ -191,7 +203,7 @@
     },
     "link-carriers": {
       "implementation": {
-        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
+        "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939",
         "src/noise-store.ts": "03fefa0f4a6bd96d2b8d6267e1484a0705ba4f4f5cdf4eecae08355e64f9a447",
         "src/session.ts": "0169e76d3c1030a76b56e4700c046dbabfa8301d379a0da9e78e7bda67f5edad",
         "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8",
@@ -244,7 +256,7 @@
     "refusal": {
       "implementation": {
         "src/client.ts": "c565d166e87513e9e98ad0b7d2de936eecd4e15b3575831202979cbf9a688811",
-        "src/errors.ts": "4c9f68d10d5797f70d0433911c8bc2d638190bb168f0d8b8bfc04f145869b1dc",
+        "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939",
         "src/refusal.ts": "b691a17793e8e837e59fb7301f0dad20797e297e9104e59b80be4b5b08aca235"
       },
       "reason": "refusalBelongsToAsk() and failureError() in src/refusal.ts, used by ask() in client.ts, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish rejects. Both helpers are exported so thalovant-mcp can run the same vectors against the version it resolves. Run against the shared refusal vectors plus five end-to-end asks over a fake transport.",
