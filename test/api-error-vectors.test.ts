@@ -258,6 +258,8 @@ test("a problem alone gives its code and detail, and an explicit one wins", () =
   // The same for fields: an explicit list wins over the problem's.
   error = new ThalovantApiError("refused", { statusCode: 422, fields: ["explicit"], problem: { detail: "bad", fields: ["from_problem"] } });
   assert.deepEqual(error.fields, ["explicit"]);
+  error = new ThalovantApiError("refused", { statusCode: 422, fields: [], problem: { detail: "bad", fields: ["from_problem"] } });
+  assert.deepEqual(error.fields, []);
   error = new ThalovantApiError("refused", { statusCode: 422, problem: { detail: "bad", fields: ["from_problem"] } });
   assert.deepEqual(error.fields, ["from_problem"]);
 

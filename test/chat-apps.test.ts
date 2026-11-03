@@ -595,6 +595,11 @@ test("a status without its source reads as unavailable", async () => {
   const bridge = await api.getBridge(BRIDGE_ID);
   assert.equal(bridge.status.source, "unavailable");
   assert.equal(bridge.status.reason, "Connected");
+  // An empty one too: the API never sends one, and it says no more than an absent one.
+  const { api: empty } = scripted({
+    [`GET /v1/bridges/${BRIDGE_ID}`]: json(200, { ...TELEGRAM_BRIDGE, status: { ...TELEGRAM_BRIDGE.status, source: "" } }),
+  });
+  assert.equal((await empty.getBridge(BRIDGE_ID)).status.source, "unavailable");
 });
 
 test("a held bridge reads its hold", async () => {

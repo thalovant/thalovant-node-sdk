@@ -10,7 +10,7 @@
       "status": "required",
       "tests": {
         "test/api-error-vectors.json": "66fd70cd853e52cf29b1c2fad0e38f97a1f6c23b3640fca4e4cc02c3c341ca10",
-        "test/api-error-vectors.test.ts": "62fb9aef60cc0a818a6318d3682b62e72c671090e848f8578f7d4df21523605b",
+        "test/api-error-vectors.test.ts": "58f5de97296940cd94a756d47625bac52dbc47b9987a2937fe48183b2f9af9fb",
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346"
       },
       "vectors": {
@@ -47,7 +47,7 @@
       "reason": "ThalovantControlPlane in src/control.ts calls every owner route under /v1/bridges (listChatAppConnectors, getBridgeNetworks, listBridges, createBridge, getBridge, updateBridge with If-Match only when an etag is given, replaceBridgeToken, replaceBridgeSecrets, listBridgeChats, sendBridgeTestMessage, getBridgeAvatar as bytes and content type, deleteBridge); src/chat-apps.ts holds the snake_case models, their readers (open enumerations, documented defaults for absent optional members), the request bodies (exactly one of token and secrets, refused locally otherwise; connector, never network) and SecretValue, which prints [redacted] in every form and is read with reveal() only to build a body. ThalovantApiError.fields in src/errors.ts reads the problem's fields at its top or inside an object detail, strings only. test/chat-apps.test.ts drives each route through a scripted fetch and proves a fake token or secret never reaches the SecretValue's printed forms, the caller's options, an error the API echoed it in, or a network failure.",
       "status": "required",
       "tests": {
-        "test/chat-apps.test.ts": "1bbe9c3c9c508214c4e6c73630ae8582799294c8569be713aa9e2893c202f1c6"
+        "test/chat-apps.test.ts": "1ea11e99536de2e445176726d1743a5893c18f88300aeb71fcb670c83bdc73b3"
       }
     },
     "cli": {
