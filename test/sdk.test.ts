@@ -1318,8 +1318,8 @@ test("control plane bootstrap preserves API returned MQTT credentials", async ()
 
     // includeSecrets: true still returns the raw records and real values.
     const full = result.asObject({ includeSecrets: true });
-    assert.deepEqual(full.client, result.client);
-    assert.deepEqual(full.hub, result.hub);
+    assert.deepStrictEqual(full.client, result.client);
+    assert.deepStrictEqual(full.hub, result.hub);
     const fullIdentity = full.identity as Record<string, any>;
     assert.equal(fullIdentity.access_key, result.identity.accessKey);
     assert.equal(fullIdentity.password, result.identity.password);
@@ -1508,7 +1508,7 @@ test("default identity view redacts metadata secrets and endpoint userinfo", () 
 
   // includeSecrets: true keeps metadata and every URL verbatim (persistence).
   const full = identity.asObject(true);
-  assert.deepEqual(full.metadata, {
+  assert.deepStrictEqual(full.metadata, {
     owner: "owner-1",
     api_key: "META-APIKEY-SECRET",
     nested: { password: "META-NESTED-SECRET", label: "keep-me" },

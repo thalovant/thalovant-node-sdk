@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Chat apps (0.10.0), merged with the usualForm parity follow-up entry from main.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Chat apps (0.10.0), merged with the usualForm and connect-default follow-up entries from main.
 
 # Maintenance report
 
@@ -21,6 +21,33 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Chat apps (0.10.0), merged wit
 - **Actions taken:** wrote the chat apps module, the control-plane methods, the error `fields` member, the tests, README, CHANGELOG, parity entry and these repository notes; ran the test suite, package check and parity checker.
 - **Oversight:** automated tests and CI, CodeRabbit review on the pull request, merged by the repository owner's delegated agent.
 
+## 2026-11-03 — CodeRabbit review-body items (#31, #36, #39, #41, #46, #56, #59, #64, #68, #81)
+
+CodeRabbit also left items in its review bodies ("Nitpick comments", "Outside diff range comments"). These are not threads, so nothing tracked them. Eighteen items on ten merged PRs were checked against `main` (6dc4e48); each old PR has a comment listing its items and their outcome.
+
+| PR | Item | Outcome |
+| :--- | :--- | :--- |
+| #31 | `detailString` stops at the first non-null field | Already fixed in 07a7c93 (#56): each of `msg`, `message`, `detail` is tried in turn |
+| #31 | Cover token-shaped key names | Already fixed in the #31 squash (6bfed4d): `src/redact.ts` lists `token`, `accesstoken`, `refreshtoken`, `apisecret`, `secretkey`, `credentials`, `authorization` |
+| #31 | `@internal` + `stripInternal` could leave dangling types | Verified, not a defect: the packed 0.9.11 tarball type-checks in a clean consumer with `skipLibCheck: false`, and no published `.d.ts` names `DevicePollOptions` or `requestReply` |
+| #31 | `deepEqual` in the `includeSecrets` checks | Fixed here: `assert.deepStrictEqual` (test only) |
+| #36 | Synthetic test password `"secret"` | Declined: offline mock fixtures, not a credential; a rename churns a parity-pinned test file for no security gain |
+| #39 | Release validation for 0.2.38 | Not applicable: `ci.yml` runs `npm ci`, `npm test`, `npm pack --dry-run` on every PR, and `publish.yml` smoke-tests the published package |
+| #39 | `requestReply` in the public API | Already fixed in the #39 squash (acab13d): `src/index.ts` exports the intent models by name only |
+| #41 | README documents deleted crypto helpers | No longer applies: the README is a landing page and neither it nor the docs site names them |
+| #41 | `client.connect()` caps the handshake at 6000 ms | Code unchanged: 6,000 ms is the documented default and the PSK is WASM-derived and cached since 0.3.2 (#44). The 0.3.0 CHANGELOG line that promised 20 s is corrected here |
+| #41 | Async PSK derivation (2 items) | Already fixed in 8223603 (#44): `pskFor` awaits `derivePskAsync` |
+| #41 | A non-object pin file drops every pin | Already fixed in 07a7c93 (#56): `readPins` throws `ThalovantIdentityError` |
+| #46 | `/disconnect` outlives the connect deadline | Already fixed in 0358a0b (#47): failed-connect cleanup runs within the connect deadline; `test/transport-deadlines.test.ts` |
+| #56 | Smoke-test the published package | Already fixed in the #56 squash (07a7c93): `publish.yml` "Smoke-test the public npm package" |
+| #59 | Document `listHubSkillHistory` | No longer applies to the README; the docs site Node page lists it |
+| #64, #68, #81 | Run the release validation | Not applicable, as for #39 |
+
+### Verification
+
+- `npm ci && npm test` pass; the reference's `scripts/check-sdk-parity.py --consumer thalovant-node-sdk` passes with the refreshed `test/sdk.test.ts` hash.
+- The change touches only `test/`, `contracts/`, `CHANGELOG.md` and these reports, none of which are release paths, so `auto-release.yml` cuts no release.
+
 ## 2026-11-03 — CodeRabbit follow-ups (#80, #84, #86)
 
 Four review threads were still open on merged pull requests. Each was checked against `main` (a09a32a) before acting.
@@ -41,5 +68,5 @@ Four review threads were still open on merged pull requests. Each was checked ag
 ## Transparency Report
 
 - **AI Model**: Claude Opus 5.5.
-- **Actions Taken**: Read the four threads and the current code and tests; added three files to the `listing` capability with their SHA-256 evidence; wrote the CHANGELOG entry, this report and `AUDIT.md`; replied on the threads.
+- **Actions Taken**: Read the four threads, then the review-body items, against the current code and tests; switched three test assertions to strict comparison; corrected the 0.3.0 CHANGELOG line about the connect default; added three files to the `listing` capability with their SHA-256 evidence; wrote the CHANGELOG entry, this report and `AUDIT.md`; replied on the threads.
 - **Oversight**: Run by an agent on the repository owner's request to handle every open CodeRabbit thread; merged through the normal CI gates. No package file changes, so `auto-release.yml` cuts no release.
