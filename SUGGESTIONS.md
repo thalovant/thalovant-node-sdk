@@ -25,3 +25,9 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Created with suggestions from 
 - **Problem:** CI type-checks but does not lint (AUDIT.md #6).
 - **Proposal:** add a lint step (for example `tsc --noUnusedLocals --noUnusedParameters` or ESLint) to `.github/workflows/ci.yml`.
 - **Impact:** low; catches unused code early.
+
+## 5. Paging for the bridge list
+
+- **Problem:** `GET /v1/bridges` answers at most 500 bridges and has no cursor (AUDIT.md #9).
+- **Proposal:** once the API adds a cursor, follow it in `listBridges()` the way `listHubs()` takes `cursor`.
+- **Impact:** low today; matters for platform administrators and large tenants.

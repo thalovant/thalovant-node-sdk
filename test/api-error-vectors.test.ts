@@ -255,6 +255,12 @@ test("a problem alone gives its code and detail, and an explicit one wins", () =
   error = new ThalovantApiError("refused", { statusCode: 403, code: "other", detail: "said differently", problem });
   assert.deepEqual([error.code, error.detail], ["other", "said differently"]);
 
+  // The same for fields: an explicit list wins over the problem's.
+  error = new ThalovantApiError("refused", { statusCode: 422, fields: ["explicit"], problem: { detail: "bad", fields: ["from_problem"] } });
+  assert.deepEqual(error.fields, ["explicit"]);
+  error = new ThalovantApiError("refused", { statusCode: 422, problem: { detail: "bad", fields: ["from_problem"] } });
+  assert.deepEqual(error.fields, ["from_problem"]);
+
   // FastAPI's envelope, when the API's handler has not lifted it.
   error = new ThalovantApiError("refused", { problem: { detail: { code: "plan_limit", detail: "Free plan allows up to 1 connection." } } });
   assert.deepEqual([error.code, error.detail], ["plan_limit", "Free plan allows up to 1 connection."]);

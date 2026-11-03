@@ -589,6 +589,14 @@ test("a bridge's optional members take their defaults when absent", async () => 
   });
 });
 
+test("a status without its source reads as unavailable", async () => {
+  const { source: _omitted, ...status } = TELEGRAM_BRIDGE.status;
+  const { api } = scripted({ [`GET /v1/bridges/${BRIDGE_ID}`]: json(200, { ...TELEGRAM_BRIDGE, status }) });
+  const bridge = await api.getBridge(BRIDGE_ID);
+  assert.equal(bridge.status.source, "unavailable");
+  assert.equal(bridge.status.reason, "Connected");
+});
+
 test("a held bridge reads its hold", async () => {
   const held = {
     ...TELEGRAM_BRIDGE,

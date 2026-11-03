@@ -1892,9 +1892,13 @@ export class ThalovantControlPlane {
   }
 
   /**
-   * One hub's bridges with `hubId`, or every bridge the caller may see
-   * (`GET /v1/bridges`); `ownerId` narrows that to one owner's. `limit` is 1
-   * to 500 (the API's default is 200).
+   * One hub's bridges with `hubId`, or the bridges the caller may see
+   * (`GET /v1/bridges`); `ownerId` narrows that to one owner's.
+   *
+   * One request, one answer: at most `limit` bridges (1 to 500; the API's
+   * default is 200), oldest first. The route has no cursor, so a caller who
+   * may see more than that gets the first `limit` and no sign of the rest;
+   * pass `hubId` or `ownerId` to narrow the list.
    */
   async listBridges(options: BridgeListOptions = {}): Promise<Bridge[]> {
     const params = new URLSearchParams();

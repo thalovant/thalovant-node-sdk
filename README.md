@@ -176,11 +176,31 @@ try {
 }
 ```
 
-A 402 (Free plan) and a 403 `plan_limit` are a `ThalovantPlanError`. Other
-codes include `bridge_token_invalid`, `bridge_bot_in_use`,
-`bridge_secrets_invalid`, `bridge_url_not_public`, `bridge_running` (pause a
-Telegram bridge before listing its chats), `bridge_rate_limited` (with
-`retryAfterSeconds`) and `bridge_network_not_offered`.
+A 402 (Free plan) and a 403 `plan_limit` (`problem.resource` is
+`chat_bridge`) are a `ThalovantPlanError`; a 401, a 423 and a 403
+`Insufficient scopes` are a `ThalovantAuthError`. Every other refusal is a
+`ThalovantApiError` to branch on by `code`:
+
+| Status | `code` | When |
+| :--- | :--- | :--- |
+| 409 | `bridge_bot_in_use` | The bot already serves a bridge: one bot, one bridge. |
+| 409 | `bridge_helper_unavailable` | A test message for a connector without that helper. |
+| 409 | `bridge_token_missing` | The stored token is gone; `replaceBridgeToken()` restores it. |
+| 409 | `bridge_token_other_bot` | `replaceBridgeToken()` with another bot's token: create a new bridge. |
+| 409 | `bridge_running` | Listing a running Telegram bridge's chats: pause it first. |
+| 409 | `bridge_telegram_updates_busy` | Telegram answered that something else reads the bot's updates. |
+| 412 | | `updateBridge()` with a stale `etag` (`detail` is `ETag mismatch`). |
+| 422 | `bridge_token_malformed`, `bridge_token_invalid`, `bridge_token_not_a_bot` | The token's shape, or the network refused it. |
+| 422 | `bridge_network_refused` | The network refused the request (an unknown chat, a bot removed from it). |
+| 422 | `bridge_allowed_required`, `bridge_chat_id_invalid`, `bridge_chat_not_allowed` | An empty `allowed`; a malformed chat id; a test to a chat not allowed. |
+| 422 | `bridge_settings_invalid`, `bridge_secrets_invalid` | Settings or secrets the connector does not take; `fields` names them. |
+| 422 | `bridge_url_invalid`, `bridge_url_port_not_allowed`, `bridge_url_not_public`, `bridge_url_unresolvable` | An address setting that is not public HTTPS on port 443; `fields` names it. |
+| 422 | `bridge_too_many_targets` | More chats than the connector's `targets.max`. |
+| 422 | `bridge_mention_required` | `requireMention: false` on a network that only answers mentions (Discord). |
+| 429 | `bridge_rate_limited`, `bridge_network_rate_limited` | Too many requests, ours or the network's; wait `retryAfterSeconds`. |
+| 502 | `bridge_network_unavailable`, `bridge_secret_store_failed` | The network, or the platform's secret storage, failed. |
+| 503 | `bridge_network_not_offered`, `bridge_secret_store_unavailable` | No bridge is offered for that network here; secret storage is unavailable. |
+| 504 | `bridge_network_timeout` | The network did not answer in time. |
 
 ## Documentation
 

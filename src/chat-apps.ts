@@ -278,6 +278,7 @@ export interface BridgeStatus {
   observed_generation: number | null;
   /** True once the running bridge carries the last change; `null` in setup. */
   applied: boolean | null;
+  /** Where the phase came from; `unavailable` when the API did not say. */
   source: BridgeStatusSource;
 }
 
@@ -668,7 +669,9 @@ export function bridgeFromRecord(value: JsonRecord): Bridge {
       generation: wholeNumber(status.generation),
       observed_generation: wholeNumber(status.observed_generation),
       applied: typeof status.applied === "boolean" ? status.applied : null,
-      source: text(status, "source", "bridge status"),
+      // Describes where the phase came from; "unavailable" is the API's own
+      // word for nothing reported.
+      source: optionalText(status.source) || "unavailable",
     },
     etag: text(value, "etag", what),
     token_updated_at: optionalText(value.token_updated_at) ?? "",

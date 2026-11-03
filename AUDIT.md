@@ -2,7 +2,7 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Created from the chat apps cha
 
 # Audit
 
-Findings from the 2026-11-03 chat apps change. Test run: `npm test`, 747 tests, 746 passed, 1 skipped, 0 failed.
+Findings from the 2026-11-03 chat apps change. Test run: `npm test`, 748 tests, 747 passed, 1 skipped, 0 failed.
 
 | # | Finding | Evidence | Status |
 | :--- | :--- | :--- | :--- |
@@ -13,3 +13,5 @@ Findings from the 2026-11-03 chat apps change. Test run: `npm test`, 747 tests, 
 | 5 | The live interop test is skipped without credentials, so the Noise handshake against a live hub is not exercised in CI. | `test/noise-interop.test.ts` (skip message names `THALOVANT_INTEROP_WSS`). | Pre-existing. |
 | 6 | CI has no lint step; type checking happens through `tsc` in `npm test`. | `.github/workflows/ci.yml`. | Pre-existing. |
 | 7 | The CHANGELOG kept an "Unreleased" heading for changes that shipped in 0.9.9. | `CHANGELOG.md`; tag `v0.9.9`. | Fixed in this change (heading is now "0.9.9 — 2026-10-11"). |
+| 8 | Secret scrubbing ignores values shorter than 8 characters, so a short token echoed in an error body would not be replaced. No connector's token or secret is that short, and the API repeats no input under `/v1/bridges`. | `src/redact.ts`, `redactSecretsInText`. | Accepted: the floor stops a short value from replacing unrelated text. |
+| 9 | `listBridges()` returns one answer of at most `limit` bridges (500 at most); the route has no cursor. | `src/control.ts`, `listBridges`. | Documented; see SUGGESTIONS.md #5. |
