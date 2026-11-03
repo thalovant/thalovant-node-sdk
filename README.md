@@ -89,8 +89,10 @@ if (!allowance.can_create) {
 const connectors = await api.listChatAppConnectors(); // settings form, secrets, chat id pattern
 ```
 
-**Telegram** (and Discord, Mattermost): one `token`. The bridge starts in
-`setup`; choosing its chats starts it.
+**Telegram** (and Discord): one `token`. Mattermost takes its bot `token`
+too, plus the server's address as a setting (`settings: { url:
+"https://chat.example.com" }`). The bridge starts in `setup`; choosing its
+chats starts it.
 
 ```ts
 const bridge = await api.createBridge({
