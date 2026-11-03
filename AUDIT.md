@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Created from the chat apps change (0.10.0) and its test run.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Chat apps audit notes (0.10.0), merged with the usualForm parity follow-up from main.
 
 # Audit
 
@@ -15,3 +15,17 @@ Findings from the 2026-11-03 chat apps change. Test run: `npm test`, 748 tests, 
 | 7 | The CHANGELOG kept an "Unreleased" heading for changes that shipped in 0.9.9. | `CHANGELOG.md`; tag `v0.9.9`. | Fixed in this change (heading is now "0.9.9 — 2026-10-11"). |
 | 8 | Secret scrubbing ignores values shorter than 8 characters, so a short token echoed in an error body would not be replaced. No connector's token or secret is that short, and the API repeats no input under `/v1/bridges`. | `src/redact.ts`, `redactSecretsInText`. | Accepted: the floor stops a short value from replacing unrelated text. |
 | 9 | `listBridges()` returns one answer of at most `limit` bridges (500 at most); the route has no cursor. | `src/control.ts`, `listBridges`. | Documented; see SUGGESTIONS.md #5. |
+
+Known issues, technical debt and review decisions, each tied to the code and the test that shows it.
+
+## Fixed
+
+- **`usualForm()` was outside the source-bound parity gate** (fixed 2026-11-03). [`src/language-matching.ts`](src/language-matching.ts) and its CLDR tables ([`src/language-matching-data.ts`](src/language-matching-data.ts)) decide which tag [`src/intents.ts`](src/intents.ts) retries a listing with, but no capability in [`contracts/sdk-parity.json`](contracts/sdk-parity.json) declared them, so a change there passed the gate unreviewed. The `listing` capability now declares both and [`test/usual-form.test.ts`](test/usual-form.test.ts).
+
+## Notes
+
+- Error bodies are scrubbed of SDK-sent secrets, in their JSON-escaped spellings too, before they are parsed: `redactSecretsInText` in [`src/redact.ts`](src/redact.ts), applied by `apiError` in [`src/control.ts`](src/control.ts). Tests: [`test/home-link.test.ts`](test/home-link.test.ts).
+
+## Open
+
+- None recorded.
