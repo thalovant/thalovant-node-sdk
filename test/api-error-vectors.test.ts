@@ -138,8 +138,9 @@ test("problem is readable but never printed with the error", async () => {
     (error as { problem?: unknown }).problem = { leaked: true };
   }, TypeError);
   assert.deepEqual(error.problem, vector.expect.problem);
-  // The fields a log does show are the ones that are safe to.
-  assert.deepEqual(JSON.parse(JSON.stringify(error)), { statusCode: 422, detail: "Request validation failed" });
+  // The fields a log does show are the ones that are safe to: `fields` holds
+  // names the API listed, never values, and is empty when it listed none.
+  assert.deepEqual(JSON.parse(JSON.stringify(error)), { statusCode: 422, detail: "Request validation failed", fields: [] });
 });
 
 test("a device sign-in poll that fails carries what the API said", async () => {
@@ -253,6 +254,14 @@ test("a problem alone gives its code and detail, and an explicit one wins", () =
 
   error = new ThalovantApiError("refused", { statusCode: 403, code: "other", detail: "said differently", problem });
   assert.deepEqual([error.code, error.detail], ["other", "said differently"]);
+
+  // The same for fields: an explicit list wins over the problem's.
+  error = new ThalovantApiError("refused", { statusCode: 422, fields: ["explicit"], problem: { detail: "bad", fields: ["from_problem"] } });
+  assert.deepEqual(error.fields, ["explicit"]);
+  error = new ThalovantApiError("refused", { statusCode: 422, fields: [], problem: { detail: "bad", fields: ["from_problem"] } });
+  assert.deepEqual(error.fields, []);
+  error = new ThalovantApiError("refused", { statusCode: 422, problem: { detail: "bad", fields: ["from_problem"] } });
+  assert.deepEqual(error.fields, ["from_problem"]);
 
   // FastAPI's envelope, when the API's handler has not lifted it.
   error = new ThalovantApiError("refused", { problem: { detail: { code: "plan_limit", detail: "Free plan allows up to 1 connection." } } });

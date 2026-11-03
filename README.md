@@ -67,6 +67,143 @@ includeSecrets: true })` returns the real ones, so use it only to persist the
 identity and never log it. The `selectedEndpoint` it reports is the URL as the
 API returned it, so do not log an endpoint that embeds credentials.
 
+## Chat apps
+
+A hub owner can connect a chat network to a hub, and the hub answers there.
+Telegram and Discord are offered; Matrix, Mattermost and Twitch are in beta.
+Reads need a token with `hubs:read`, writes `hubs:write`, and creating a
+bridge needs a paid plan.
+
+Read the allowance first: a Free plan allows none, and `can_create` says
+whether one more bridge would pass the plan checks now.
+
+```ts
+import { SecretValue, ThalovantApiError, ThalovantControlPlane } from "@thalovant/sdk";
+
+const api = new ThalovantControlPlane(undefined, { accessToken: process.env.THALOVANT_API_TOKEN });
+
+const { networks, allowance } = await api.getBridgeNetworks({ hubId });
+if (!allowance.can_create) {
+  console.log(`${allowance.used} of ${allowance.limit} chat apps used on the ${allowance.plan} plan.`);
+}
+const connectors = await api.listChatAppConnectors(); // settings form, secrets, chat id pattern
+```
+
+**Telegram** (and Discord): one `token`. Mattermost takes its bot `token`
+too, plus the server's address as a setting (`settings: { url:
+"https://chat.example.com" }`). The bridge starts in `setup`; choosing its
+chats starts it.
+
+```ts
+const bridge = await api.createBridge({
+  hubId,
+  connector: "telegram",
+  token: new SecretValue(process.env.TELEGRAM_BOT_TOKEN ?? ""),
+});
+// Add the bot to a group with bridge.invite_links.add_to_group, then:
+const chats = await api.listBridgeChats(bridge.id);
+const started = await api.updateBridge(bridge.id, {
+  allowed: chats.data.filter((chat) => chat.selectable),
+});
+await api.sendBridgeTestMessage(bridge.id, started.allowed[0].id);
+```
+
+**Matrix**: secrets and settings. Chats are typed, not discovered
+(`manual_entry: true`): room ids look like `!abc:example.org`.
+
+```ts
+const matrix = await api.createBridge({
+  hubId,
+  connector: "matrix",
+  secrets: { access_token: new SecretValue(process.env.MATRIX_ACCESS_TOKEN ?? "") },
+  settings: { homeserver: "https://matrix.example.org", user_id: "@hub:example.org" },
+});
+await api.updateBridge(matrix.id, { allowed: ["!abc:example.org"] });
+```
+
+**Twitch**: two secrets and two settings. Channels are logins; `#Name` is
+stored as `name` (the connector's `targets.strip_prefix` and `lowercase`).
+
+```ts
+const twitch = await api.createBridge({
+  hubId,
+  connector: "twitch",
+  secrets: {
+    refresh_token: new SecretValue(process.env.TWITCH_REFRESH_TOKEN ?? ""),
+    client_secret: new SecretValue(process.env.TWITCH_CLIENT_SECRET ?? ""),
+  },
+  settings: { bot_login: "myhubbot", client_id: process.env.TWITCH_CLIENT_ID ?? "" },
+});
+await api.updateBridge(twitch.id, { allowed: ["myhubchannel"] });
+```
+
+A `SecretValue` prints `[redacted]` everywhere (`String()`, template strings,
+`JSON.stringify`, `console.log`); the SDK reads it with `reveal()` only to build
+the request. Plain strings are accepted too.
+
+**Pause and resume** with `updateBridge(id, { paused: true })` and
+`{ paused: false }`. Pass `{ etag: bridge.etag }` as the third argument to
+refuse the change (HTTP 412) if the bridge changed since you read it.
+
+**Status.** `bridge.status.reason` is stable and safe to show:
+
+| `reason` | Meaning |
+| :--- | :--- |
+| `Setup` | No chats chosen yet. |
+| `Starting` | Rolling out, or not reported yet. |
+| `Connected` | Running. |
+| `Paused` | Paused by the owner, or held by the platform (see `hold`). |
+| `Unavailable` | Rolled out but not running, or a platform-side error. |
+| `TokenMissing` | The stored token has not reached the bridge yet. |
+| `TokenRejected` | The network refused the credentials: `replaceBridgeToken()` or `replaceBridgeSecrets()`. |
+
+A value not listed here may appear later; it is kept as sent. `bridge.hold` is
+`null` for the owner's own pause, and `{ reason, since }` when the platform
+paused it: `plan_limit` (the plan allows fewer running bridges; resume it once
+it has room) or `account_suspended` (it resumes when the account is
+reactivated).
+
+**Refusals** are a `ThalovantApiError` with the API's `code`, and `fields`
+naming the settings or secrets concerned, never their values:
+
+```ts
+try {
+  await api.createBridge({ hubId, connector: "matrix", secrets, settings });
+} catch (error) {
+  if (error instanceof ThalovantApiError && error.code === "bridge_settings_invalid") {
+    console.log("Check these settings:", error.fields.join(", "));
+  } else {
+    throw error;
+  }
+}
+```
+
+A 402 (Free plan) and a 403 `plan_limit` (`problem.resource` is
+`chat_bridge`) are a `ThalovantPlanError`; a 401, a 423 and a 403
+`Insufficient scopes` are a `ThalovantAuthError`. Every other refusal is a
+`ThalovantApiError` to branch on by `code`:
+
+| Status | `code` | When |
+| :--- | :--- | :--- |
+| 409 | `bridge_bot_in_use` | The bot already serves a bridge: one bot, one bridge. |
+| 409 | `bridge_helper_unavailable` | A test message for a connector without that helper. |
+| 409 | `bridge_token_missing` | The stored token is gone; `replaceBridgeToken()` restores it. |
+| 409 | `bridge_token_other_bot` | `replaceBridgeToken()` with another bot's token: create a new bridge. |
+| 409 | `bridge_running` | Listing a running Telegram bridge's chats: pause it first. |
+| 409 | `bridge_telegram_updates_busy` | Telegram answered that something else reads the bot's updates. |
+| 412 | | `updateBridge()` with a stale `etag` (`detail` is `ETag mismatch`). |
+| 422 | `bridge_token_malformed`, `bridge_token_invalid`, `bridge_token_not_a_bot` | The token's shape, or the network refused it. |
+| 422 | `bridge_network_refused` | The network refused the request (an unknown chat, a bot removed from it). |
+| 422 | `bridge_allowed_required`, `bridge_chat_id_invalid`, `bridge_chat_not_allowed` | An empty `allowed`; a malformed chat id; a test to a chat not allowed. |
+| 422 | `bridge_settings_invalid`, `bridge_secrets_invalid` | Settings or secrets the connector does not take; `fields` names them. |
+| 422 | `bridge_url_invalid`, `bridge_url_port_not_allowed`, `bridge_url_not_public`, `bridge_url_unresolvable` | An address setting that is not public HTTPS on port 443; `fields` names it. |
+| 422 | `bridge_too_many_targets` | More chats than the connector's `targets.max`. |
+| 422 | `bridge_mention_required` | `requireMention: false` on a network that only answers mentions (Discord). |
+| 429 | `bridge_rate_limited`, `bridge_network_rate_limited` | Too many requests, ours or the network's; wait `retryAfterSeconds`. |
+| 502 | `bridge_network_unavailable`, `bridge_secret_store_failed` | The network, or the platform's secret storage, failed. |
+| 503 | `bridge_network_not_offered`, `bridge_secret_store_unavailable` | No bridge is offered for that network here; secret storage is unavailable. |
+| 504 | `bridge_network_timeout` | The network did not answer in time. |
+
 ## Documentation
 
 Everything else lives in the documentation: <https://docs.thalovant.com/developers/sdks/node/>
