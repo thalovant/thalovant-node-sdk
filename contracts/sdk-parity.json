@@ -169,7 +169,7 @@
       "tests": {
         "test/noise-key-folder.test.ts": "08f4693de6572ad97a4008b6cafc9aeddc06bc451bd1b3bf57121ade0e8927e9",
         "test/python-parity.test.ts": "56de801601cbf7e6060c6504484b8ba66ef4092415e474cc37dfe49370c959c8",
-        "test/sdk.test.ts": "0ed06a3b3576fdd11d4c8ef8b91737b95edb30396c47d84651cc9dadc608eecb",
+        "test/sdk.test.ts": "d00c07888d62aabb85115e2f3c1cba979d650176bcc66ee7be284a5354210e5d",
         "test/slashes.test.ts": "dee6bc93205fbdd387bc6113325cc1b9943d39068d06787b634dd2023c6d0fbf"
       }
     },
