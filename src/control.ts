@@ -1,6 +1,30 @@
 import { assertSecureTokenExchange } from "./native-auth.js";
 import { bytesToBase64Url, bytesToHex } from "./bytes.js";
 import {
+  bridgeChatListFromRecord,
+  bridgeCreateBody,
+  bridgeFromRecord,
+  bridgeNetworksFromRecord,
+  bridgeSecretsBody,
+  bridgesFromRecord,
+  bridgeTestResultFromRecord,
+  bridgeTokenBody,
+  bridgeUpdateBody,
+  chatAppConnectorsFromRecord,
+  type Bridge,
+  type BridgeAvatar,
+  type BridgeChanges,
+  type BridgeChatList,
+  type BridgeCreateOptions,
+  type BridgeListOptions,
+  type BridgeNetworks,
+  type BridgeNetworksOptions,
+  type BridgeTestResult,
+  type BridgeWriteOptions,
+  type ChatAppConnector,
+  type SecretValue,
+} from "./chat-apps.js";
+import {
   ThalovantAdmissionFailedError,
   ThalovantAdmissionTimeoutError,
   ThalovantAlreadyLinkedError,
@@ -1830,6 +1854,180 @@ export class ThalovantControlPlane {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Chat apps: `/v1/bridges`.
+  //
+  // Reads need the `hubs:read` scope and writes `hubs:write`. A bridge is
+  // visible to its hub's owner, the tenant's members above basic, and platform
+  // administrators; anybody else gets 404. Every refusal is a
+  // ThalovantApiError whose `code` says which (`bridge_token_invalid`,
+  // `bridge_settings_invalid` ...) and whose `fields` names the settings or
+  // secrets it is about. A token or secret is never part of an error.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The chat apps a bridge can connect to (`GET /v1/bridges/connectors`): each
+   * one's copy, settings form (`config_schema`), the secrets it needs, what a
+   * chat id looks like (`targets`), its options and its helpers. `offered`
+   * says whether a bridge can be created for it now; hidden ones are left out.
+   */
+  async listChatAppConnectors(): Promise<ChatAppConnector[]> {
+    return chatAppConnectorsFromRecord(await this.request("GET", "/v1/bridges/connectors"));
+  }
+
+  /**
+   * Which networks are offered, and how many bridges the owner may add
+   * (`GET /v1/bridges/networks`). With `hubId` the allowance is the hub
+   * owner's (bridges count against the owner, whoever adds them); without it,
+   * the caller's. Read `allowance.can_create` before `createBridge()`: a Free
+   * plan allows none.
+   */
+  async getBridgeNetworks(options: BridgeNetworksOptions = {}): Promise<BridgeNetworks> {
+    const params = new URLSearchParams();
+    setStringParam(params, "hub_id", options.hubId);
+    const query = params.toString();
+    return bridgeNetworksFromRecord(
+      await this.request("GET", query ? `/v1/bridges/networks?${query}` : "/v1/bridges/networks"),
+    );
+  }
+
+  /**
+   * One hub's bridges with `hubId`, or every bridge the caller may see
+   * (`GET /v1/bridges`); `ownerId` narrows that to one owner's. `limit` is 1
+   * to 500 (the API's default is 200).
+   */
+  async listBridges(options: BridgeListOptions = {}): Promise<Bridge[]> {
+    const params = new URLSearchParams();
+    setStringParam(params, "hub_id", options.hubId);
+    setStringParam(params, "owner_id", options.ownerId);
+    if (options.limit !== undefined) {
+      if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 500) {
+        throw new RangeError("limit must be an integer from 1 to 500");
+      }
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return bridgesFromRecord(await this.request("GET", query ? `/v1/bridges?${query}` : "/v1/bridges"));
+  }
+
+  /**
+   * Connect a hub to a chat network (`POST /v1/bridges`) and return the new
+   * bridge, in `setup`: nothing runs until `updateBridge()` chooses its chats.
+   *
+   * Pass exactly one of `token` (the connector's single secret: Telegram,
+   * Discord, Mattermost) and `secrets` (every secret the connector names:
+   * Matrix `access_token`; Twitch `refresh_token` and `client_secret`), as a
+   * {@link SecretValue} or a plain string. `settings` are the connector's
+   * non-secret settings (Matrix `homeserver`, Twitch `bot_login` and
+   * `client_id`), checked against its `config_schema`.
+   *
+   * The API checks the token with the network where the connector can: 422
+   * `bridge_token_invalid`, `bridge_token_malformed` or
+   * `bridge_token_not_a_bot`; 409 `bridge_bot_in_use` when the bot already
+   * serves a bridge; 422 `bridge_settings_invalid` or `bridge_secrets_invalid`
+   * with `fields`; 402 on a Free plan and 403 `plan_limit` past the
+   * allowance (both {@link ThalovantPlanError}).
+   */
+  async createBridge(options: BridgeCreateOptions): Promise<Bridge> {
+    const { body, secrets } = bridgeCreateBody(options);
+    return bridgeFromRecord(await this.request("POST", "/v1/bridges", { body, redactSecrets: secrets }));
+  }
+
+  /** One bridge, with its status (`GET /v1/bridges/{id}`). */
+  async getBridge(bridgeId: string): Promise<Bridge> {
+    return bridgeFromRecord(await this.request("GET", bridgePath(bridgeId)));
+  }
+
+  /**
+   * Change a bridge (`PATCH /v1/bridges/{id}`): its chats, the mention rule,
+   * the session scope, its settings, or pause it (`paused: true`) and resume
+   * it (`paused: false`). Only the members set in `changes` are sent.
+   *
+   * The first non-empty `allowed` starts the bridge. `allowed` takes ids, or
+   * `bridge.allowed` entries and `listBridgeChats()` rows as they are.
+   * Pausing is always allowed; anything else needs a paid plan, and resuming
+   * needs room in the plan's allowance (403 `plan_limit` otherwise).
+   *
+   * With `options.etag` (the bridge's `etag`) the change is sent with
+   * `If-Match` and refused with HTTP 412 when the bridge changed since.
+   */
+  async updateBridge(bridgeId: string, changes: BridgeChanges, options: BridgeWriteOptions = {}): Promise<Bridge> {
+    const body = bridgeUpdateBody(changes);
+    const headers: Record<string, string> = {};
+    if (typeof options.etag === "string" && options.etag) headers["If-Match"] = options.etag;
+    return bridgeFromRecord(await this.request("PATCH", bridgePath(bridgeId), { body, headers }));
+  }
+
+  /**
+   * Replace a bridge's token (`PUT /v1/bridges/{id}/token`), for a token the
+   * network rejected (`status.reason` `TokenRejected`) or one that went
+   * missing. It must belong to the same bot: another bot's token is 409
+   * `bridge_token_other_bot`.
+   */
+  async replaceBridgeToken(bridgeId: string, token: string | SecretValue): Promise<Bridge> {
+    const { body, secrets } = bridgeTokenBody(token);
+    return bridgeFromRecord(
+      await this.request("PUT", `${bridgePath(bridgeId)}/token`, { body, redactSecrets: secrets }),
+    );
+  }
+
+  /**
+   * Replace some of a bridge's secrets (`PUT /v1/bridges/{id}/secrets`); the
+   * keys not sent stay as stored. Refused with 422 `bridge_secrets_invalid`
+   * (and `fields`) for a key the connector does not name.
+   */
+  async replaceBridgeSecrets(
+    bridgeId: string,
+    secrets: Readonly<Record<string, string | SecretValue>>,
+  ): Promise<Bridge> {
+    const { body, secrets: sent } = bridgeSecretsBody(secrets);
+    return bridgeFromRecord(
+      await this.request("PUT", `${bridgePath(bridgeId)}/secrets`, { body, redactSecrets: sent }),
+    );
+  }
+
+  /**
+   * The chats the bot can see (`GET /v1/bridges/{id}/chats`), to choose from
+   * for `updateBridge({ allowed })`. A connector without chat discovery
+   * answers `manual_entry: true` and no rows: type the ids, checked against
+   * its `targets.pattern`. Telegram refuses while the bridge runs (409
+   * `bridge_running`): pause it first.
+   */
+  async listBridgeChats(bridgeId: string): Promise<BridgeChatList> {
+    return bridgeChatListFromRecord(await this.request("GET", `${bridgePath(bridgeId)}/chats`));
+  }
+
+  /**
+   * Post a "Connected to <hub>." message in an allowed chat
+   * (`POST /v1/bridges/{id}/test`), in the hub's language. 409
+   * `bridge_helper_unavailable` for a connector without the helper; 429
+   * `bridge_rate_limited` with `retryAfterSeconds` past the per-bridge limit.
+   */
+  async sendBridgeTestMessage(bridgeId: string, chatId: string): Promise<BridgeTestResult> {
+    return bridgeTestResultFromRecord(
+      await this.request("POST", `${bridgePath(bridgeId)}/test`, { body: { chat_id: chatId } }),
+    );
+  }
+
+  /**
+   * The bot's picture (`GET /v1/bridges/{id}/avatar`): its bytes and content
+   * type. A bot without one, or a connector without the helper, is the API's
+   * 404, thrown as a {@link ThalovantApiError}.
+   */
+  async getBridgeAvatar(bridgeId: string): Promise<BridgeAvatar> {
+    const response = await this.send("GET", `${bridgePath(bridgeId)}/avatar`, { headers: { accept: "image/*" } });
+    if (!response.ok) {
+      throw apiError(response.status, await response.text(), undefined, response.headers);
+    }
+    const content = new Uint8Array(await response.arrayBuffer());
+    return { content, content_type: response.headers.get("content-type") ?? "application/octet-stream" };
+  }
+
+  /** Stop and remove a bridge (`DELETE /v1/bridges/{id}`); its stored token goes with it. */
+  async deleteBridge(bridgeId: string): Promise<void> {
+    await this.request("DELETE", bridgePath(bridgeId));
+  }
+
   createClient(payload: JsonRecord, options: { idempotencyKey?: string } = {}): Promise<JsonRecord> {
     return this.request("POST", "/v1/clients", {
       body: payload,
@@ -2215,6 +2413,10 @@ export class ThalovantControlPlane {
       throw cause === "unexpected redirect" ? new ThalovantApiError(message) : new ThalovantApiUnreachableError(message);
     }
   }
+}
+
+function bridgePath(bridgeId: string): string {
+  return `/v1/bridges/${encodeURIComponent(bridgeId)}`;
 }
 
 function newSecret(): string {

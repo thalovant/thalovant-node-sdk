@@ -1,6 +1,45 @@
 export * from "./client.js";
 export * from "./constants.js";
 export * from "./control.js";
+// Chat apps: the models the `/v1/bridges` methods of ThalovantControlPlane
+// return, and SecretValue. The readers and body builders stay internal.
+export {
+  SecretValue,
+  type Bridge,
+  type BridgeAllowance,
+  type BridgeAllowedChat,
+  type BridgeAllowedChatInput,
+  type BridgeAvatar,
+  type BridgeBot,
+  type BridgeChanges,
+  type BridgeChat,
+  type BridgeChatList,
+  type BridgeConnectorRef,
+  type BridgeCreateOptions,
+  type BridgeHold,
+  type BridgeHoldReason,
+  type BridgeInviteLinks,
+  type BridgeListOptions,
+  type BridgeNetworkOffer,
+  type BridgeNetworks,
+  type BridgeNetworksOptions,
+  type BridgePhase,
+  type BridgeSessionScope,
+  type BridgeState,
+  type BridgeStatus,
+  type BridgeStatusReason,
+  type BridgeStatusSource,
+  type BridgeTestResult,
+  type BridgeWriteOptions,
+  type ChatAppConnector,
+  type ChatAppHelper,
+  type ChatAppOptions,
+  type ChatAppRelease,
+  type ChatAppSecretField,
+  type ChatAppStatus,
+  type ChatAppTargets,
+  type LocalizedText,
+} from "./chat-apps.js";
 export * from "./context.js";
 export * from "./noise.js";
 export * from "./noise-store.js";

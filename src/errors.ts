@@ -88,6 +88,9 @@ export class ThalovantHubKeyChangedError extends ThalovantConnectionError {}
  * - `code` is the body's machine-readable code, for branching without reading
  *   the prose.
  * - `detail` is the API's own sentence, whole, exactly as sent.
+ * - `fields` names the settings or secrets a refusal is about
+ *   (`bridge_settings_invalid`, `bridge_secrets_invalid`, `bridge_url_*`):
+ *   their names, never their values. Empty when the API named none.
  *
  * The message is a single bounded line for display; it can be shortened, so it
  * is never where to read what the API said. A value the body echoed back from
@@ -95,9 +98,10 @@ export class ThalovantHubKeyChangedError extends ThalovantConnectionError {}
  * `problem` is not enumerable: `console.log`, `util.inspect` and
  * `JSON.stringify` of the error leave it out, and `error.problem` still reads it.
  *
- * Passing `problem` alone derives `code` and `detail` from it; an explicit
- * `code` or `detail` wins. All three are undefined for a local failure, such
- * as a missing token or an unexpected response shape.
+ * Passing `problem` alone derives `code`, `detail` and `fields` from it; an
+ * explicit `code`, `detail` or `fields` wins. `code` and `detail` are
+ * undefined, and `fields` empty, for a local failure, such as a missing token
+ * or an unexpected response shape.
  */
 export class ThalovantApiError extends ThalovantError {
   readonly statusCode?: number;
@@ -105,6 +109,13 @@ export class ThalovantApiError extends ThalovantError {
   readonly code?: string;
   /** The API's whole sentence, exactly as sent: never trimmed or shortened. */
   readonly detail?: string;
+  /**
+   * The names of the settings or secrets the refusal is about, as the API
+   * listed them in the problem's `fields` (at its top, or inside a `detail`
+   * object, as `code` is read). Only names, never values; strings only; empty
+   * when the API named none.
+   */
+  readonly fields: readonly string[];
   /**
    * How long the API asked the caller to wait before trying again, in seconds,
    * when it said: a 429's `retry_after_seconds` (at the top of the problem or
@@ -127,6 +138,8 @@ export class ThalovantApiError extends ThalovantError {
       problem?: Record<string, unknown>;
       /** Seconds to wait, when the answer's headers said; the problem's own number wins. */
       retryAfterSeconds?: number;
+      /** The setting or secret names the refusal is about. */
+      fields?: readonly string[];
     },
   ) {
     super(message, options);
@@ -139,8 +152,26 @@ export class ThalovantApiError extends ThalovantError {
     const read = problemFields(problem);
     this.code = options?.code ?? read.code;
     this.detail = options?.detail ?? read.detail;
+    this.fields = Object.freeze(options?.fields !== undefined ? fieldNames(options.fields) : problemFieldNames(problem));
     this.retryAfterSeconds = problemRetryAfter(problem) ?? options?.retryAfterSeconds;
   }
+}
+
+/** The strings of a `fields` list, in order; anything that is not a string is left out. */
+function fieldNames(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/**
+ * A problem's `fields`, at its top or inside a `detail` object: the API lifts
+ * a structured refusal's members to the top, and FastAPI's own envelope keeps
+ * them inside `detail`, as it does `code`.
+ */
+function problemFieldNames(problem: Record<string, unknown> | undefined): string[] {
+  if (!problem) return [];
+  const top = fieldNames(problem.fields);
+  if (top.length) return top;
+  return isRecord(problem.detail) ? fieldNames(problem.detail.fields) : [];
 }
 
 /**
