@@ -9,7 +9,7 @@ All 22 review-body items on twelve merged PRs were checked again against `main` 
 | PR | Item | Outcome on 9dc7a1d |
 | :--- | :--- | :--- |
 | #31 | `detailString` stops at the first non-null field | Fixed in 07a7c93 (#56); unchanged |
-| #31 | Cover token-shaped key names | Fixed in the #31 squash (6bfed4d); `src/redact.ts` `SECRET_KEY_NAMES` unchanged |
+| #31 | Cover token-shaped key names | Fixed in the #31 squash (6bfed4d); `src/redact.ts` `SECRET_KEY_NAMES` unchanged. Names are matched exactly, so a key the list lacks (`id_token`, `session_token`) is not redacted. No record the SDK reads carries one today (AUDIT.md, Notes) |
 | #31 | `@internal` + `stripInternal` could leave dangling types | Not a defect, checked again on 0.10.0. Its chat apps module adds twelve `@internal` declarations. The packed 0.10.0 tarball type-checks in a clean consumer with `skipLibCheck: false`, imports as ESM, and its typings name none of the internal declarations |
 | #31 | `deepEqual` in the `includeSecrets` checks | Fixed in 9eb0e58 (#106) |
 | #36 | Synthetic test password | Declined, as before: an in-process mock transport, not a credential |
@@ -25,7 +25,7 @@ All 22 review-body items on twelve merged PRs were checked again against `main` 
 | #87 | README: "about ninety seconds" vs the 180000 ms default | Not valid when raised: ninety seconds is how long admission usually takes, and the timeout is deliberately twice that. The README is now a landing page, so the line is gone |
 | #89 | A failed legacy-state adoption was swallowed | Fixed before merge (b4e7c8d, in the 59d57bb squash): `startNoiseHandshake` lets the adoption error propagate (`test/noise-key-folder.test.ts`) |
 | #89 | `handshakeDoneHere` set after message 3 was sent | Fixed before merge (b4e7c8d): set as soon as XX message 3 exists (`test/link-carrier-vectors.test.ts`) |
-| #89 | `\u`-escaped JSON syntax characters in secret scrubbing | Declined, with an updated reason. Since 0.10.0 the scrubbed values include user-entered bridge secrets, which may hold `"` or `\`. Those are covered: the API writes them `\"` and `\\`, the spelling `JSON.stringify` gives, and a check with Python's `json.dumps` bodies (both `ensure_ascii` modes) shows them scrubbed. Only an encoder that `\u`-escapes ASCII (`"`) gets past it, and the API does not write one. Recorded as a limitation in AUDIT.md, with the complete fix in SUGGESTIONS.md #6 |
+| #89 | `\u`-escaped JSON syntax characters in secret scrubbing | Declined, with an updated reason. Since 0.10.0 the scrubbed values include user-entered bridge secrets, which may hold `"` or `\`. Those are covered: the API writes them `\"` and `\\`, the spelling `JSON.stringify` gives, and a check with Python's `json.dumps` bodies (both `ensure_ascii` modes) shows them scrubbed. Only spellings the API does not write get past it: a `\u`-escaped ASCII character (`\u0022`), `\/`, or non-ASCII escaped in some places and not others. Recorded as a limitation in AUDIT.md, with the complete fix in SUGGESTIONS.md #6 |
 
 ### Verification
 
