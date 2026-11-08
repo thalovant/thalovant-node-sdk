@@ -29,10 +29,12 @@ import {
   ThalovantApiError,
   ThalovantApiUnreachableError,
   ThalovantControlPlane,
+  ThalovantDeviceLoginDeniedError,
   ThalovantDeviceLoginExpiredError,
+  ThalovantDeviceLoginPendingError,
 } from "../src/index.js";
 import { classifyRequest, LoopbackListener, MAX_REQUEST_HEAD, responseBytes } from "../src/loopback.js";
-import { redactSecretsInJson, redactSecretsInString } from "../src/redact.js";
+import { redactSecretsInJson, redactSecretsInJsonNumbers, redactSecretsInString } from "../src/redact.js";
 
 type Json = Record<string, unknown>;
 
@@ -1294,3 +1296,251 @@ test("only a missing device name gets the default; an empty one is left out", as
   }
 });
 
+// -- CodeRabbit's second review of #110 ------------------------------------------------
+
+/** A JSON escape of `value`'s first character, built here so no tool rewrites it. */
+function escapeFirst(value: string): string {
+  const backslash = String.fromCharCode(92);
+  return `${backslash}u${value.charCodeAt(0).toString(16).padStart(4, "0")}${value.slice(1)}`;
+}
+
+test("a fetch that ignores its signal cannot hold the configuration past its bound", async () => {
+  const asked: string[] = [];
+  const stalled = (async (input: URL | string) => {
+    const path = new URL(String(input)).pathname;
+    asked.push(path);
+    if (path === "/v1/auth/native/config") return new Promise<Response>(() => undefined);
+    if (path === "/v1/auth/device/authorize") return jsonResponse(DEVICE_GRANT);
+    if (path === "/v1/auth/device/token") return jsonResponse(TOKEN);
+    return new Response("{}", { status: 599 });
+  }) as unknown as typeof fetch;
+  const plane = new ThalovantControlPlane("https://api.example.test", { fetch: stalled });
+  const started = performance.now();
+  await assert.rejects(plane.browserLogin({ requestTimeoutMs: 100 }), (error: unknown) =>
+    error instanceof ThalovantApiUnreachableError && error.statusCode === undefined);
+  assert.ok(performance.now() - started < 2_000);
+  // auto counts it as a configuration failure, before anything is opened.
+  const { value: token } = await capturedLog(() =>
+    asPlatform("darwin", {}, () => plane.interactiveLogin({ openUrl: () => undefined, requestTimeoutMs: 100 })),
+  );
+  assert.equal(token.token_id, TOKEN.token_id);
+});
+
+test("an exchange whose body never ends cannot hold the sign-in or its tab past the bound", async () => {
+  const stalled = (async (input: URL | string) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/v1/auth/native/config") return jsonResponse(CONFIG);
+    // Headers, then a body that never ends, and a signal nobody listens to.
+    return new Response(new ReadableStream({ start: () => undefined }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  const plane = new ThalovantControlPlane("http://127.0.0.1:9", { fetch: stalled });
+  const handed = opened();
+  const task = plane
+    .browserLogin({ openBrowser: false, prompt: handed.handOver, requestTimeoutMs: 100 })
+    .catch((error: unknown) => error);
+  const { port, state } = parts(await handed.url);
+  const page = await get(port, `/callback?code=unit-code-value&state=${state}`);
+  const error = await task;
+  assert.ok(error instanceof ThalovantApiUnreachableError && error.statusCode === undefined, String(error));
+  assert.ok(page.body.includes("Sign-in was not completed."));
+  assert.ok(await refused(port));
+  assert.equal(plane.accessToken, undefined);
+});
+
+test("completeNativeSignIn takes its code and verifier out of an error wherever they are", async () => {
+  const answers = [
+    '{"detail":"cab1n"}',
+    '{"detail":"bad [redacted]x1 here"}',
+    '{"detail":"abcdefghijklmnop"}',
+  ];
+  const cases: Array<[string, string, string]> = [
+    ["ab1", "verifier-value-1234567890", "c[redacted]n"],
+    ["[redacted]x1", "verifier-value-1234567890", "bad [redacted] here"],
+    ["abc", "bcdefghijklmnop", "[redacted]"],
+  ];
+  for (const [index, [code, verifier, detail]] of cases.entries()) {
+    const plane = new ThalovantControlPlane("https://api.example.test", {
+      fetch: (async () => new Response(answers[index], { status: 400, headers: { "content-type": "application/json" } })) as unknown as typeof fetch,
+    });
+    const error = await plane.completeNativeSignIn(code, verifier, "app", "app://auth").catch((failure: unknown) => failure);
+    assert.ok(error instanceof ThalovantApiError && error.statusCode === 400, String(error));
+    assert.equal(error.detail, detail);
+    const shown = [error.message, JSON.stringify(error.problem)].join("\n");
+    assert.ok(!shown.replaceAll("[redacted]", "").includes(code.replace("[redacted]", "")), shown);
+    assert.ok(!shown.includes(verifier.slice(0, 10)), shown);
+  }
+});
+
+test("a number that spells a code is taken out before parsing rounds it", async () => {
+  const api = new Api({
+    "/v1/auth/native/token": (body, response) => {
+      const text = `{"detail":"invalid_grant","input":${String(body.code)},"other":42}`;
+      response.writeHead(400, { "content-type": "application/json" }).end(text);
+    },
+  });
+  await withApi(api, async () => {
+    const plane = new ThalovantControlPlane(api.url);
+    const handed = opened();
+    const task = plane.browserLogin({ openBrowser: false, prompt: handed.handOver }).catch((error: unknown) => error);
+    const { port, state } = parts(await handed.url);
+    await get(port, `/callback?code=12345678901234567890&state=${state}`);
+    const error = await task;
+    assert.ok(error instanceof ThalovantApiError && error.statusCode === 400, String(error));
+    assert.deepEqual(error.problem, { detail: "invalid_grant", input: "[redacted]", other: 42 });
+    assert.ok(!JSON.stringify(error.problem).includes("1234567890123456"));
+  });
+});
+
+test("the number pass reads numbers only, and leaves strings and their escapes as written", () => {
+  const backslash = String.fromCharCode(92);
+  const text = `{"a":"${backslash}u0031${backslash}"12345678","b":12345678,"c":[1.5e3,-12345678,7],"d":"x"}`;
+  const out = redactSecretsInJsonNumbers(text, ["12345678"]);
+  assert.equal(out, `{"a":"${backslash}u0031${backslash}"12345678","b":"[redacted]","c":[1.5e3,"[redacted]",7],"d":"x"}`);
+  assert.deepEqual(JSON.parse(out).c, [1500, "[redacted]", 7]);
+  assert.equal(redactSecretsInJsonNumbers(text, ["no digits"]), text);
+});
+
+test("a device-token problem is scrubbed however the body spells the code, and still classified", async () => {
+  const deviceCode = "dc-unit-device-code";
+  for (const [error, kind] of [
+    ["authorization_pending", ThalovantDeviceLoginPendingError],
+    ["access_denied", ThalovantDeviceLoginDeniedError],
+    ["expired_token", ThalovantDeviceLoginExpiredError],
+  ] as const) {
+    const answer = `{"error":"${error}","echo":"${escapeFirst(deviceCode)}"}`;
+    const plane = new ThalovantControlPlane("https://api.example.test", {
+      fetch: (async () => new Response(answer, { status: 400, headers: { "content-type": "application/json" } })) as unknown as typeof fetch,
+    });
+    const failure = await plane.pollDeviceLogin(deviceCode).catch((caught: unknown) => caught);
+    assert.ok(failure instanceof kind, `${error}: ${String(failure)}`);
+    assert.deepEqual((failure as ThalovantApiError).problem, { error, echo: "[redacted]" });
+    // The loop behind loginWithBrowser() reads the same way.
+    if (error !== "authorization_pending") {
+      const looping = await (plane as unknown as {
+        pollDeviceToken(code: string, options: Json): Promise<unknown>;
+      }).pollDeviceToken(deviceCode, { intervalMs: 0, timeoutMs: 1_000 }).catch((caught: unknown) => caught);
+      assert.ok(looping instanceof kind, String(looping));
+      assert.deepEqual((looping as ThalovantApiError).problem, { error, echo: "[redacted]" });
+    }
+  }
+});
+
+test("an opener that cancels the sign-in and then rejects leaves nothing unhandled", async () => {
+  const unhandled: unknown[] = [];
+  const listen = (reason: unknown): void => void unhandled.push(reason);
+  process.on("unhandledRejection", listen);
+  try {
+    const plane = new ThalovantControlPlane("https://api.example.test", {
+      fetch: scriptedFetch({ "/v1/auth/device/authorize": () => jsonResponse(DEVICE_GRANT) }, []),
+    });
+    const controller = new AbortController();
+    const { value: error } = await capturedLog(() =>
+      plane
+        .interactiveLogin({
+          method: "device",
+          signal: controller.signal,
+          openUrl: () => {
+            controller.abort();
+            return Promise.reject(new Error("the opener failed"));
+          },
+        })
+        .catch((failure: unknown) => failure),
+    );
+    assert.ok(error instanceof Error && error.name === "AbortError", String(error));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", listen);
+  }
+});
+
+for (const [name, request] of [
+  ["a head too large to read", `HEAD /callback?code=${"a".repeat(MAX_REQUEST_HEAD + 10)} HTTP/1.1\r\n\r\n`],
+  ["a head with no request line", "HEAD /callback\r\n\r\n"],
+] as const) {
+  test(`a HEAD gets no body on a 400 either: ${name}`, async () => {
+    const listener = new LoopbackListener("the-state");
+    const port = await listener.start();
+    try {
+      const raw = await new Promise<Buffer>((resolve, reject) => {
+        const socket = connect(port, "127.0.0.1");
+        const chunks: Buffer[] = [];
+        socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+        socket.once("error", reject);
+        socket.once("close", () => resolve(Buffer.concat(chunks)));
+        socket.once("connect", () => socket.write(request));
+      });
+      const split = raw.indexOf("\r\n\r\n");
+      const head = raw.subarray(0, split).toString("latin1");
+      assert.ok(head.startsWith("HTTP/1.1 400 "), head);
+      assert.equal(raw.subarray(split + 4).length, 0);
+      assert.ok(Number(/Content-Length: (\d+)/.exec(head)?.[1]) > 0);
+    } finally {
+      await listener.close();
+    }
+  });
+}
+
+test("closing waits for the accepted connection to drain, so its page is not reset", async () => {
+  const listener = new LoopbackListener("the-state");
+  const port = await listener.start();
+  // A browser that is still sending when the sign-in ends.
+  const socket = connect({ port, host: "127.0.0.1", allowHalfOpen: true });
+  let failed: string | null = null;
+  socket.on("error", (error: NodeJS.ErrnoException) => {
+    failed = error.code ?? error.name;
+  });
+  const page = new Promise<string>((resolve) => {
+    const chunks: Buffer[] = [];
+    socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+    socket.once("end", () => {
+      resolve(Buffer.concat(chunks).toString("utf8"));
+      // Its last bytes arrive after the page, then it closes.
+      setTimeout(() => socket.end("trailing bytes the browser still sent"), 200);
+    });
+  });
+  await new Promise((resolve) => socket.once("connect", resolve));
+  socket.write("GET /callback?code=c&state=the-state HTTP/1.1\r\n\r\n");
+  assert.ok(await listener.wait(5_000));
+  listener.finish(true);
+  const started = performance.now();
+  await listener.close();
+  const took = performance.now() - started;
+  assert.ok((await page).includes("Signed in to Thalovant."));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(failed, null, `the connection ended with ${failed}`);
+  assert.ok(took >= 150 && took < 1_500, `close took ${took} ms`);
+  socket.destroy();
+});
+
+test("scrubbing replaces overlapping secrets together, and one that starts with the marker", () => {
+  const everywhere = { everywhere: true };
+  // A short code overlapping the start of a verifier takes the whole verifier with it.
+  assert.equal(redactSecretsInString("xx abcdefghijklmnop yy", ["abc", "bcdefghijklmnop"], everywhere), "xx [redacted] yy");
+  // By default a short secret glued to a letter stays; the long one is still taken whole.
+  assert.equal(redactSecretsInString("abcdefghijklmnop", ["bcdefghijklmnop", "abc"]), "a[redacted]");
+  // A secret that begins with the marker is still replaced; nothing inside an existing marker is.
+  assert.equal(redactSecretsInString("x [redacted]xyz y", ["[redacted]xyz"], everywhere), "x [redacted] y");
+  assert.equal(redactSecretsInString("[redacted]", ["dacted", "red", "d"], everywhere), "[redacted]");
+});
+
+test("an error body nested too deep for the stack still gives an error with its status", async () => {
+  const depth = 100_000;
+  const deep = `{"detail":"invalid_grant","deep":${"[".repeat(depth)}"secret-code-value"${"]".repeat(depth)}}`;
+  // With secrets to scrub (completeNativeSignIn) and without (any request).
+  const plane = new ThalovantControlPlane("https://api.example.test", {
+    accessToken: "token",
+    fetch: (async () => new Response(deep, { status: 400, headers: { "content-type": "application/json" } })) as unknown as typeof fetch,
+  });
+  const scrubbed = await plane.completeNativeSignIn("secret-code-value", "verifier-value-123456789", "app", "app://auth")
+    .catch((failure: unknown) => failure);
+  assert.ok(scrubbed instanceof ThalovantApiError && scrubbed.statusCode === 400, String(scrubbed));
+  assert.equal(scrubbed.detail, "invalid_grant");
+  const shown = JSON.stringify(scrubbed.problem);
+  assert.ok(!shown.includes("secret-code-value"));
+  assert.ok(shown.includes("[redacted]"));
+  const plain = await plane.getHub("hub-1").catch((failure: unknown) => failure);
+  assert.ok(plain instanceof ThalovantApiError && plain.statusCode === 400, String(plain));
+  assert.equal(plain.detail, "invalid_grant");
+  JSON.stringify(plain.problem);
+});

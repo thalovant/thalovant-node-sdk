@@ -128,43 +128,56 @@ export interface RedactOptions {
  * `text` with each secret replaced by {@link REDACTED}: one of 8 characters or
  * more wherever it occurs, a shorter one only where it stands alone -- no
  * letter or digit directly before or after it -- so that a short value cannot
- * take pieces out of unrelated words (`everywhere` replaces it anywhere). One
- * pass, the longest secret tried first at each place, and never inside a
- * {@link REDACTED} already there, so scrubbing twice changes nothing. The text
- * is a decoded string, never JSON source, so nothing here can break a
- * document's structure.
+ * take pieces out of unrelated words (`everywhere` replaces it anywhere).
+ *
+ * Every occurrence of every secret is found in the text as given, and
+ * occurrences that overlap are replaced together, by one marker: a short code
+ * that overlaps the start of a verifier takes the whole verifier with it. An
+ * occurrence that starts inside a {@link REDACTED} already there is left alone,
+ * so scrubbing twice changes nothing; one that starts where a marker starts --
+ * a secret that begins with `[redacted]` -- is still replaced. The text is a
+ * decoded string, never JSON source, so nothing here can break a document's
+ * structure.
  */
 export function redactSecretsInString(
   text: string,
   secrets: ReadonlyArray<string | undefined>,
   options: RedactOptions = {},
 ): string {
-  const ordered = [...new Set(secrets.filter((secret): secret is string => typeof secret === "string" && secret !== ""))]
-    .sort((a, b) => b.length - a.length);
-  if (!ordered.length) return text;
-  let out = "";
-  let index = 0;
-  scan: while (index < text.length) {
-    if (text.startsWith(REDACTED, index)) {
-      out += REDACTED;
-      index += REDACTED.length;
-      continue;
-    }
-    for (const secret of ordered) {
-      if (!text.startsWith(secret, index)) continue;
-      const end = index + secret.length;
-      const after = end < text.length ? String.fromCodePoint(text.codePointAt(end)!) : undefined;
-      if (!options.everywhere && secret.length < 8 && (isWordCharacter(characterBefore(text, index)) || isWordCharacter(after))) {
-        continue;
-      }
-      out += REDACTED;
-      index = end;
-      continue scan;
-    }
-    out += text[index];
-    index += 1;
+  const wanted = [...new Set(secrets.filter((secret): secret is string => typeof secret === "string" && secret !== ""))];
+  if (!wanted.length) return text;
+  const markers: Array<[number, number]> = [];
+  for (let at = text.indexOf(REDACTED); at !== -1; at = text.indexOf(REDACTED, at + REDACTED.length)) {
+    markers.push([at, at + REDACTED.length]);
   }
-  return out;
+  const insideMarker = (at: number): boolean => markers.some(([from, to]) => at > from && at < to);
+  const spans: Array<[number, number]> = [];
+  for (const secret of wanted) {
+    for (let at = text.indexOf(secret); at !== -1; at = text.indexOf(secret, at + 1)) {
+      if (insideMarker(at)) continue;
+      const end = at + secret.length;
+      if (!options.everywhere && secret.length < 8) {
+        const after = end < text.length ? String.fromCodePoint(text.codePointAt(end)!) : undefined;
+        if (isWordCharacter(characterBefore(text, at)) || isWordCharacter(after)) continue;
+      }
+      spans.push([at, end]);
+    }
+  }
+  if (!spans.length) return text;
+  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  let out = "";
+  let from = 0;
+  let index = 0;
+  while (index < spans.length) {
+    let [start, stop] = spans[index];
+    // Every span that overlaps this one goes with it.
+    for (index += 1; index < spans.length && spans[index][0] < stop; index += 1) {
+      stop = Math.max(stop, spans[index][1]);
+    }
+    out += text.slice(from, start) + REDACTED;
+    from = stop;
+  }
+  return out + text.slice(from);
 }
 
 /** The whole character that ends just before `index`, a surrogate pair included. */
@@ -179,43 +192,100 @@ function characterBefore(text: string, index: number): string | undefined {
 }
 
 /**
+ * How deep {@link redactSecretsInJson} follows a parsed value. Anything deeper
+ * becomes {@link REDACTED}: an error body nested thousands of levels deep would
+ * otherwise overflow the stack -- here, or in `JSON.stringify` -- before the
+ * error carrying its status could be made, and dropping it keeps nothing
+ * unsanitized.
+ */
+export const MAX_REDACTED_JSON_DEPTH = 64;
+
+/**
  * A parsed JSON value with each secret taken out of every string in it, keys
  * included ({@link redactSecretsInString}).
  *
  * {@link redactSecretsInText} replaces the spellings of a secret it knows in
- * the body before it is parsed. JSON has others -- `c` for `c`, `\/` for
+ * the body before it is parsed. JSON has others -- `\u0063` for `c`, `\/` for
  * `/`, non-ASCII escaped in some places and not others -- which decode back
  * into the secret. Walking the parsed value catches every one of them, and a
  * short secret, which the text pass leaves alone, too. A number that spells a
- * secret becomes the string {@link REDACTED}.
+ * secret becomes the string {@link REDACTED}; run
+ * {@link redactSecretsInJsonNumbers} on the text first, so that one too long
+ * for a double is caught before parsing rounds it. A value nested deeper than
+ * {@link MAX_REDACTED_JSON_DEPTH} becomes {@link REDACTED}.
  */
 export function redactSecretsInJson(
   value: unknown,
   secrets: ReadonlyArray<string | undefined>,
   options: RedactOptions = {},
+  depth = 0,
 ): unknown {
   if (typeof value === "string") return redactSecretsInString(value, secrets, options);
   if (typeof value === "number") {
-    // A secret of digits may come back as a number.
     const text = String(value);
     const scrubbed = redactSecretsInString(text, secrets, options);
-    return scrubbed === text ? value : scrubbed;
+    return scrubbed === text ? value : REDACTED;
   }
-  if (Array.isArray(value)) return value.map((entry) => redactSecretsInJson(entry, secrets, options));
-  if (isRecord(value)) {
-    const result: UnknownRecord = {};
-    for (const [key, entry] of Object.entries(value)) {
-      // defineProperty, so that a key such as `__proto__` stays a key.
-      Object.defineProperty(result, redactSecretsInString(key, secrets, options), {
-        value: redactSecretsInJson(entry, secrets, options),
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= MAX_REDACTED_JSON_DEPTH) return REDACTED;
+  if (Array.isArray(value)) return value.map((entry) => redactSecretsInJson(entry, secrets, options, depth + 1));
+  const result: UnknownRecord = {};
+  for (const [key, entry] of Object.entries(value)) {
+    // defineProperty, so that a key such as `__proto__` stays a key.
+    Object.defineProperty(result, redactSecretsInString(key, secrets, options), {
+      value: redactSecretsInJson(entry, secrets, options, depth + 1),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return result;
+}
+
+/** One JSON number, as it is written. */
+const JSON_NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+
+/**
+ * JSON source with every number that spells a secret replaced by the string
+ * `"[redacted]"`, before it is parsed.
+ *
+ * Parsing rounds a number past what a double holds -- `12345678901234567890`
+ * comes back as `12345678901234567000` -- so a code of digits echoed as a
+ * number would keep 17 of its digits once parsed. Strings are copied as they
+ * are, escapes and all; only number tokens outside them are read. The result
+ * parses whenever the input did.
+ */
+export function redactSecretsInJsonNumbers(
+  text: string,
+  secrets: ReadonlyArray<string | undefined>,
+  options: RedactOptions = {},
+): string {
+  if (!secrets.some((secret) => typeof secret === "string" && /[0-9]/.test(secret))) return text;
+  let out = "";
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '"') {
+      let end = index + 1;
+      while (end < text.length && text[end] !== '"') end += text[end] === "\\" ? 2 : 1;
+      out += text.slice(index, end + 1);
+      index = end + 1;
+      continue;
     }
-    return result;
+    if (char === "-" || (char >= "0" && char <= "9")) {
+      JSON_NUMBER.lastIndex = index;
+      const match = JSON_NUMBER.exec(text);
+      if (match) {
+        const token = match[0];
+        out += redactSecretsInString(token, secrets, options) === token ? token : JSON.stringify(REDACTED);
+        index += token.length;
+        continue;
+      }
+    }
+    out += char;
+    index += 1;
   }
-  return value;
+  return out;
 }
 
 /**

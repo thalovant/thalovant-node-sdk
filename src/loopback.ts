@@ -220,6 +220,11 @@ export function responseBytes(status: number, text: string, options: { head?: bo
   return options.head ? headers : Buffer.concat([headers, body]);
 }
 
+/** Whether a request head, readable or not, starts with the `HEAD` method. */
+function isHead(head: Buffer): boolean {
+  return head.subarray(0, 5).toString("latin1") === "HEAD ";
+}
+
 /** The method and target of a request head, or null when it has no request line. */
 function requestLine(head: Buffer): { method: string; target: string } | null {
   const text = head.toString("latin1");
@@ -362,6 +367,9 @@ export class LoopbackListener {
     const server = this.server;
     this.server = undefined;
     if (server?.listening) server.close();
+    // The accepted tab's page and its drain, for at most CLOSE_GRACE_MS, as
+    // the reference waits for the accepted connection; every other
+    // connection is closed at once.
     if (this.acceptedAnswer) await within(this.acceptedAnswer, CLOSE_GRACE_MS);
     for (const socket of [...this.sockets]) socket.destroy();
     if (this.serverClosed) await within(this.serverClosed, CLOSE_GRACE_MS);
@@ -412,7 +420,8 @@ export class LoopbackListener {
       // drained (see reply()).
       socket.pause();
       if (end === -1 || end > MAX_REQUEST_HEAD) {
-        void this.reply(socket, 400, WRONG_STATE_TEXT);
+        // A HEAD gets no body, even for a head too large to read whole.
+        void this.reply(socket, 400, WRONG_STATE_TEXT, isHead(head));
         return;
       }
       this.serve(socket, head.subarray(0, end));
@@ -424,7 +433,7 @@ export class LoopbackListener {
   private serve(socket: Socket, head: Buffer): void {
     const request = requestLine(head);
     if (!request) {
-      void this.reply(socket, 400, WRONG_STATE_TEXT);
+      void this.reply(socket, 400, WRONG_STATE_TEXT, isHead(head));
       return;
     }
     let status: number;
@@ -458,6 +467,10 @@ export class LoopbackListener {
   private async answerAccepted(socket: Socket): Promise<void> {
     const signedIn = await this.answered();
     await this.reply(socket, 200, signedIn ? SIGNED_IN_TEXT : NOT_COMPLETED_TEXT);
+    // Then its drain, which close() waits for too (within its grace): a
+    // callback whose last bytes are still arriving must not be reset under
+    // its page.
+    if (!socket.destroyed) await new Promise<void>((resolve) => socket.once("close", () => resolve()));
   }
 
   /**

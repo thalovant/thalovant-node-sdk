@@ -65,10 +65,12 @@ import {
 import {
   REDACTED,
   redactSecretsInJson,
+  redactSecretsInJsonNumbers,
   redactSecretsInString,
   redactSecretsInText,
   redactUrlUserinfo,
   withoutSecretKeys,
+  type RedactOptions,
 } from "./redact.js";
 import { USER_AGENT } from "./version.js";
 import { trimSlashes, trimTrailingSlashes } from "./slashes.js";
@@ -1059,6 +1061,8 @@ export class ThalovantControlPlane {
       body,
       auth: false,
       redactSecrets: [code, verifier],
+      // However short, wherever they are: as a browser sign-in's exchange.
+      scrub: { everywhere: true },
     });
     const accessToken = token.access_token;
     if (typeof accessToken !== "string" || !accessToken) {
@@ -1256,10 +1260,27 @@ export class ThalovantControlPlane {
     timeoutMs: number,
   ): Promise<{ response: Response; text: string }> {
     const bound = boundedSignal(signal, timeoutMs);
+    // Enforced here as well as by fetch: a fetch that ignores its signal (a
+    // caller's own), or an answer whose body never ends, must not hold the
+    // sign-in -- or the accepted tab -- past the bound or a cancel.
+    const ended = new Promise<never>((_, reject) => {
+      const stop = (): void => reject(abortError());
+      if (bound.signal.aborted) stop();
+      else bound.signal.addEventListener("abort", stop, { once: true });
+    });
+    ended.catch(() => undefined);
+    const sending = this.send(method, path, { ...(body ? { body } : {}), auth: false, signal: bound.signal });
     try {
-      const response = await this.send(method, path, { ...(body ? { body } : {}), auth: false, signal: bound.signal });
-      return { response, text: await response.text() };
+      const response = await Promise.race([sending, ended]);
+      const reading = response.text();
+      reading.catch(() => undefined);
+      return { response, text: await Promise.race([reading, ended]) };
     } catch (error) {
+      // An answer that arrives after the bound is let go unread.
+      void sending.then(
+        (late) => late.body?.cancel().catch(() => undefined),
+        () => undefined,
+      );
       if (signal?.aborted) throw abortError();
       if (bound.expired()) {
         throw new ThalovantApiUnreachableError(`The Thalovant API did not answer within ${timeoutMs / 1000} seconds.`);
@@ -1553,7 +1574,7 @@ export class ThalovantControlPlane {
     const text = await response.text();
     // A refusal may echo the device code; it reaches neither the message nor
     // `problem`, which is parsed from the scrubbed text.
-    const parsed = parseJsonBody(response.ok ? text : redactSecretsInText(text, [deviceCode]))?.value;
+    const parsed = parseJsonBody(text)?.value;
     if (response.ok) {
       if (!isRecord(parsed)) {
         // No status, like a 2xx that carries no token: the API did not
@@ -1563,8 +1584,11 @@ export class ThalovantControlPlane {
       this.deviceIntervals.delete(deviceCode);
       return parsed;
     }
-    const problem = isRecord(parsed) ? parsed : undefined;
-    const error = response.status === 400 ? problem?.error : undefined;
+    // The problem the error carries is scrubbed of the device code however
+    // the body spelt it; what kind of answer it is reads the body as sent.
+    const scrubbed = scrubbedJsonBody(text, [deviceCode])?.value;
+    const problem = isRecord(scrubbed) ? scrubbed : undefined;
+    const error = response.status === 400 && isRecord(parsed) ? parsed.error : undefined;
     let interval = this.deviceIntervals.get(deviceCode) ?? DEFAULT_DEVICE_POLL_INTERVAL_SECONDS;
     if (error === "slow_down") {
       interval += DEVICE_SLOW_DOWN_STEP_MS / 1000;
@@ -1618,13 +1642,7 @@ export class ThalovantControlPlane {
         ...(signal ? { signal } : {}),
       });
       const text = await response.text();
-      let parsed: unknown;
-      try {
-        // An echoed device code never reaches an error: see deviceTokenOnce().
-        parsed = JSON.parse(response.ok ? text : redactSecretsInText(text, [deviceCode]));
-      } catch {
-        parsed = undefined;
-      }
+      const parsed = parseJsonBody(text)?.value;
       if (response.ok) {
         if (!isRecord(parsed)) {
           // No status, as for a 2xx that carries no token.
@@ -1632,8 +1650,10 @@ export class ThalovantControlPlane {
         }
         return parsed;
       }
-      const problem = isRecord(parsed) ? parsed : undefined;
-      const error = response.status === 400 ? problem?.error : undefined;
+      // An echoed device code never reaches an error: see deviceTokenOnce().
+      const scrubbed = scrubbedJsonBody(text, [deviceCode])?.value;
+      const problem = isRecord(scrubbed) ? scrubbed : undefined;
+      const error = response.status === 400 && isRecord(parsed) ? parsed.error : undefined;
       if (error === "slow_down") {
         waitMs += DEVICE_SLOW_DOWN_STEP_MS;
       } else if (error === "access_denied") {
@@ -2743,12 +2763,14 @@ export class ThalovantControlPlane {
       auth?: boolean;
       /** SDK-generated secrets sent in this request, scrubbed from any error. */
       redactSecrets?: ReadonlyArray<string | undefined>;
+      /** How `redactSecrets` are taken out of an error ({@link RedactOptions}). */
+      scrub?: RedactOptions;
       signal?: AbortSignal;
     } = {},
   ): Promise<JsonRecord> {
     const response = await this.send(method, path, options);
     if (!response.ok) {
-      throw apiError(response.status, await response.text(), options.redactSecrets, response.headers);
+      throw apiError(response.status, await response.text(), options.redactSecrets, response.headers, options.scrub);
     }
     const text = await response.text();
     if (!text.trim()) {
@@ -2953,21 +2975,27 @@ function apiError(
   scrub: { everywhere?: boolean } = {},
 ): ThalovantApiError {
   let safeBody = bodyText;
-  let body = parseJsonBody(bodyText);
-  if (redactSecrets?.length) {
-    if (body) {
-      // A JSON body is scrubbed once decoded, every string and key in it:
-      // each JSON spelling of a secret (`\u0063` for `c`, `\/` for `/`)
-      // decodes back into the secret itself. Replacing spellings in the text
-      // could also cut an escape in two -- `\u0032` in front of a secret that
-      // starts with `2` -- and leave a body that no longer parses.
-      body = { value: redactSecretsInJson(body.value, redactSecrets, scrub) };
+  // Parsed with the secrets taken out -- numbers before parsing rounds them,
+  // every string and key once decoded -- and no deeper than
+  // MAX_REDACTED_JSON_DEPTH, so that neither the scrub nor JSON.stringify can
+  // overflow on a body nested thousands of levels deep.
+  const body = scrubbedJsonBody(bodyText, redactSecrets ?? [], scrub);
+  if (body) {
+    try {
       safeBody = JSON.stringify(body.value) ?? "";
-    } else {
-      // Text: every known spelling, then a secret under 8 characters where it
-      // stands alone.
-      safeBody = redactSecretsInString(redactSecretsInText(bodyText, redactSecrets), redactSecrets, scrub);
+    } catch {
+      safeBody = "";
     }
+  }
+  // A JSON body is scrubbed once decoded, every string and key in it:
+  // each JSON spelling of a secret (`\u0063` for `c`, `\/` for `/`)
+  // decodes back into the secret itself. Replacing spellings in the text
+  // could also cut an escape in two -- `\u0032` in front of a secret that
+  // starts with `2` -- and leave a body that no longer parses.
+  if (!body && redactSecrets?.length) {
+    // Text: every known spelling, then a secret under 8 characters where it
+    // stands alone (anywhere, with `everywhere`).
+    safeBody = redactSecretsInString(redactSecretsInText(bodyText, redactSecrets), redactSecrets, scrub);
   }
   const message = apiErrorMessage(status, safeBody, body);
   const options = {
@@ -3044,11 +3072,15 @@ function assertCallbacks(options: { prompt?: unknown; openUrl?: unknown }): void
 
 /** `value`, awaited, or an `AbortError` the moment `signal` aborts, whichever is first. */
 function untilAborted<T>(value: T | PromiseLike<T>, signal: AbortSignal): Promise<T> {
+  const settled = Promise.resolve(value);
+  // Observed whatever happens: an opener that rejects after the abort -- or
+  // that aborted the sign-in itself -- must not leave a rejection unhandled.
+  settled.catch(() => undefined);
   if (signal.aborted) return Promise.reject(abortError());
   return new Promise<T>((resolve, reject) => {
     const aborted = (): void => reject(abortError());
     signal.addEventListener("abort", aborted, { once: true });
-    Promise.resolve(value).then(
+    settled.then(
       (result) => {
         signal.removeEventListener("abort", aborted);
         resolve(result);
@@ -3245,6 +3277,25 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
     }, ms);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/**
+ * A JSON body, parsed, with each secret taken out: a number that spells one
+ * before parsing can round it ({@link redactSecretsInJsonNumbers}), then every
+ * decoded string and key, and anything nested deeper than
+ * `MAX_REDACTED_JSON_DEPTH` dropped ({@link redactSecretsInJson}). Undefined
+ * when the body is not JSON.
+ */
+function scrubbedJsonBody(
+  text: string,
+  secrets: ReadonlyArray<string | undefined>,
+  scrub: RedactOptions = {},
+): { value: unknown } | undefined {
+  const raw = parseJsonBody(text);
+  if (!raw) return undefined;
+  const prepared = secrets.length ? redactSecretsInJsonNumbers(text, secrets, scrub) : text;
+  const parsed = prepared === text ? raw : (parseJsonBody(prepared) ?? raw);
+  return { value: redactSecretsInJson(parsed.value, secrets, scrub) };
 }
 
 /** The body parsed as JSON, boxed so a body that is `null` is still JSON; undefined when it is not JSON. */

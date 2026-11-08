@@ -1,4 +1,4 @@
-<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in to the final contract (Python #113 at 39e31d8): wording, empty device name. -->
+<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit on #110: the loopback guarantee covers browser sign-in links, not device codes; when prompt opens nothing. -->
 
 <p align="center">
   <picture>
@@ -91,7 +91,7 @@ await api.interactiveLogin(); // the browser here, or a device code where there 
 `interactiveLogin()` opens your browser at the Thalovant consent page and
 listens on `127.0.0.1` for the answer (OAuth with PKCE on a loopback redirect,
 RFC 8252). It always prints the address too, in case the browser does not
-open. The browser that approves hands the code to this computer's `127.0.0.1`, so a sign-in link or code sent to someone on another computer delivers nothing to the sender. That is all it promises: a forwarded callback port (`ssh -L`, a port-forwarding tool) or another user of this computer can still complete one.
+open. The browser that approves hands its code to this computer's `127.0.0.1`, so a browser sign-in link, or the code it brings back, sent to someone on another computer delivers nothing to the sender. That is all it promises: a forwarded callback port (`ssh -L`, a port-forwarding tool) or another user of this computer can still complete one. A device code (below) is different: whoever approves it, from any computer, signs this program in, which is why the browser comes first wherever there is one.
 
 On a machine that cannot show a browser, it prints a code to enter at
 `thalovant.com/activate` from any browser instead: over SSH, in CI, or on Linux
@@ -111,7 +111,7 @@ port, so in a browser bundle `interactiveLogin()` uses the device login and
 | `timeoutMs` | 300000 (browser), 900000 (device login) | How long to wait for an answer, in milliseconds; a negative or `NaN` one is refused (`RangeError`). |
 | `signal` | none | An `AbortSignal` that cancels the sign-in and closes the port. |
 | `openUrl` | the platform's opener (`open`, `xdg-open`, or `rundll32 url.dll,FileProtocolHandler` on Windows) | A function `(url: string) => unknown` that opens the page in its place. Anything but a function is refused (`TypeError`). |
-| `prompt` (`browserLogin()` only) | prints the address | A function `(url: string) => void` that shows the URL itself; the browser still opens. |
+| `prompt` (`browserLogin()` only) | prints the address | A function `(url: string) => void` that shows the URL in place of the print. It does not stop the browser from opening when `openBrowser` is `true`; with `openBrowser: false` nothing opens, and the sign-in waits until somebody opens the URL or `timeoutMs` runs out. |
 
 The result is a scoped API token that lasts 365 days and is listed in the
 dashboard. It counts against your plan, and `api.revokeApiToken()` revokes it.

@@ -1,6 +1,41 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in ported to the final contract (Python #113 at 39e31d8, digest 6dfb3bb31ac7): ten changes, 119 vectors.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit's second review of #110 (12 threads, 2 major): fixes and verification.
 
 # Maintenance report
+
+## 2026-11-08 — CodeRabbit's second review of #110 (12 threads)
+
+All twelve fixed, two of them major (N2, N6); none asked for a change to the cross-SDK contract (Python #113 at 39e31d8). The browser-login conformance record is unchanged and still equal to the reference's.
+
+| Thread | Finding | Outcome |
+| :--- | :--- | :--- |
+| N0 | README: distinguish device codes from browser sign-in links | Fixed (docs): the guarantee covers a browser sign-in link and the code it brings back; a device code approved anywhere signs the program in. README and FAQ. |
+| N1 | README: qualify when the browser opens | Fixed (docs): `prompt` does not open anything with `openBrowser: false`; the sign-in then waits for the URL or `timeoutMs`. |
+| N2 | Enforce the request deadline independently of fetch (major) | Fixed: `signInRequest()` races the request and the body read against the bound; a late answer's body is cancelled. Tests: a `fetch` that never settles (configuration, and auto falls back), and a body that never ends (the sign-in fails at the bound, the tab says so, the port closes). |
+| N3 | Scrub short codes in `completeNativeSignIn()` errors | Fixed: `request()` takes the scrub mode, and `completeNativeSignIn()` uses `everywhere`. Test with `ab1` echoed as `cab1n`. |
+| N4 | Redact numeric echoes before precision is lost | Fixed: `redactSecretsInJsonNumbers()` replaces a number token that spells a secret in the JSON text before parsing, leaving strings and escapes as written. Tests: a 20-digit code echoed as a number; the pass reads numbers only. |
+| N5 | Scrub decoded device-token errors | Fixed: the pending, denied and expired problems come from the decoded scrub; the kind is read from the body as sent. Test: all three, through `pollDeviceLogin()` and the loop behind `loginWithBrowser()`. The device-login vectors record unchanged results. |
+| N6 | Observe the opener promise on cancellation (major) | Fixed: `untilAborted()` attaches a handler before anything else. Test: an opener that aborts the sign-in and rejects; no unhandled rejection. |
+| N7 | No body for an oversized HEAD | Fixed: the two 400 paths read `HEAD` from the buffered head (`isHead`). Tests: a head over 16 KiB, and one with no request line. |
+| N8 | Wait for the accepted connection to drain | Fixed: the accepted answer resolves after its drain, and `close()` waits for it within its 1-second grace, as the reference waits for the accepted task. Test: a browser still sending when the sign-in ends gets its page without a reset. |
+| N9 | Redact secrets that begin with the marker | Fixed: only an occurrence that starts inside an existing marker is skipped. Test, and through `completeNativeSignIn()`. |
+| N10 | Redact overlapping secret matches | Fixed: every occurrence of every secret is found in the text as given, and overlapping ones are replaced by one marker. Test, and through `completeNativeSignIn()`. |
+| N11 | Deeply nested JSON errors | Fixed: the decoded scrub stops at 64 levels (`MAX_REDACTED_JSON_DEPTH`, deeper becomes `[redacted]`), always, so neither it nor `JSON.stringify` overflows; the error keeps its status. Test: 100,000 levels, with and without secrets. |
+
+### Verification
+
+| Command | Result |
+| :--- | :--- |
+| `npm test` | 970 tests: 969 passed, 1 skipped (live interop), 0 failed |
+| `node --test dist/test/browser-login.test.js` | 72 passed |
+| `npm run record-conformance` | unchanged; `browser-login-vectors.json` equal to the reference's at 39e31d8 (119 cases) |
+| `check-sdk-parity.py --consumer thalovant-node-sdk` against Python 39e31d8 and Python `main` | both verified |
+| `tsc --noEmit --noUnusedLocals --noUnusedParameters` | nothing in the changed files |
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (`claude-opus-5-5`), a Claude Code agent directed by the release lead.
+- **Actions Taken:** Fixed the twelve threads in `src/control.ts`, `src/redact.ts`, `src/loopback.ts`, README and FAQ, with regression tests in `test/browser-login.test.ts`; re-recorded conformance; refreshed only the changed files' evidence hashes after the suite passed; replied on and resolved each thread.
+- **Oversight:** No human review yet; the PR stays unmerged for the lead.
 
 ## 2026-11-08 — Browser sign-in on the final contract (Python #113 at 39e31d8)
 

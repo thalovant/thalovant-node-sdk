@@ -39,7 +39,7 @@ It is kept as the string the API sent. Every enumeration in `src/chat-apps.ts` i
 No. Once the consent page was shown, its outcome stands: `ThalovantDeviceLoginDeniedError` or `ThalovantDeviceLoginExpiredError` (both with no `statusCode`). Call `interactiveLogin()` again, or `{ method: "device" }`.
 
 **Why is a browser sign-in safer than a device code?**
-A device code can be read off one screen and typed in anywhere, so it can be passed to somebody else (device-code phishing). The browser that approves hands the code to this computer's `127.0.0.1`, so a sign-in link or code sent to someone on another computer delivers nothing to the sender. That is all it promises: a forwarded callback port (`ssh -L`, a port-forwarding tool) or another user of this computer can still complete one.
+A device code can be read off one screen and typed in anywhere, and whoever approves it, from any computer, signs the waiting program in, so it can be passed to somebody else (device-code phishing). With browser sign-in, the browser that approves hands its code to this computer's `127.0.0.1`, so a browser sign-in link, or the code it brings back, sent to someone on another computer delivers nothing to the sender. That is all it promises: a forwarded callback port (`ssh -L`, a port-forwarding tool) or another user of this computer can still complete one.
 
 **A browser tab says "This answer does not belong to the sign-in in progress." Did the sign-in fail?**
 No. That tab carried another sign-in's `state` (an old tab, another program) and was answered 400; the sign-in in progress keeps waiting for its own answer.
