@@ -1,4 +1,4 @@
-<!-- Last Edit: Codex - 2026-11-07 - Motive: Add the canonical Thalovant logo with light and dark theme support. -->
+<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit on #110: the loopback guarantee covers browser sign-in links, not device codes; when prompt opens nothing. -->
 
 <p align="center">
   <picture>
@@ -47,8 +47,9 @@ for (const hub of publicHubs.data as Array<{ id: string; slug: string; title: st
   console.log(hub.id, hub.slug, hub.title);
 }
 
-// Auth is required when creating a client identity.
-await api.login("you@example.com", "password");
+// Auth is required when creating a client identity. This opens the browser on
+// this machine, or prints a code to approve from any browser where there is none.
+await api.interactiveLogin();
 
 const result = await api.createClientIdentity("hub-id", {
   name: "node-demo-client",
@@ -76,6 +77,54 @@ redacts the identity, hub and client credentials, and `result.asObject({
 includeSecrets: true })` returns the real ones, so use it only to persist the
 identity and never log it. The `selectedEndpoint` it reports is the URL as the
 API returned it, so do not log an endpoint that embeds credentials.
+
+## Sign in
+
+```ts
+import { ThalovantControlPlane } from "@thalovant/sdk";
+
+const api = new ThalovantControlPlane();
+await api.interactiveLogin(); // the browser here, or a device code where there is none
+// { method: "browser" } or { method: "device" } forces one.
+```
+
+`interactiveLogin()` opens your browser at the Thalovant consent page and
+listens on `127.0.0.1` for the answer (OAuth with PKCE on a loopback redirect,
+RFC 8252). It always prints the address too, in case the browser does not
+open. The browser that approves hands its code to this computer's `127.0.0.1`, so a browser sign-in link, or the code it brings back, sent to someone on another computer delivers nothing to the sender. That is all it promises: a forwarded callback port (`ssh -L`, a port-forwarding tool) or another user of this computer can still complete one. A device code (below) is different: whoever approves it, from any computer, signs this program in, which is why the browser comes first wherever there is one.
+
+On a machine that cannot show a browser, it prints a code to enter at
+`thalovant.com/activate` from any browser instead: over SSH, in CI, or on Linux
+with neither `DISPLAY` nor `WAYLAND_DISPLAY`. It does the same against an API
+that does not offer browser sign-in yet. Once the browser has been opened, its
+outcome stands: a denied or expired browser sign-in never becomes a device
+login. `browserLogin()` and `loginWithBrowser()` (the device login) are the two
+methods on their own. Browser sign-in needs Node: a web page cannot listen on a
+port, so in a browser bundle `interactiveLogin()` uses the device login and
+`browserLogin()` refuses.
+
+| Option | Default | Meaning |
+| :--- | :--- | :--- |
+| `scopes` | the API's: `hubs:read`, `clients:write` | What the token may do. Any non-admin scope may be asked for. |
+| `deviceName` | `thalovant-node-sdk on <hostname>` | What the consent page and the token show (at most 120 characters). Only a missing name gets the default: `""` sends none, and keeps the hostname off the consent page (a device login then sends no `client_name`). |
+| `openBrowser` | `true` | `false` only prints the address. |
+| `timeoutMs` | 300000 (browser), 900000 (device login) | How long to wait for an answer, in milliseconds; a negative or `NaN` one is refused (`RangeError`). |
+| `signal` | none | An `AbortSignal` that cancels the sign-in and closes the port. |
+| `openUrl` | the platform's opener (`open`, `xdg-open`, or `rundll32 url.dll,FileProtocolHandler` on Windows) | A function `(url: string) => unknown` that opens the page in its place. Anything but a function is refused (`TypeError`). |
+| `prompt` (`browserLogin()` only) | prints the address | A function `(url: string) => void` that shows the URL in place of the print. It does not stop the browser from opening when `openBrowser` is `true`; with `openBrowser: false` nothing opens, and the sign-in waits until somebody opens the URL or `timeoutMs` runs out. |
+
+The result is a scoped API token that lasts 365 days and is listed in the
+dashboard. It counts against your plan, and `api.revokeApiToken()` revokes it.
+`interactiveLogin()` and `browserLogin()` resolve with the token answer, as
+`loginWithBrowser()` does, and keep `accessToken` and `tokenId` the same way.
+
+A denied sign-in rejects with `ThalovantDeviceLoginDeniedError`. A browser
+sign-in nobody answers within `timeoutMs` rejects with
+`ThalovantDeviceLoginExpiredError`, and a code the API will not exchange with a
+`ThalovantApiError` whose `detail` is `invalid_grant`. An API URL that is
+neither https nor loopback is refused before anything is asked or opened
+(`TypeError`). Accounts with a password can still use
+`api.login(email, password)`.
 
 ## Chat apps
 

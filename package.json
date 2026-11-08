@@ -1,6 +1,6 @@
 {
   "name": "@thalovant/sdk",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Node.js, browser, and TypeScript SDK for direct Thalovant hub data-plane clients and agents",
   "type": "module",
   "license": "MIT",
@@ -43,6 +43,7 @@
   },
   "browser": {
     "./dist/src/platform/node.js": "./dist/src/platform/browser.js",
+    "./dist/src/loopback.js": "./dist/src/loopback.browser.js",
     "./dist/src/transport-mqtt.js": "./dist/src/transport-mqtt.browser.js"
   },
   "scripts": {

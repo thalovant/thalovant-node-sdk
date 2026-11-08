@@ -1,19 +1,44 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Created with the chat apps surface (0.10.0).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in to the final contract (Python #113 at 39e31d8, digest 6dfb3bb31ac7).
 
 # Quick facts: @thalovant/sdk
 
 | Fact | Value |
 | :--- | :--- |
 | Package | `@thalovant/sdk` (npm) |
-| Version | 0.10.0 (`package.json`, `src/version.ts` `SDK_VERSION`) |
+| Version | 0.11.0 (`package.json`, `src/version.ts` `SDK_VERSION`) |
 | Licence | MIT |
-| Runtime | Node.js 20 or newer; browsers through the package's `browser` map |
+| Runtime | Node.js 20 or newer; browsers through the package's `browser` map (`platform/node.js`, `loopback.js` and `transport-mqtt.js` swapped for their browser twins) |
 | Entry point | `dist/src/index.js` (ESM), types `dist/src/index.d.ts` |
 | Source of the entry point | `src/index.ts` |
 | Tests | `npm test` (builds with `tsc`, then `node --test dist/test/*.test.js`) |
 | Package check | `npm pack --dry-run` |
-| Parity contract | `contracts/sdk-parity.json`, checked by the `SDK parity` workflow |
+| Parity contract | `contracts/sdk-parity.json`, checked by the `SDK parity` workflow; reference digests `57c7e71f6456` (current) and `6dfb3bb31ac7` (candidate, Python #113 at 39e31d8) |
+| Conformance record | `contracts/conformance-results.json`, written by `npm run record-conformance` |
 | Release | merge to `main`; `.github/workflows/auto-release.yml` publishes the version in `package.json` when no tag has it |
+
+## Sign-in surface (0.11.0)
+
+| Method on `ThalovantControlPlane` | Routes | Resolves with | Rejects with |
+| :--- | :--- | :--- | :--- |
+| `browserLogin({ scopes?, deviceName?, openBrowser?, timeoutMs?, prompt?, signal?, openUrl? })` | `GET /v1/auth/native/config`, then `POST {token_endpoint}` (`/v1/auth/native/token`) | the token answer (`JsonRecord`) | `ThalovantDeviceLoginDeniedError`, `ThalovantDeviceLoginExpiredError`, `ThalovantApiError`, `TypeError` (cleartext API), `AbortError` |
+| `interactiveLogin({ method?, scopes?, deviceName?, openBrowser?, timeoutMs?, signal?, openUrl? })` | browser sign-in, or device login (`POST /v1/auth/device/authorize`, `/v1/auth/device/token`) | the token answer | the chosen method's errors |
+| `loginWithBrowser(...)` (device login, unchanged) | `POST /v1/auth/device/authorize`, `/v1/auth/device/token` | the token answer | unchanged |
+
+| Fact | Value |
+| :--- | :--- |
+| Capability | `browser-login` (required), vectors `test/browser-login-vectors.json` (119 cases, sha256 `b0c73f808c4f...`) |
+| Method names | `LoginMethod = "auto" \| "browser" \| "device"`; default `auto` |
+| Redirect | `http://127.0.0.1:<port>/callback`, port bound as 0 on `127.0.0.1` only (`loopbackRedirectUri`) |
+| Client id | `SDK_CLIENT_ID = "thalovant-sdk"` (the configuration's `sdk_client_id` wins) |
+| Timeouts | browser 300000 ms (`DEFAULT_BROWSER_LOGIN_TIMEOUT_MS`), device login 900000 ms |
+| Device name | `thalovant-node-sdk on <hostname>` when none is given, at most 120 code points (`MAX_DEVICE_NAME_LENGTH`); `""` sends none |
+| Callback errors kept | RFC 6749's seven codes (`OAUTH_ERRORS` in `src/loopback.ts`); anything else is null |
+| Listener limits | head 16 KiB (`MAX_REQUEST_HEAD`), head read 10 s, drain 2 s / 1 MiB after every answer; the accepted tab waits for the end |
+| Request bound | configuration and exchange 10 s each; no request leaves the API's origin |
+| Browser rule | `canOpenBrowser(env?, platform?)`: never with `CI`, `SSH_CONNECTION`, `SSH_TTY`; macOS and Windows yes; elsewhere `DISPLAY` or `WAYLAND_DISPLAY` |
+| Pure pieces | `src/native-auth.ts`: `browserAuthorizationUrl`, `loopbackRedirectUri`, `newState`, `newVerifier`, `challengeFor`, `NativeSignInConfig.fromResponse`, `canOpenBrowser`, `defaultDeviceName` |
+| Listener | `src/loopback.ts` (`LoopbackListener`, `classifyRequest`, `responseBytes`; `node:net`, internal); `src/loopback.browser.ts` refuses in a browser bundle |
+| Tests | `test/browser-login-vectors.test.ts` (the vectors), `test/browser-login.test.ts` (edges), `test/browser-smoke.test.ts` (the browser bundle) |
 
 ## Chat apps surface (0.10.0)
 

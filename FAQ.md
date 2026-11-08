@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Created with chat apps questions (0.10.0).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Final browser sign-in contract: wording, empty device name, origin and endpoint rules.
 
 # FAQ
 
@@ -28,3 +28,39 @@ A running Telegram bridge owns the bot's update stream. Pause it, list the chats
 
 **What happens to a status reason the SDK does not know?**
 It is kept as the string the API sent. Every enumeration in `src/chat-apps.ts` is open.
+
+**How should a script or CLI sign somebody in?**
+`await api.interactiveLogin()`. On a machine with a browser it opens the Thalovant consent page and waits on `http://127.0.0.1:<port>/callback` (OAuth with PKCE, RFC 8252); elsewhere it prints a device code to approve from any browser. See the README's "Sign in" section.
+
+**Why did `interactiveLogin()` print a device code instead of opening my browser?**
+`auto` uses the browser only when `canOpenBrowser()` is true and `GET /v1/auth/native/config` answers with a usable configuration. It is false when `CI`, `SSH_CONNECTION` or `SSH_TTY` is set (`CI=false` counts), and on Linux or a BSD without `DISPLAY` or `WAYLAND_DISPLAY`. An API without browser sign-in answers the configuration 404. Pass `{ method: "browser" }` to force the browser.
+
+**Can a denied or timed-out browser sign-in fall back to a device code?**
+No. Once the consent page was shown, its outcome stands: `ThalovantDeviceLoginDeniedError` or `ThalovantDeviceLoginExpiredError` (both with no `statusCode`). Call `interactiveLogin()` again, or `{ method: "device" }`.
+
+**Why is a browser sign-in safer than a device code?**
+A device code can be read off one screen and typed in anywhere, and whoever approves it, from any computer, signs the waiting program in, so it can be passed to somebody else (device-code phishing). With browser sign-in, the browser that approves hands its code to this computer's `127.0.0.1`, so a browser sign-in link, or the code it brings back, sent to someone on another computer delivers nothing to the sender. That is all it promises: a forwarded callback port (`ssh -L`, a port-forwarding tool) or another user of this computer can still complete one.
+
+**A browser tab says "This answer does not belong to the sign-in in progress." Did the sign-in fail?**
+No. That tab carried another sign-in's `state` (an old tab, another program) and was answered 400; the sign-in in progress keeps waiting for its own answer.
+
+**Can I use `browserLogin()` in a web page?**
+No: a page cannot listen on a port. In a browser bundle `browserLogin()` refuses, and `interactiveLogin()` uses the device login. Web apps use their own redirect with `beginNativeSignIn()` and `completeNativeSignIn()`.
+
+**How do I show the sign-in URL in my own UI, or cancel the wait?**
+`browserLogin({ prompt: (url) => show(url), openBrowser: false })` shows it without opening anything, and `signal` (an `AbortSignal`) cancels either method and closes the port.
+
+**Why does `browserLogin()` throw a `TypeError` about cleartext?**
+The API URL is neither https nor a loopback address. The SDK refuses before asking or opening anything, so a code and its verifier never cross the network in cleartext. `completeNativeSignIn()` refuses the same way.
+
+**How do I sign out after a browser sign-in?**
+`await api.revokeApiToken()`. The token is kept exactly as a device login's (`accessToken`, `tokenId`), and revoking it twice sends nothing the second time.
+
+**How do I keep the hostname off the consent page?**
+Pass `deviceName: ""`. Only a missing name (`undefined` or `null`) gets the default `thalovant-node-sdk on <hostname>`; an empty one is left out of the URL, and a device login then sends no `client_name`.
+
+**Why does `interactiveLogin()` use a device login although the API offers browser sign-in?**
+The configuration was unusable. A `token_endpoint` with a colon anywhere, or a `%` not followed by two hex digits, and an `authorization_endpoint` on port 0 or with a host that is not an IP address or an ASCII hostname (`xn--` for an international name; no `_`, `%` or empty label), all count as unusable. No request ever leaves the API's own origin.
+
+**Why does a callback's `error` sometimes not show in the error?**
+Only RFC 6749's seven codes (`invalid_request`, `unauthorized_client`, `access_denied`, `unsupported_response_type`, `invalid_scope`, `server_error`, `temporarily_unavailable`) are kept. Anything else was chosen by whoever opened the tab, and could be the state or a code.

@@ -11,6 +11,7 @@ Rules:
 - Do not create a release for internal platform changes with no Node SDK impact; record `no SDK impact` in the coordinated change instead.
 - Validate package contents and an install from npm before declaring a release complete.
 - Update affected `docs.thalovant.com` SDK pages in the same release train.
+- Sign-in: keep device login (`loginWithBrowser`, `beginDeviceLogin`, `pollDeviceLogin`) unchanged; `interactiveLogin()` prefers browser sign-in and falls back to device login only before the browser is opened. Never log or throw the authorization code, the PKCE verifier, the state or a token. `test/browser-login-vectors.json` is the shared contract (the Python SDK's `docs/browser-login-porting.md`); the loopback listener (`src/loopback.ts`) is Node-only and its browser twin (`src/loopback.browser.ts`) must stay free of Node builtins.
 
 Validate with `npm ci`, `npm test`, and `npm pack --dry-run`. A published release also requires a clean-project install of `@thalovant/sdk@<version>` from npm and an ESM import smoke test.
 
