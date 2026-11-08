@@ -1,6 +1,44 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Chat apps (0.10.0), merged with the usualForm and connect-default follow-up entries from main.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Re-check every CodeRabbit review-body item on merged PRs #31-#89 against main 9dc7a1d, after 0.10.0.
 
 # Maintenance report
+
+## 2026-11-08 — CodeRabbit review-body items re-checked (#31-#89)
+
+All 22 review-body items on twelve merged PRs were checked again against `main` (9dc7a1d, after 0.10.0). This covers the eighteen items on #31-#81 from the 2026-11-03 sweep, plus #87 (one item) and #89 (three items), which were answered on their PRs in September but were not in this report. None is still a defect, so nothing under `src/` changes.
+
+| PR | Item | Outcome on 9dc7a1d |
+| :--- | :--- | :--- |
+| #31 | `detailString` stops at the first non-null field | Fixed in 07a7c93 (#56); unchanged |
+| #31 | Cover token-shaped key names | Fixed in the #31 squash (6bfed4d); `src/redact.ts` `SECRET_KEY_NAMES` unchanged |
+| #31 | `@internal` + `stripInternal` could leave dangling types | Not a defect, checked again on 0.10.0. Its chat apps module adds twelve `@internal` declarations. The packed 0.10.0 tarball type-checks in a clean consumer with `skipLibCheck: false`, imports as ESM, and its typings name none of the internal declarations |
+| #31 | `deepEqual` in the `includeSecrets` checks | Fixed in 9eb0e58 (#106) |
+| #36 | Synthetic test password | Declined, as before: an in-process mock transport, not a credential |
+| #39, #64, #68, #81 | Run the release validation | Not applicable: `ci.yml` runs `npm ci`, `npm test` and `npm pack --dry-run` on every PR, and `publish.yml` smoke-tests the published package |
+| #39 | `requestReply` in the public API | Fixed in the #39 squash (acab13d); still absent from the 0.10.0 ESM namespace and typings |
+| #41 | README documents deleted crypto helpers | No longer applies: the README has been a landing page since #92 (f85fa0e) |
+| #41 | `client.connect()` caps the handshake at 6000 ms | Not a defect: 6,000 ms is the documented client default and the PSK is WASM-derived and cached (#44); the 0.3.0 CHANGELOG line was corrected in 9eb0e58 (#106) |
+| #41 | Async PSK derivation (2 items) | Fixed in 8223603 (#44): `pskFor` awaits `derivePskAsync` |
+| #41 | A non-object pin file drops every pin | Fixed in 07a7c93 (#56): `readPins` throws `ThalovantIdentityError` |
+| #46 | `/disconnect` outlives the connect deadline | Fixed in 0358a0b (#47): `disconnectHttp(deadline)` |
+| #56 | Smoke-test the published package | Fixed in the #56 squash (07a7c93) |
+| #59 | Document `listHubSkillHistory` | No longer applies to the README; the docs site's Node page lists it |
+| #87 | README: "about ninety seconds" vs the 180000 ms default | Not valid when raised: ninety seconds is how long admission usually takes, and the timeout is deliberately twice that. The README is now a landing page, so the line is gone |
+| #89 | A failed legacy-state adoption was swallowed | Fixed before merge (b4e7c8d, in the 59d57bb squash): `startNoiseHandshake` lets the adoption error propagate (`test/noise-key-folder.test.ts`) |
+| #89 | `handshakeDoneHere` set after message 3 was sent | Fixed before merge (b4e7c8d): set as soon as XX message 3 exists (`test/link-carrier-vectors.test.ts`) |
+| #89 | `\u`-escaped JSON syntax characters in secret scrubbing | Declined, with an updated reason. Since 0.10.0 the scrubbed values include user-entered bridge secrets, which may hold `"` or `\`. Those are covered: the API writes them `\"` and `\\`, the spelling `JSON.stringify` gives, and a check with Python's `json.dumps` bodies (both `ensure_ascii` modes) shows them scrubbed. Only an encoder that `\u`-escapes ASCII (`"`) gets past it, and the API does not write one. Recorded as a limitation in AUDIT.md, with the complete fix in SUGGESTIONS.md #6 |
+
+### Verification
+
+- `npm ci && npm test`: 748 tests, 747 passed, 1 skipped, 0 failed, on 9dc7a1d.
+- `npm pack`, then a clean consumer project with `skipLibCheck: false`: `tsc` passes; `import("@thalovant/sdk")` loads 202 exports, without `requestReply` or `bridgeCreateBody`.
+- The reference's `scripts/check-sdk-parity.py --consumer thalovant-node-sdk` passes.
+- This change touches only `AUDIT.md`, `SUGGESTIONS.md` and this report. None of them is a release path, so `auto-release.yml` cuts no release.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (`claude-opus-5-5`).
+- **Actions Taken:** Read every review body in full and checked each item against current code. Re-ran the packed-typings check on 0.10.0 and the scrubbing check on JSON bodies. Wrote this entry, the AUDIT.md limitation and SUGGESTIONS.md #6. Posted a corrected reason on #89.
+- **Oversight:** Run by an agent on the repository owner's request to close out every CodeRabbit finding. Merged through the normal CI gates. No release was cut.
 
 ## 2026-11-03: chat apps (0.10.0)
 

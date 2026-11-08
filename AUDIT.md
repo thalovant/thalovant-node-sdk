@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Chat apps audit notes (0.10.0), merged with the usualForm and connect-default follow-ups from main.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Record the secret-scrubbing spelling limitation (CodeRabbit on #89) as open, and re-check the published typings on 0.10.0.
 
 # Audit
 
@@ -25,10 +25,10 @@ Known issues, technical debt and review decisions, each tied to the code and the
 ## Notes
 
 - **Two connect defaults, one documented** (2026-11-03). `ThalovantClient.connect()` and `close()` budget 6,000 ms ([`src/client.ts`](src/client.ts) `normalizeConnectTimeout`), as the docs site says; each transport's own `connect()` defaults to 20,000 ms ([`src/transport-core.ts`](src/transport-core.ts), [`src/transport-mqtt.ts`](src/transport-mqtt.ts)) but the client always passes its own budget. The 0.3.0 CHANGELOG entry had claimed 20 s for `connect()`; corrected under Unreleased.
-- **Published typings are not checked in CI.** `stripInternal` removes `@internal` declarations from the emitted `.d.ts`; a clean-consumer type-check with `skipLibCheck: false` passed on 2026-11-03, but `publish.yml` only smoke-tests the ESM import.
+- **Published typings are not checked in CI.** `stripInternal` removes `@internal` declarations from the emitted `.d.ts`; a clean-consumer type-check with `skipLibCheck: false` passed on 2026-11-03 and again on the 0.10.0 tarball on 2026-11-08, but `publish.yml` only smoke-tests the ESM import.
 
 - Error bodies are scrubbed of SDK-sent secrets, in their JSON-escaped spellings too, before they are parsed: `redactSecretsInText` in [`src/redact.ts`](src/redact.ts), applied by `apiError` in [`src/control.ts`](src/control.ts). Tests: [`test/home-link.test.ts`](test/home-link.test.ts).
 
 ## Open
 
-- None recorded.
+- **Secret scrubbing matches spellings, not decoded values** (recorded 2026-11-08, CodeRabbit on #89). `redactSecretsInText` ([`src/redact.ts`](src/redact.ts), `jsonSpellings`) replaces a secret in the error body before `apiError` ([`src/control.ts`](src/control.ts)) parses it. It knows the raw spelling, the `JSON.stringify` spelling and the `\u`-escaped non-ASCII spellings. It does not know an encoder that `\u`-escapes ASCII (`"` for `"`), nor `\/` for `/`. A body spelt that way decodes the secret back into `problem` and the message. The API writes `\"`, `\\` and raw `/`, so no answer it gives gets past this. Since 0.10.0 the scrubbed values include user-entered bridge secrets, which may hold any character. Scrubbing the parsed strings after `JSON.parse` would cover every spelling at once (SUGGESTIONS.md #6). It is a `src/` change, so it waits for a release. Tests: [`test/home-link.test.ts`](test/home-link.test.ts) ("a secret the SDK sent is redacted in its JSON-escaped spellings too").

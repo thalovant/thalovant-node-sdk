@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Created with suggestions from the chat apps change (0.10.0).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Add #6, scrubbing secrets from the parsed error body (CodeRabbit on #89).
 
 # Suggestions
 
@@ -31,3 +31,9 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Created with suggestions from 
 - **Problem:** `GET /v1/bridges` answers at most 500 bridges and has no cursor (AUDIT.md #9).
 - **Proposal:** once the API adds a cursor, follow it in `listBridges()` the way `listHubs()` takes `cursor`.
 - **Impact:** low today; matters for platform administrators and large tenants.
+
+## 6. Scrub secrets from the parsed error body as well
+
+- **Problem:** `redactSecretsInText` (`src/redact.ts`) replaces a secret's known JSON spellings before `apiError` (`src/control.ts`) parses the body. An encoder that `\u`-escapes ASCII (`"`) or writes `\/` would decode the secret back into `problem` and the message (AUDIT.md, Open). The API does not write those spellings. Since 0.10.0, though, user-entered bridge secrets take this path.
+- **Proposal:** after `JSON.parse`, walk the parsed value and replace each secret in every string, keys included, then build the message from that. Keep the text pass for bodies that are not JSON. Add a `"` case to `test/home-link.test.ts`. Port it to the other SDKs in the same release train.
+- **Impact:** low today. It makes the "scrubbed from the error" promise independent of how a body is encoded.
