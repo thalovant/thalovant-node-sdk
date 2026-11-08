@@ -28,9 +28,11 @@
  * `loopbackRedirectUri()` the redirect it comes back to, `newState()` the
  * value that ties the two together, `NativeSignInConfig` reads where the API
  * says to send the browser, and `canOpenBrowser()` says whether this machine
- * has a browser to send. A loopback redirect cannot be relayed: the browser
- * that approves hands the code to its own computer, never to whoever sent the
- * link.
+ * has a browser to send. The browser that approves hands the code to its own
+ * computer's `127.0.0.1`, so a sign-in link sent to somebody on another
+ * computer delivers nothing to the sender. That is all it promises: a
+ * forwarded callback port (`ssh -L`, a port-forwarding tool) or another user of
+ * the same computer can still complete a sign-in.
  */
 import { ThalovantApiError } from "./errors.js";
 import { hostName } from "./loopback.js";
@@ -455,10 +457,40 @@ function hasSpaceOrControl(value: string): boolean {
   return false;
 }
 
+/** One DNS label as a URL host carries it: letters, digits and inner hyphens. */
+const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+/** A dotted-quad IPv4 address, each part 0-255 without a leading zero, as Python's `ipaddress` reads one. */
+const IPV4 = /^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$/;
+
 /**
- * https, or http on a loopback host while developing; a host; a port a
- * browser can open; no credentials, query (not even a bare `?`), fragment,
- * backslash, whitespace or control characters.
+ * Whether `host` (lowercased, brackets off) names something a browser can
+ * reach: an IP address -- IPv6 only between brackets, IPv4 whenever the last
+ * label is a number, as a browser reads it -- or a DNS name of ASCII labels of
+ * letters, digits and inner hyphens (an international name in its `xn--`
+ * form), at most 253 characters. `%`, `_`, an empty label and anything else
+ * that will not parse to a hostname make the address unusable.
+ */
+function realHost(host: string, bracketed: boolean): boolean {
+  if (bracketed) {
+    if (!/^[0-9a-f:.]+$/.test(host)) return false;
+    try {
+      return new URL(`http://[${host}]/`).hostname !== "";
+    } catch {
+      return false;
+    }
+  }
+  if (IPV4.test(host)) return true;
+  const labels = host.split(".");
+  // Numeric like an IPv4 address, and not one.
+  if (/^[0-9]+$/.test(labels[labels.length - 1])) return false;
+  return host.length <= 253 && labels.every((label) => HOST_LABEL.test(label));
+}
+
+/**
+ * https, or http on a loopback host while developing; a host that parses to a
+ * real hostname or IP address; a port a browser can open (not 0, not above
+ * 65535); no credentials, query (not even a bare `?`), fragment, backslash,
+ * whitespace or control characters.
  */
 function usableAuthorizationEndpoint(value: unknown): value is string {
   if (typeof value !== "string" || !value || hasSpaceOrControl(value)) return false;
@@ -486,7 +518,7 @@ function usableAuthorizationEndpoint(value: unknown): value is string {
   // Port 0 is no port a browser can open, and neither is one above 65535.
   if (port && (!/^[0-9]{1,5}$/.test(port) || Number(port) === 0 || Number(port) > 65535)) return false;
   host = host.toLowerCase();
-  if (!host) return false;
+  if (!host || !realHost(host, authority.startsWith("["))) return false;
   // What a browser would make of it, too: a malformed IPv6 literal, say.
   try {
     new URL(value);
@@ -496,10 +528,21 @@ function usableAuthorizationEndpoint(value: unknown): value is string {
   return scheme === "https" || (scheme === "http" && (host === "localhost" || host === "127.0.0.1" || host === "::1"));
 }
 
-/** A path on the API: one leading slash, no query, fragment, backslash, whitespace or control character. */
+/**
+ * A path on the API: one leading slash, every `%` followed by two hex digits,
+ * and no colon, query, fragment, backslash, whitespace or control character.
+ *
+ * No colon, because a URL joiner can read what follows the slash as a URL of
+ * its own: `/https://collector.example/token` and `/collector.example:443/token`
+ * both leave the API's origin once the slash is taken off, and the exchange
+ * carries the code and the verifier. A broken escape (`/v1/%zz`) cannot be
+ * sent as written; better found out now, while a device login can still stand
+ * in, than after somebody approved.
+ */
 function usableTokenEndpoint(value: unknown): value is string {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return false;
-  return !/[?#\\]/.test(value) && !hasSpaceOrControl(value);
+  if (/%(?![0-9A-Fa-f]{2})/.test(value)) return false;
+  return !/[:?#\\]/.test(value) && !hasSpaceOrControl(value);
 }
 
 /**
@@ -537,8 +580,10 @@ export class NativeSignInConfig {
    * API did not refuse anything -- when the answer is not a JSON object; when
    * `authorization_endpoint` is not https (or http on a loopback host), has
    * no host, carries credentials, a query or a fragment, whitespace or a
-   * control character, or a port no browser can open; when `token_endpoint`
-   * is not a path on the API; when `sdk_client_id` is not 1-64 characters of
+   * control character, a port no browser can open (0, or above 65535), or a
+   * host that does not parse to a real hostname or IP address; when
+   * `token_endpoint` is not a path on the API (a colon anywhere, or a `%` not
+   * followed by two hex digits, included); when `sdk_client_id` is not 1-64 characters of
    * `A-Z a-z 0-9 . _ -`; or when `code_challenge_methods_supported` is not a
    * list holding `S256`. Other members are ignored, `loopback_redirect_uri`
    * included: the redirect is always {@link loopbackRedirectUri}'s.

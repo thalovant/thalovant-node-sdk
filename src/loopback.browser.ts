@@ -19,8 +19,8 @@ export interface LoopbackCallback {
 
 /** @see `./loopback.js` */
 export interface LoopbackListenerOptions {
-  answerTimeoutMs?: number;
   requestReadTimeoutMs?: number;
+  drainTimeoutMs?: number;
 }
 
 /**

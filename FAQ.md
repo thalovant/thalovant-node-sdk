@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in and interactiveLogin() questions (0.11.0).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Final browser sign-in contract: wording, empty device name, origin and endpoint rules.
 
 # FAQ
 
@@ -39,7 +39,7 @@ It is kept as the string the API sent. Every enumeration in `src/chat-apps.ts` i
 No. Once the consent page was shown, its outcome stands: `ThalovantDeviceLoginDeniedError` or `ThalovantDeviceLoginExpiredError` (both with no `statusCode`). Call `interactiveLogin()` again, or `{ method: "device" }`.
 
 **Why is a browser sign-in safer than a device code?**
-A device code can be read off one screen and typed in anywhere, so it can be relayed to somebody else (device-code phishing). A loopback redirect cannot: the browser that approves delivers the code to its own computer.
+A device code can be read off one screen and typed in anywhere, so it can be passed to somebody else (device-code phishing). The browser that approves hands the code to this computer's `127.0.0.1`, so a sign-in link or code sent to someone on another computer delivers nothing to the sender. That is all it promises: a forwarded callback port (`ssh -L`, a port-forwarding tool) or another user of this computer can still complete one.
 
 **A browser tab says "This answer does not belong to the sign-in in progress." Did the sign-in fail?**
 No. That tab carried another sign-in's `state` (an old tab, another program) and was answered 400; the sign-in in progress keeps waiting for its own answer.
@@ -55,3 +55,12 @@ The API URL is neither https nor a loopback address. The SDK refuses before aski
 
 **How do I sign out after a browser sign-in?**
 `await api.revokeApiToken()`. The token is kept exactly as a device login's (`accessToken`, `tokenId`), and revoking it twice sends nothing the second time.
+
+**How do I keep the hostname off the consent page?**
+Pass `deviceName: ""`. Only a missing name (`undefined` or `null`) gets the default `thalovant-node-sdk on <hostname>`; an empty one is left out of the URL, and a device login then sends no `client_name`.
+
+**Why does `interactiveLogin()` use a device login although the API offers browser sign-in?**
+The configuration was unusable. A `token_endpoint` with a colon anywhere, or a `%` not followed by two hex digits, and an `authorization_endpoint` on port 0 or with a host that is not an IP address or an ASCII hostname (`xn--` for an international name; no `_`, `%` or empty label), all count as unusable. No request ever leaves the API's own origin.
+
+**Why does a callback's `error` sometimes not show in the error?**
+Only RFC 6749's seven codes (`invalid_request`, `unauthorized_client`, `access_denied`, `unsupported_response_type`, `invalid_scope`, `server_error`, `temporarily_unavailable`) are kept. Anything else was chosen by whoever opened the tab, and could be the state or a code.

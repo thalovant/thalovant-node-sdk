@@ -9,7 +9,8 @@
  * a stray tab -- an old attempt's, another program's, a page probing local
  * ports -- must not end a real sign-in. The first callback with the right
  * `state` is accepted, the port stops listening, and its tab is answered once
- * the caller says how the sign-in ended.
+ * the caller says how the sign-in ended. Every answered connection is drained
+ * before it closes, so that a reset never takes the answer with it.
  *
  * Everything that decides what a request means is in {@link classifyRequest},
  * which touches no socket, so it can be checked against the shared vectors on
@@ -54,10 +55,30 @@ const REASONS: Readonly<Record<number, string>> = { 200: "OK", 400: "Bad Request
 export const MAX_REQUEST_HEAD = 16 * 1024;
 /** How long one connection may take to send its request head. */
 export const REQUEST_READ_TIMEOUT_MS = 10_000;
-/** How long an accepted tab waits for its page while the code is exchanged. */
-export const ANSWER_TIMEOUT_MS = 60_000;
+/**
+ * The `error` values RFC 6749 section 4.1.2.1 defines. Only these are kept
+ * from a callback: anything else is a value somebody else chose, and it could
+ * be the state or a code, which must never reach an error message.
+ */
+export const OAUTH_ERRORS: ReadonlySet<string> = new Set([
+  "invalid_request",
+  "unauthorized_client",
+  "access_denied",
+  "unsupported_response_type",
+  "invalid_scope",
+  "server_error",
+  "temporarily_unavailable",
+]);
 /** How long closing waits for an accepted tab's page to be written. */
 export const CLOSE_GRACE_MS = 1_000;
+/**
+ * After an answer, how long and how much of what the browser still sends is
+ * read and dropped before the connection closes. A socket closed with bytes
+ * unread answers them with a reset, and macOS then throws away the answer the
+ * browser had not read yet -- an oversized head's 400, say.
+ */
+export const DRAIN_TIMEOUT_MS = 2_000;
+export const DRAIN_LIMIT = 1024 * 1024;
 /** The longest a single timer may be armed for; a longer wait re-arms. */
 const MAX_TIMER_MS = 2_147_483_647;
 
@@ -66,7 +87,8 @@ const MAX_TIMER_MS = 2_147_483_647;
  *
  * `code` when the person approved; `denied` for `error=access_denied`;
  * `failed` for any other `error`, or for neither an error nor exactly one
- * non-empty code. `error` is the `error` the page sent, when it sent one.
+ * non-empty code. `error` is the `error` the page sent when it is one of
+ * {@link OAUTH_ERRORS}, and null otherwise.
  */
 export interface LoopbackCallback {
   readonly outcome: "code" | "denied" | "failed";
@@ -76,10 +98,10 @@ export interface LoopbackCallback {
 
 /** Options for {@link LoopbackListener}; the defaults are the contract's. */
 export interface LoopbackListenerOptions {
-  /** How long an accepted tab waits for its page. Default {@link ANSWER_TIMEOUT_MS}. */
-  answerTimeoutMs?: number;
   /** How long a connection may take to send its request head. Default {@link REQUEST_READ_TIMEOUT_MS}. */
   requestReadTimeoutMs?: number;
+  /** How long an answered connection is drained before it closes. Default {@link DRAIN_TIMEOUT_MS}. */
+  drainTimeoutMs?: number;
 }
 
 /**
@@ -145,7 +167,8 @@ function sameState(given: string, state: string): boolean {
  * when `state` is missing, given more than once, or not this sign-in's
  * (compared in constant time, as bytes); otherwise `[200, callback]`. An
  * `error` wins over a `code` sent with it: a refusal that also carries a code
- * is still a refusal. Query values are decoded once, as a form decodes them.
+ * is still a refusal, and an `error` outside {@link OAUTH_ERRORS} is not kept.
+ * Query values are decoded once, as a form decodes them.
  */
 export function classifyRequest(method: string, target: string, state: string): [number, LoopbackCallback | null] {
   const mark = target.indexOf("?");
@@ -165,7 +188,7 @@ export function classifyRequest(method: string, target: string, state: string): 
     if (errors.length === 1 && errors[0] === "access_denied") {
       return [200, { outcome: "denied", error: "access_denied" }];
     }
-    return [200, { outcome: "failed", error: errors[0] || null }];
+    return [200, { outcome: "failed", error: OAUTH_ERRORS.has(errors[0]) ? errors[0] : null }];
   }
   const codes = values.get("code") ?? [];
   if (codes.length === 1 && codes[0]) return [200, { outcome: "code", code: codes[0] }];
@@ -182,13 +205,19 @@ function page(text: string): Buffer {
   );
 }
 
-/** A whole HTTP/1.1 answer: the status, {@link PAGE_HEADERS}, and a small page. */
-export function responseBytes(status: number, text: string): Buffer {
+/**
+ * A whole HTTP/1.1 answer: the status, {@link PAGE_HEADERS}, and a small page.
+ *
+ * The answer to a `HEAD` (`head: true`) carries no body (RFC 9110 section
+ * 9.3.2); its `Content-Length` is the length the page would have had.
+ */
+export function responseBytes(status: number, text: string, options: { head?: boolean } = {}): Buffer {
   const body = page(text);
   const lines = [`HTTP/1.1 ${status} ${REASONS[status] ?? "Error"}`];
   for (const [name, value] of PAGE_HEADERS) lines.push(`${name}: ${value}`);
   lines.push(`Content-Length: ${body.length}`, "Connection: close", "", "");
-  return Buffer.concat([Buffer.from(lines.join("\r\n"), "latin1"), body]);
+  const headers = Buffer.from(lines.join("\r\n"), "latin1");
+  return options.head ? headers : Buffer.concat([headers, body]);
 }
 
 /** The method and target of a request head, or null when it has no request line. */
@@ -231,8 +260,8 @@ async function within<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
  */
 export class LoopbackListener {
   private readonly state: string;
-  private readonly answerTimeoutMs: number;
   private readonly requestReadTimeoutMs: number;
+  private readonly drainTimeoutMs: number;
   private server?: Server;
   private serverClosed?: Promise<void>;
   private started = false;
@@ -246,8 +275,13 @@ export class LoopbackListener {
 
   constructor(state: string, options: LoopbackListenerOptions = {}) {
     this.state = state;
-    this.answerTimeoutMs = options.answerTimeoutMs ?? ANSWER_TIMEOUT_MS;
     this.requestReadTimeoutMs = options.requestReadTimeoutMs ?? REQUEST_READ_TIMEOUT_MS;
+    this.drainTimeoutMs = options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS;
+  }
+
+  /** How many connections are still open: answered ones close once drained. */
+  get openConnections(): number {
+    return this.sockets.size;
   }
 
   /** The address the listener is bound to while it listens. */
@@ -374,9 +408,9 @@ export class LoopbackListener {
       if (end === -1 && head.length - 3 <= MAX_REQUEST_HEAD) return;
       socket.removeListener("data", read);
       clearTimeout(timer);
-      // Whatever else the connection sends is read and dropped, so that
-      // closing it never resets it under its answer.
-      socket.on("data", () => undefined);
+      // Nothing more is read until the answer is out; then the rest is
+      // drained (see reply()).
+      socket.pause();
       if (end === -1 || end > MAX_REQUEST_HEAD) {
         void this.reply(socket, 400, WRONG_STATE_TEXT);
         return;
@@ -405,7 +439,7 @@ export class LoopbackListener {
       // A second answer with the right state, after the first was accepted
       // (or after the sign-in ended), is not this sign-in's any more either.
       if (callback) status = 400;
-      void this.reply(socket, status, status === 404 ? NOT_FOUND_TEXT : WRONG_STATE_TEXT);
+      void this.reply(socket, status, status === 404 ? NOT_FOUND_TEXT : WRONG_STATE_TEXT, request.method === "HEAD");
       return;
     }
     this.accepted = callback;
@@ -416,22 +450,50 @@ export class LoopbackListener {
     this.acceptedAnswer = this.answerAccepted(socket);
   }
 
-  /** The accepted tab's page, once the sign-in has ended or {@link answerTimeoutMs} has passed. */
+  /**
+   * The accepted tab's page, once the sign-in has ended, however long the
+   * exchange takes: the page says how it ended, so it cannot be written before
+   * it has. {@link close} always answers, so this never outlives the sign-in.
+   */
   private async answerAccepted(socket: Socket): Promise<void> {
-    const signedIn = (await within(this.answered(), this.answerTimeoutMs)) ?? false;
+    const signedIn = await this.answered();
     await this.reply(socket, 200, signedIn ? SIGNED_IN_TEXT : NOT_COMPLETED_TEXT);
   }
 
-  /** Write one whole answer and close the connection; resolves once written, or once the connection is gone. */
-  private reply(socket: Socket, status: number, text: string): Promise<void> {
+  /**
+   * Write one whole answer, then let the browser finish before the connection
+   * closes: the write side is shut (the browser sees the answer end), and what
+   * the browser still sends -- the rest of an oversized head, a body nobody
+   * asked for -- is read and dropped until it closes its side, for at most
+   * {@link DRAIN_TIMEOUT_MS} and {@link DRAIN_LIMIT} bytes. Closing with bytes
+   * unread would reset the connection instead. Resolves once the answer is
+   * written, or once the connection is gone.
+   */
+  private reply(socket: Socket, status: number, text: string, head = false): Promise<void> {
     return new Promise((resolve) => {
       if (socket.destroyed || !socket.writable) {
         resolve();
         return;
       }
       socket.once("close", () => resolve());
-      socket.end(responseBytes(status, text), () => resolve());
+      socket.end(responseBytes(status, text, { head }), () => {
+        resolve();
+        this.drain(socket);
+      });
     });
+  }
+
+  /** Read and drop what is left, then close: at most {@link drainTimeoutMs} and {@link DRAIN_LIMIT} bytes. */
+  private drain(socket: Socket): void {
+    if (socket.destroyed) return;
+    let drained = 0;
+    const timer = setTimeout(() => socket.destroy(), Math.min(this.drainTimeoutMs, MAX_TIMER_MS));
+    socket.once("close", () => clearTimeout(timer));
+    socket.on("data", (chunk: Buffer) => {
+      drained += chunk.length;
+      if (drained > DRAIN_LIMIT) socket.destroy();
+    });
+    socket.resume();
   }
 }
 

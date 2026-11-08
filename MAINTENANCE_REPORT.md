@@ -1,6 +1,41 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit review of #110 (14 threads): fixes, replies, verification and transparency report.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in ported to the final contract (Python #113 at 39e31d8, digest 6dfb3bb31ac7): ten changes, 119 vectors.
 
 # Maintenance report
+
+## 2026-11-08 — Browser sign-in on the final contract (Python #113 at 39e31d8)
+
+The producer's final head is 39e31d8, reference digest `6dfb3bb31ac7590591febef1c4d8372984ca6cdad4700381f869db30c38452df`. `test/browser-login-vectors.json` is re-vendored from it byte for byte (sha256 `b0c73f808c4f26328c27dd4d04eebfbbc3e7c0c81b8d63a666f63737d0259e73`, 119 cases). `contracts/sdk-parity.json` keeps `57c7e71f6456` and replaces the interim `49744ee385bf` with `6dfb3bb31ac7`; the interims 49744ee, 50af673, 0bb293e and 1374f68 were never published.
+
+| # | Change | Here | Tests |
+| :--- | :--- | :--- | :--- |
+| 1 | No control-plane request leaves the API's origin (scheme, host, port); refused with no status | `send()` resolves the path against the API's URL and refuses a different origin ("Refusing a request off the Thalovant API's origin."). The rewrite of a scheme-like path into a path, from the review round, is removed: the contract refuses it. | vector `sign_ins/a token endpoint that would leave the API is refused before anything is opened`; "no request leaves the API's origin" (the reference's four paths, through `request()` and a body-carrying `send()`, a token on the plane, nothing reaching either server); "the exchange never leaves the API's origin, even past the configuration's own check" |
+| 2 | `token_endpoint`: no colon anywhere; every `%` followed by two hex digits | `usableTokenEndpoint()` in `src/native-auth.ts` | the five `config/a token endpoint ...` vectors; extra cases in "a token endpoint that is not a path on the API ..." (`/v1/a:b`, `/v1/%7`, `/v1/%7G`, `/v1/%`, `/v1/%2Fx/%74oken` usable) |
+| 3 | `authorization_endpoint` must be openable: port 0 or above 65535; a real host | `realHost()` in `src/native-auth.ts`: a bracketed host must be IPv6 (checked by WHATWG `URL`), a dotted quad is IPv4 (0-255, no leading zero), a numeric last label that is not IPv4 is refused, otherwise ASCII labels `[a-z0-9]` with inner hyphens of 1-63, at most 253 characters | the nine `config/` dashboard vectors; extra cases (leading or trailing hyphen, trailing dot, `1.2.3`, `01.2.3.4`, `[1.2.3.4]`, a 64-character label, 257 characters, `_`; usable: `[2001:db8::1]`, `xn--`, a 63-character label, `localhost`) |
+| 4 | Callback `error` keeps only RFC 6749's seven codes | `OAUTH_ERRORS` and `classifyRequest()` in `src/loopback.ts`; `signInThroughBrowser()` repeats `callback.error` only | the three new `callbacks/` vectors and `sign_ins/an error that repeats the state never reaches the error` |
+| 5 | Only a missing device name gets the default | `deviceName ?? defaultDeviceName()` in both calls; the chooser's device login gets the empty name, and sends no `client_name` | `sign_ins/an empty device name keeps the hostname off the consent page`, `chooser/an empty device name is not sent to a device login either`; "only a missing device name gets the default" (`undefined`, `null`, `""`) |
+| 6 | The accepted tab waits until the sign-in ends | `answerAccepted()` awaits `finish()` with no deadline; `answerTimeoutMs` and `ANSWER_TIMEOUT_MS` removed; `close()` answers a waiting tab | "the accepted tab waits as long as the sign-in takes", "closing the listener answers a tab that is still waiting" (mirroring the reference's two tests) |
+| 7 | A `HEAD` answer has headers and no body | `responseBytes(status, text, { head })`; `serve()` passes it for a `HEAD` | "a HEAD request gets the headers and no body" (404, the page headers, a positive `Content-Length`, no body) |
+| 8 | Redact the exchange's answer before formatting; one pass, longest first, never inside `[redacted]`; a fresh error | `apiError(..., { everywhere: true })` for the exchange: a JSON answer is scrubbed once parsed (`redactSecretsInJson`), text otherwise, every occurrence of the code, the verifier and the state however short, before the bounded message is built; `redactSecretsInString` is a single pass that skips `[redacted]`. The error is built new from the scrubbed answer, and a transport failure is a fresh `ThalovantApiUnreachableError` with no cause | "a message cut to length keeps no part of a secret" (the verifier straddling the 160-character cut), "scrubbing is one pass, longest first, and leaves its marker alone" (the reference's cases), "a transport failure during the exchange carries nothing of the request" |
+| 9 | Drain before closing every answered connection | after the head, reading pauses; `reply()` shuts the write side (`end()`), then `drain()` reads and drops for at most 2 s and 1 MiB and closes | "an early answer is not lost to a reset" (a 600 KB head and a 600 KB unread body, sent while reading: the 400 or 404 arrives whole and no ECONNRESET), "draining a connection is bounded" (a client that never closes; the connection is gone after the bound) |
+| 10 | Wording: a link or code sent to someone on another computer delivers nothing to the sender | README, FAQ, CHANGELOG, and the comments in `src/native-auth.ts` and `src/control.ts`; nothing says "cannot be relayed" any more | documentation |
+
+The exchange is sent once: `send()` makes one `fetch`, nothing loops around it, and "the exchange is sent once, never retried, even when its connection resets" counts one POST against a token endpoint that resets the connection. The vectors' scripted API also refuses a second exchange in every case.
+
+### Verification
+
+| Command | Result |
+| :--- | :--- |
+| `npm test` | 958 tests: 957 passed, 1 skipped (live interop), 0 failed |
+| `node --test dist/test/browser-login-vectors.test.js` | 149 passed: the 119 cases, the 27 callbacks through a real listener, 3 checks of the file |
+| `npm run record-conformance` | 958 tests, 957 passed; `browser-login-vectors.json` recorded with 119 cases, each equal to the reference's at 39e31d8; the 98 earlier cases record what they did before; every other vector unchanged |
+| `check-sdk-parity.py --consumer thalovant-node-sdk` from Python 39e31d8, and from Python `main` (44b6e2b) | both verified; the only note is, against `main`, the capability being ahead of it |
+| `tsc --noEmit --noUnusedLocals --noUnusedParameters` | nothing in the changed files |
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (`claude-opus-5-5`), a Claude Code agent directed by the release lead.
+- **Actions Taken:** Cloned Python 39e31d8 on its own; read the brief's change table, the final `native_auth.py`, `_loopback.py` and `control.py` and the unit tests it names; ported the ten changes to `src/native-auth.ts`, `src/loopback.ts`, `src/loopback.browser.ts`, `src/control.ts` and `src/redact.ts`; mirrored the named Python tests in `test/browser-login.test.ts`; re-vendored the vectors; re-recorded conformance; refreshed only the changed files' evidence hashes after the suite passed; updated the documentation and these records.
+- **Oversight:** No human review yet; the PR stays unmerged for the lead.
 
 ## 2026-11-08 — CodeRabbit review of #110 (browser sign-in)
 

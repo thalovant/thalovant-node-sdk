@@ -560,17 +560,36 @@ test("a connection that closes before its whole request head changes nothing", a
   }
 });
 
-test("a tab whose answer never comes is told the sign-in was not completed", async () => {
-  const listener = new LoopbackListener("the-state", { answerTimeoutMs: 50 });
+test("the accepted tab waits as long as the sign-in takes", async () => {
+  // The page says how the sign-in ended, so it is written once it has,
+  // however long the exchange took: there is no deadline of its own.
+  const listener = new LoopbackListener("the-state");
   const port = await listener.start();
   try {
-    const { status, body } = await get(port, "/callback?code=unit-code-value&state=the-state");
-    assert.equal(status, 200);
-    assert.ok(body.includes("Sign-in was not completed."));
-    assert.ok(await listener.wait(0));
+    const started = performance.now();
+    let answered = false;
+    const tab = get(port, "/callback?code=c&state=the-state").finally(() => {
+      answered = true;
+    });
+    assert.ok(await listener.wait(5_000));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(answered, false);
+    listener.finish(true);
+    const { body } = await tab;
+    assert.ok(body.includes("Signed in to Thalovant. You can close this tab."));
+    assert.ok(performance.now() - started >= 300);
   } finally {
     await listener.close();
   }
+});
+
+test("closing the listener answers a tab that is still waiting", async () => {
+  const listener = new LoopbackListener("the-state");
+  const port = await listener.start();
+  const tab = get(port, "/callback?code=c&state=the-state");
+  assert.ok(await listener.wait(5_000));
+  await listener.close();
+  assert.ok((await tab).body.includes("Sign-in was not completed."));
 });
 
 test("a request that sends no head in time is dropped", async () => {
@@ -647,24 +666,54 @@ test("an authorization endpoint no browser can open is unusable", () => {
     "https://:443/authorize",
     "ftp://dash.thalovant.com/authorize",
     "http://[::2]/authorize",
+    "https://-dash.example/authorize",
+    "https://dash-.example/authorize",
+    "https://dash.example./authorize",
+    "https://1.2.3/authorize",
+    "https://01.2.3.4/authorize",
+    "https://[1.2.3.4]/authorize",
+    `https://${"a".repeat(64)}.example/authorize`,
+    `https://${"abcdefghi.".repeat(25)}example/authorize`,
+    "https://DASH_staging.example/authorize",
     "",
     42,
   ]) {
     assert.throws(() => NativeSignInConfig.fromResponse({ ...CONFIG, authorization_endpoint: endpoint }), ThalovantApiError, String(endpoint));
   }
-  for (const endpoint of ["http://[::1]:5173/authorize", "HTTPS://Dash.Thalovant.com:443/authorize", "http://127.0.0.1/authorize"]) {
+  for (const endpoint of [
+    "http://[::1]:5173/authorize",
+    "HTTPS://Dash.Thalovant.com:443/authorize",
+    "http://127.0.0.1/authorize",
+    "https://[2001:db8::1]/authorize",
+    "https://xn--dsh-0na.example/authorize",
+    `https://${"a".repeat(63)}.example/authorize`,
+    "https://localhost/authorize",
+  ]) {
     assert.equal(NativeSignInConfig.fromResponse({ ...CONFIG, authorization_endpoint: endpoint }).authorizationEndpoint, endpoint);
   }
 });
 
 test("a token endpoint that is not a path on the API, or a client id out of shape, is unusable", () => {
-  for (const token of ["/v1/auth/native/token#x", "/v1\\auth", "/v1/auth native", "v1/auth/native/token", 7]) {
+  for (const token of [
+    "/v1/auth/native/token#x",
+    "/v1\\auth",
+    "/v1/auth native",
+    "v1/auth/native/token",
+    7,
+    "/https://collector.example/token",
+    "/collector.example:443/token",
+    "/v1/a:b",
+    "/v1/%7",
+    "/v1/%7G",
+    "/v1/%",
+  ]) {
     assert.throws(() => NativeSignInConfig.fromResponse({ ...CONFIG, token_endpoint: token }), ThalovantApiError, String(token));
   }
   for (const clientId of ["", "a".repeat(65), "thalovant sdk", "thalovant-sdk\n", null]) {
     assert.throws(() => NativeSignInConfig.fromResponse({ ...CONFIG, sdk_client_id: clientId }), ThalovantApiError, String(clientId));
   }
   assert.throws(() => NativeSignInConfig.fromResponse({ ...CONFIG, code_challenge_methods_supported: "S256" }), ThalovantApiError);
+  assert.equal(NativeSignInConfig.fromResponse({ ...CONFIG, token_endpoint: "/v1/%2Fx/%74oken" }).tokenEndpoint, "/v1/%2Fx/%74oken");
   const config = NativeSignInConfig.fromResponse(CONFIG);
   assert.equal(config.deviceAuthorizationEndpoint, "/v1/auth/device/authorize");
   assert.deepEqual(config.toJSON(), {
@@ -814,10 +863,10 @@ test("an escape in front of a secret that starts with its own digit is not cut i
   });
 });
 
-test("a short code is taken out of the error where it stands alone, and the answer keeps its shape", async () => {
+test("a short code is taken out of the exchange's error wherever it is, and the answer keeps its shape", async () => {
   for (const [type, answer] of [
     ["application/json", '{"detail":[{"loc":["body","code"],"msg":"bad","input":"ab1"}],"note":"cab1n is another word"}'],
-    ["text/plain", "the code ab1 was refused"],
+    ["text/plain", "the code ab1 was refused (cab1n)"],
   ] as const) {
     const api = new Api({
       "/v1/auth/native/token": (_body, response) => void response.writeHead(400, { "content-type": type }).end(answer),
@@ -830,18 +879,28 @@ test("a short code is taken out of the error where it stands alone, and the answ
       await get(port, `/callback?code=ab1&state=${state}`);
       const error = await task;
       assert.ok(error instanceof ThalovantApiError && error.statusCode === 400, String(error));
-      const shown = [error.message, JSON.stringify(error.problem ?? null), String(error.detail)].join("\n");
-      assert.ok(!/(^|[^\p{L}\p{N}])ab1([^\p{L}\p{N}]|$)/u.test(shown), shown);
+      const shown = [error.message, inspect(error), JSON.stringify(error.problem ?? null), String(error.detail)].join("\n");
+      assert.ok(!shown.includes("ab1"), shown);
       if (type === "application/json") {
         assert.deepEqual(error.problem, {
           detail: [{ loc: ["body", "code"], msg: "bad", input: "[redacted]" }],
-          note: "cab1n is another word",
+          note: "c[redacted]n is another word",
         });
       } else {
-        assert.match(error.message, /the code \[redacted\] was refused/);
+        assert.match(error.message, /the code \[redacted\] was refused \(c\[redacted\]n\)/);
       }
     });
   }
+});
+
+test("scrubbing is one pass, longest first, and leaves its marker alone", () => {
+  const hidden = ["abc", "abcdef", "c"];
+  const everywhere = { everywhere: true };
+  assert.equal(redactSecretsInString("xx-abc-abcdef-[redacted]", hidden, everywhere), "xx-[redacted]-[redacted]-[redacted]");
+  const once = redactSecretsInJson({ "seen:abcdef": ["c", { deep: "abc" }] }, hidden, everywhere);
+  assert.deepEqual(once, { "seen:[redacted]": ["[redacted]", { deep: "[redacted]" }] });
+  assert.deepEqual(redactSecretsInJson(once, hidden, everywhere), once);
+  assert.equal(redactSecretsInString("nothing hidden", [], everywhere), "nothing hidden");
 });
 
 test("decoded scrubbing covers values and keys, and a short secret only where it stands alone", () => {
@@ -863,27 +922,57 @@ test("decoded scrubbing covers values and keys, and a short secret only where it
   assert.deepEqual(redactSecretsInJson({ pin: 12345678, other: 7 }, ["12345678"]), { pin: "[redacted]", other: 7 });
 });
 
-test("a token endpoint that reads like an absolute URL stays a path on the API", async () => {
-  const asked: string[] = [];
-  const api = new Api({
-    "/v1/auth/native/config": (_body, response) => json(response, 200, { ...CONFIG, token_endpoint: "/https://attacker.example/token" }),
-    "/https://attacker.example/token": (_body, response) => json(response, 200, TOKEN),
+for (const path of ["/https://elsewhere.example/v1/x", "/elsewhere.example:443/v1/x", "/{collector}/v1/x", "https://elsewhere.example/v1/x"]) {
+  test(`no request leaves the API's origin: ${path}`, async () => {
+    // Every request is joined to the API's address with its leading slashes
+    // off, so a path that is a URL -- or whose first segment reads as a
+    // scheme -- would otherwise be one.
+    const collector = await new Api().start();
+    const api = await new Api().start();
+    try {
+      const plane = new ThalovantControlPlane(api.url, { accessToken: "tvpat_must_stay_home" });
+      const target = path.replace("{collector}", collector.url);
+      const internal = plane as unknown as {
+        request(method: string, path: string): Promise<unknown>;
+        send(method: string, path: string, options: { body?: Json; auth?: boolean }): Promise<unknown>;
+      };
+      const error = await internal.request("GET", target).catch((failure: unknown) => failure);
+      assert.ok(error instanceof ThalovantApiError && /origin/.test(error.message), String(error));
+      assert.equal(error.statusCode, undefined);
+      assert.ok(!String(error).includes("tvpat_must_stay_home"));
+      await assert.rejects(internal.send("POST", target, { body: { code: "c" }, auth: false }), /origin/);
+      assert.deepEqual([...collector.requests, ...api.requests], []);
+    } finally {
+      await collector.stop();
+      await api.stop();
+    }
   });
-  await withApi(api, async () => {
-    const plane = new ThalovantControlPlane(api.url, {
-      fetch: ((input: URL | string, init?: RequestInit) => {
-        asked.push(String(input));
-        return fetch(input, init);
-      }) as typeof fetch,
+}
+
+test("the exchange never leaves the API's origin, even past the configuration's own check", async () => {
+  const collector = await new Api().start();
+  const api = await new Api().start();
+  try {
+    const plane = new ThalovantControlPlane(api.url);
+    // Built directly, past NativeSignInConfig.fromResponse().
+    const Config = NativeSignInConfig as unknown as new (fields: Json) => NativeSignInConfig;
+    const config = new Config({
+      authorizationEndpoint: CONFIG.authorization_endpoint,
+      tokenEndpoint: `/${collector.url}/v1/auth/native/token`,
+      sdkClientId: "thalovant-sdk",
+      deviceAuthorizationEndpoint: null,
     });
-    const seen = opened();
-    const task = plane.browserLogin({ openBrowser: false, prompt: seen.handOver });
-    const { port, state } = parts(await seen.url);
-    await get(port, `/callback?code=unit-code-value&state=${state}`);
-    assert.equal((await task).access_token, TOKEN.access_token);
-    assert.deepEqual(asked, [`${api.url}/v1/auth/native/config`, `${api.url}/https://attacker.example/token`]);
-    assert.deepEqual(api.requests, ["GET /v1/auth/native/config", "POST /https://attacker.example/token"]);
-  });
+    const exchange = (plane as unknown as {
+      exchangeBrowserCode(config: NativeSignInConfig, secrets: Json, signal: undefined, timeoutMs: number): Promise<unknown>;
+    }).exchangeBrowserCode(config, { code: "c", verifier: "v".repeat(43), redirectUri: "http://127.0.0.1:1/callback", state: "s" }, undefined, 10_000);
+    const error = await exchange.catch((failure: unknown) => failure);
+    assert.ok(error instanceof ThalovantApiError && /origin/.test(error.message), String(error));
+    assert.equal(error.statusCode, undefined);
+    assert.deepEqual([...collector.requests, ...api.requests], []);
+  } finally {
+    await collector.stop();
+    await api.stop();
+  }
 });
 
 test("a callback whose error carries the state never repeats it", async () => {
@@ -1033,5 +1122,175 @@ test("a NaN or negative wait, or a callback that is not a function, is refused b
   await assert.rejects(plane.browserLogin({ openUrl: "xdg-open" as never }), TypeError);
   await assert.rejects(plane.browserLogin({ prompt: "print" as never }), /prompt must be a function/);
   assert.deepEqual(asked, []);
+});
+
+// -- the final contract (thalovant-python-sdk#113 at 39e31d8) --------------------------
+
+test("a HEAD request gets the headers and no body", async () => {
+  const listener = new LoopbackListener("the-state");
+  const port = await listener.start();
+  try {
+    const raw = await new Promise<Buffer>((resolve, reject) => {
+      const socket = connect(port, "127.0.0.1");
+      const chunks: Buffer[] = [];
+      socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+      socket.once("error", reject);
+      socket.once("close", () => resolve(Buffer.concat(chunks)));
+      socket.once("connect", () => socket.write("HEAD /callback?code=c&state=the-state HTTP/1.1\r\n\r\n"));
+    });
+    const split = raw.indexOf("\r\n\r\n");
+    const head = raw.subarray(0, split).toString("latin1");
+    assert.ok(head.startsWith("HTTP/1.1 404 "), head);
+    assert.equal(raw.subarray(split + 4).length, 0);
+    assert.ok(head.includes("Content-Type: text/html; charset=utf-8"));
+    // What a GET would have carried.
+    assert.ok(Number(/Content-Length: (\d+)/.exec(head)?.[1]) > 0);
+    assert.equal(await listener.wait(0), null);
+  } finally {
+    await listener.close();
+  }
+});
+
+for (const [name, request] of [
+  // A head ten times the listener's limit: most of it is never read.
+  ["oversized head", Buffer.from(`GET /callback?code=${"a".repeat(600_000)} HTTP/1.1\r\nHost: x\r\n\r\n`)],
+  // A body nobody asked for, behind a 404.
+  ["unread body", Buffer.concat([Buffer.from("POST /callback HTTP/1.1\r\nHost: x\r\nContent-Length: 600000\r\n\r\n"), Buffer.alloc(600_000, "b")])],
+] as const) {
+  test(`an early answer is not lost to a reset: ${name}`, async () => {
+    // Closing with bytes unread resets the connection, and macOS then drops
+    // the answer the browser had not read; Linux shows the reset as ECONNRESET.
+    const listener = new LoopbackListener("the-state");
+    const port = await listener.start();
+    try {
+      const { data, ended } = await new Promise<{ data: Buffer; ended: string | null }>((resolve) => {
+        const socket = connect(port, "127.0.0.1");
+        const chunks: Buffer[] = [];
+        let ended: string | null = null;
+        socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+        socket.on("error", (error: NodeJS.ErrnoException) => {
+          ended = error.code ?? error.name;
+        });
+        socket.once("close", () => resolve({ data: Buffer.concat(chunks), ended }));
+        // Sent while the answer is read, as a browser does.
+        socket.once("connect", () => socket.write(request));
+      });
+      const first = data.subarray(0, data.indexOf("\r\n")).toString("latin1");
+      assert.ok(["HTTP/1.1 400 Bad Request", "HTTP/1.1 404 Not Found"].includes(first), first);
+      assert.equal(ended, null, `the connection ended with ${ended}`);
+    } finally {
+      await listener.close();
+    }
+  });
+}
+
+test("draining a connection is bounded", async () => {
+  // A browser that never closes its side cannot keep a connection open.
+  const listener = new LoopbackListener("the-state", { drainTimeoutMs: 200 });
+  const port = await listener.start();
+  const socket = connect({ port, host: "127.0.0.1", allowHalfOpen: true });
+  try {
+    const answer = await new Promise<string>((resolve) => {
+      const chunks: Buffer[] = [];
+      socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+      // The answer ends: our side is shut. Theirs stays open.
+      socket.once("end", () => resolve(Buffer.concat(chunks).toString("latin1")));
+      socket.once("connect", () => socket.write("GET /favicon.ico HTTP/1.1\r\n\r\n"));
+    });
+    assert.ok(answer.startsWith("HTTP/1.1 404 "));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(listener.openConnections, 0);
+  } finally {
+    socket.destroy();
+    await listener.close();
+  }
+});
+
+test("a message cut to length keeps no part of a secret", async () => {
+  // The verifier starts ten characters before the message's 160-character cut.
+  const seen: Json = {};
+  const api = new Api({
+    "/v1/auth/native/token": (body, response) => {
+      Object.assign(seen, body);
+      json(response, 400, { detail: "a".repeat(150) + String(body.code_verifier) });
+    },
+  });
+  await withApi(api, async () => {
+    const plane = new ThalovantControlPlane(api.url);
+    const handed = opened();
+    const task = plane.browserLogin({ openBrowser: false, prompt: handed.handOver }).catch((error: unknown) => error);
+    const { port, state } = parts(await handed.url);
+    await get(port, `/callback?code=c&state=${state}`);
+    const error = await task;
+    assert.ok(error instanceof ThalovantApiError && error.statusCode === 400, String(error));
+    const prefix = String(seen.code_verifier).slice(0, 10);
+    for (const shown of [error.message, String(error), inspect(error), String(error.detail), JSON.stringify(error.problem)]) {
+      assert.ok(!shown.includes(prefix), shown);
+    }
+    assert.equal(error.detail, `${"a".repeat(150)}[redacted]`);
+  });
+});
+
+test("a transport failure during the exchange carries nothing of the request", async () => {
+  // A failed fetch may keep the request -- its body, the code and the
+  // verifier -- on its cause; the error raised must not keep it.
+  let sent = "";
+  const plane = new ThalovantControlPlane("http://127.0.0.1:9", {
+    fetch: (async (input: URL | string, init?: RequestInit) => {
+      if (String(input).endsWith("/v1/auth/native/config")) return new Response(JSON.stringify(CONFIG), { status: 200 });
+      sent = String(init?.body);
+      throw Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("connection reset"), { requestBody: sent }) });
+    }) as unknown as typeof fetch,
+  });
+  const handed = opened();
+  const task = plane.browserLogin({ openBrowser: false, prompt: handed.handOver }).catch((error: unknown) => error);
+  const { port, state } = parts(await handed.url);
+  await get(port, `/callback?code=transport-code-value&state=${state}`);
+  const error = await task;
+  assert.ok(error instanceof ThalovantApiUnreachableError && error.statusCode === undefined, String(error));
+  assert.equal(error.cause, undefined);
+  const verifier = String((JSON.parse(sent) as Json).code_verifier);
+  for (const form of [error.message, inspect(error), JSON.stringify(error), error.stack ?? ""]) {
+    for (const secret of ["transport-code-value", verifier, state]) assert.ok(!form.includes(secret), form);
+  }
+});
+
+test("the exchange is sent once, never retried, even when its connection resets", async () => {
+  let posts = 0;
+  const api = new Api({
+    "/v1/auth/native/token": (_body, response) => {
+      posts += 1;
+      response.socket?.destroy();
+    },
+  });
+  await withApi(api, async () => {
+    const plane = new ThalovantControlPlane(api.url);
+    const handed = opened();
+    const task = plane.browserLogin({ openBrowser: false, prompt: handed.handOver }).catch((error: unknown) => error);
+    const { port, state } = parts(await handed.url);
+    const page = await get(port, `/callback?code=unit-code-value&state=${state}`);
+    const error = await task;
+    assert.ok(error instanceof ThalovantApiUnreachableError && error.statusCode === undefined, String(error));
+    assert.ok(page.body.includes("Sign-in was not completed."));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(posts, 1);
+  });
+});
+
+test("only a missing device name gets the default; an empty one is left out", async () => {
+  for (const [deviceName, expected] of [
+    [undefined, defaultDeviceName()],
+    [null, defaultDeviceName()],
+    ["", null],
+  ] as const) {
+    await withApi(new Api(), async ({ url: apiUrl }) => {
+      const plane = new ThalovantControlPlane(apiUrl);
+      const handed = opened();
+      const task = plane.browserLogin({ openBrowser: false, prompt: handed.handOver, timeoutMs: 50, deviceName }).catch((error: unknown) => error);
+      const { query } = parts(await handed.url);
+      assert.ok((await task) instanceof ThalovantDeviceLoginExpiredError);
+      assert.equal(query.get("device_name"), expected);
+    });
+  }
 });
 

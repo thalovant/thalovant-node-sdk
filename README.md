@@ -1,4 +1,4 @@
-<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Sign-in section for browser sign-in (0.11.0); the quick start signs in with interactiveLogin(). -->
+<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in to the final contract (Python #113 at 39e31d8): wording, empty device name. -->
 
 <p align="center">
   <picture>
@@ -91,8 +91,7 @@ await api.interactiveLogin(); // the browser here, or a device code where there 
 `interactiveLogin()` opens your browser at the Thalovant consent page and
 listens on `127.0.0.1` for the answer (OAuth with PKCE on a loopback redirect,
 RFC 8252). It always prints the address too, in case the browser does not
-open. Only the browser on this computer can complete the sign-in, so a sign-in
-link that reaches somebody else gives them nothing.
+open. The browser that approves hands the code to this computer's `127.0.0.1`, so a sign-in link or code sent to someone on another computer delivers nothing to the sender. That is all it promises: a forwarded callback port (`ssh -L`, a port-forwarding tool) or another user of this computer can still complete one.
 
 On a machine that cannot show a browser, it prints a code to enter at
 `thalovant.com/activate` from any browser instead: over SSH, in CI, or on Linux
@@ -107,7 +106,7 @@ port, so in a browser bundle `interactiveLogin()` uses the device login and
 | Option | Default | Meaning |
 | :--- | :--- | :--- |
 | `scopes` | the API's: `hubs:read`, `clients:write` | What the token may do. Any non-admin scope may be asked for. |
-| `deviceName` | `thalovant-node-sdk on <hostname>` | What the consent page and the token show (at most 120 characters). |
+| `deviceName` | `thalovant-node-sdk on <hostname>` | What the consent page and the token show (at most 120 characters). Only a missing name gets the default: `""` sends none, and keeps the hostname off the consent page (a device login then sends no `client_name`). |
 | `openBrowser` | `true` | `false` only prints the address. |
 | `timeoutMs` | 300000 (browser), 900000 (device login) | How long to wait for an answer, in milliseconds; a negative or `NaN` one is refused (`RangeError`). |
 | `signal` | none | An `AbortSignal` that cancels the sign-in and closes the port. |

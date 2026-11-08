@@ -114,16 +114,31 @@ function isWordCharacter(char: string | undefined): boolean {
   return char !== undefined && /^[\p{L}\p{N}]$/u.test(char);
 }
 
+/** How {@link redactSecretsInString} replaces a secret shorter than 8 characters. */
+export interface RedactOptions {
+  /**
+   * Replace every secret wherever it occurs, however short, as a browser
+   * sign-in's exchange does with its code, verifier and state. By default a
+   * secret under 8 characters is replaced only where it stands alone.
+   */
+  everywhere?: boolean;
+}
+
 /**
  * `text` with each secret replaced by {@link REDACTED}: one of 8 characters or
  * more wherever it occurs, a shorter one only where it stands alone -- no
  * letter or digit directly before or after it -- so that a short value cannot
- * take pieces out of unrelated words. One pass, the longest secret tried first
- * at each place, and never inside a {@link REDACTED} already there. The text is
- * a decoded string, never JSON source, so nothing here can break a document's
- * structure.
+ * take pieces out of unrelated words (`everywhere` replaces it anywhere). One
+ * pass, the longest secret tried first at each place, and never inside a
+ * {@link REDACTED} already there, so scrubbing twice changes nothing. The text
+ * is a decoded string, never JSON source, so nothing here can break a
+ * document's structure.
  */
-export function redactSecretsInString(text: string, secrets: ReadonlyArray<string | undefined>): string {
+export function redactSecretsInString(
+  text: string,
+  secrets: ReadonlyArray<string | undefined>,
+  options: RedactOptions = {},
+): string {
   const ordered = [...new Set(secrets.filter((secret): secret is string => typeof secret === "string" && secret !== ""))]
     .sort((a, b) => b.length - a.length);
   if (!ordered.length) return text;
@@ -139,7 +154,9 @@ export function redactSecretsInString(text: string, secrets: ReadonlyArray<strin
       if (!text.startsWith(secret, index)) continue;
       const end = index + secret.length;
       const after = end < text.length ? String.fromCodePoint(text.codePointAt(end)!) : undefined;
-      if (secret.length < 8 && (isWordCharacter(characterBefore(text, index)) || isWordCharacter(after))) continue;
+      if (!options.everywhere && secret.length < 8 && (isWordCharacter(characterBefore(text, index)) || isWordCharacter(after))) {
+        continue;
+      }
       out += REDACTED;
       index = end;
       continue scan;
@@ -172,21 +189,25 @@ function characterBefore(text: string, index: number): string | undefined {
  * short secret, which the text pass leaves alone, too. A number that spells a
  * secret becomes the string {@link REDACTED}.
  */
-export function redactSecretsInJson(value: unknown, secrets: ReadonlyArray<string | undefined>): unknown {
-  if (typeof value === "string") return redactSecretsInString(value, secrets);
+export function redactSecretsInJson(
+  value: unknown,
+  secrets: ReadonlyArray<string | undefined>,
+  options: RedactOptions = {},
+): unknown {
+  if (typeof value === "string") return redactSecretsInString(value, secrets, options);
   if (typeof value === "number") {
     // A secret of digits may come back as a number.
     const text = String(value);
-    const scrubbed = redactSecretsInString(text, secrets);
+    const scrubbed = redactSecretsInString(text, secrets, options);
     return scrubbed === text ? value : scrubbed;
   }
-  if (Array.isArray(value)) return value.map((entry) => redactSecretsInJson(entry, secrets));
+  if (Array.isArray(value)) return value.map((entry) => redactSecretsInJson(entry, secrets, options));
   if (isRecord(value)) {
     const result: UnknownRecord = {};
     for (const [key, entry] of Object.entries(value)) {
       // defineProperty, so that a key such as `__proto__` stays a key.
-      Object.defineProperty(result, redactSecretsInString(key, secrets), {
-        value: redactSecretsInJson(entry, secrets),
+      Object.defineProperty(result, redactSecretsInString(key, secrets, options), {
+        value: redactSecretsInJson(entry, secrets, options),
         enumerable: true,
         writable: true,
         configurable: true,

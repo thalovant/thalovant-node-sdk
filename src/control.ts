@@ -1095,9 +1095,10 @@ export class ThalovantControlPlane {
    * browser at the dashboard's consent page (read from
    * `GET /v1/auth/native/config`), and waits for the browser to come back to
    * `http://127.0.0.1:<port>/callback`. The browser that approves hands the
-   * code to its own computer, so a sign-in link sent to somebody else delivers
-   * nothing to the sender -- which a device code, read off one screen and
-   * typed into another, cannot promise. Node only: a web page cannot listen
+   * code to its own computer, so a sign-in link sent to somebody on another
+   * computer delivers nothing to the sender -- which a device code, read off
+   * one screen and typed in anywhere, cannot promise. A forwarded callback port
+   * or another user of the same computer is another matter. Node only: a web page cannot listen
    * on a port.
    *
    * The URL is always printed as well as opened (`Opening your browser to
@@ -1169,7 +1170,10 @@ export class ThalovantControlPlane {
     const signal = options.signal;
     if (signal?.aborted) throw abortError();
     const scopes = options.scopes ? [...options.scopes] : undefined;
-    const name = options.deviceName || defaultDeviceName();
+    // Only a missing name asks for the default: an empty one is the caller's
+    // way of sending none, and keeps the hostname out (a device login then
+    // sends no client_name either).
+    const name = options.deviceName ?? defaultDeviceName();
     const requestTimeoutMs = signInRequestTimeout(options);
     let config: NativeSignInConfig | undefined;
     if (method === "browser") {
@@ -1236,9 +1240,9 @@ export class ThalovantControlPlane {
    * One request of a browser sign-in, its answer read whole, within
    * `timeoutMs`.
    *
-   * Bounded as the reference bounds every request (10 seconds by default), so
-   * the exchange always ends before the accepted tab's own wait for its page
-   * does: the tab never says the sign-in failed while it is still going on. A
+   * Bounded as the reference bounds every request (10 seconds by default).
+   * The accepted tab waits for the sign-in to end with no deadline of its own,
+   * so this bound is what keeps that wait finite. A
    * request that runs out of time, or whose answer breaks off, is a
    * {@link ThalovantApiUnreachableError} with no status -- `interactiveLogin()`
    * falls back from one at the configuration -- and the caller's `signal`
@@ -1289,7 +1293,7 @@ export class ThalovantControlPlane {
         codeChallenge: await challengeFor(verifier),
         state,
         scopes: options.scopes,
-        deviceName: options.deviceName || defaultDeviceName(),
+        deviceName: options.deviceName ?? defaultDeviceName(),
       });
       // Cancelled while the port was bound or the challenge made: nothing is
       // shown or opened for a listener that is about to close.
@@ -1306,11 +1310,9 @@ export class ThalovantControlPlane {
         throw new ThalovantDeviceLoginDeniedError("The sign-in request was denied in the browser.");
       }
       if (!callback.code) {
-        // Only a word the problem-code rule allows is repeated -- the page's
-        // `error` came from whoever opened the tab -- and never one that
-        // carries this sign-in's state.
-        const error = callback.error;
-        const code = error && /^[A-Za-z0-9_.:-]{1,80}$/.test(error) && !error.includes(state) ? error : undefined;
+        // callback.error is one of RFC 6749's codes or nothing: a value the
+        // page chose could be the state or a code.
+        const code = callback.error ?? undefined;
         throw new ThalovantApiError(`The browser came back without a sign-in code${code ? ` (${code}).` : "."}`, { code });
       }
       // A code is single-use: retrying the exchange would only revoke the
@@ -1354,7 +1356,12 @@ export class ThalovantControlPlane {
     };
     const { response, text } = await this.signInRequest("POST", config.tokenEndpoint, body, signal, timeoutMs);
     if (!response.ok) {
-      throw apiError(response.status, text, [secrets.code, secrets.verifier, secrets.state], response.headers);
+      // Every one of the three, wherever it is and however short, taken out
+      // before the message is made (a message cut to length keeps no part of
+      // one). The error is a new one with no cause.
+      throw apiError(response.status, text, [secrets.code, secrets.verifier, secrets.state], response.headers, {
+        everywhere: true,
+      });
     }
     const parsed = parseJsonBody(text)?.value;
     if (!isRecord(parsed)) {
@@ -2771,23 +2778,21 @@ export class ThalovantControlPlane {
       if (!this.accessToken) throw new ThalovantApiError("Missing Thalovant API access token.");
       headers.authorization = `Bearer ${this.accessToken}`;
     }
-    // A path on the API, always. Without its leading slashes a path such as
-    // `/https://elsewhere.example/x` -- a browser sign-in's `token_endpoint`
-    // comes from the API's answer -- reads as an absolute URL, so a first
-    // segment that looks like a scheme is kept a segment.
-    let relative = path.replace(/^\/+/, "");
-    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(relative)) relative = `./${relative}`;
     let url: URL;
     let base: URL;
     try {
       base = new URL(this.apiUrl);
-      url = new URL(relative, base);
+      url = new URL(path.replace(/^\/+/, ""), base);
     } catch {
       throw new ThalovantApiError("The configured control-plane API URL is invalid.");
     }
     if (url.origin !== base.origin) {
-      // Whatever the path held: what is sent goes to the API and nowhere else.
-      throw new ThalovantApiError("Control-plane requests must stay on the configured API's origin.");
+      // A path is joined to the API's address with its leading slashes taken
+      // off, so `/https://elsewhere/x` -- or `/elsewhere:443/x`, whose first
+      // segment reads as a scheme -- would become a URL of its own. Every
+      // request this client makes, and the token on it, stays on the API's
+      // origin (scheme, host and port).
+      throw new ThalovantApiError("Refusing a request off the Thalovant API's origin.");
     }
     if (url.username || url.password) {
       throw new ThalovantApiError("Control-plane URLs must not include embedded credentials.");
@@ -2945,6 +2950,7 @@ function apiError(
   bodyText: string,
   redactSecrets?: ReadonlyArray<string | undefined>,
   headers?: Pick<Headers, "get">,
+  scrub: { everywhere?: boolean } = {},
 ): ThalovantApiError {
   let safeBody = bodyText;
   let body = parseJsonBody(bodyText);
@@ -2955,12 +2961,12 @@ function apiError(
       // decodes back into the secret itself. Replacing spellings in the text
       // could also cut an escape in two -- `\u0032` in front of a secret that
       // starts with `2` -- and leave a body that no longer parses.
-      body = { value: redactSecretsInJson(body.value, redactSecrets) };
+      body = { value: redactSecretsInJson(body.value, redactSecrets, scrub) };
       safeBody = JSON.stringify(body.value) ?? "";
     } else {
       // Text: every known spelling, then a secret under 8 characters where it
       // stands alone.
-      safeBody = redactSecretsInString(redactSecretsInText(bodyText, redactSecrets), redactSecrets);
+      safeBody = redactSecretsInString(redactSecretsInText(bodyText, redactSecrets), redactSecrets, scrub);
     }
   }
   const message = apiErrorMessage(status, safeBody, body);
@@ -3017,8 +3023,8 @@ function waitTimeout(timeoutMs: number | undefined, fallback: number): number {
 
 /**
  * How long one browser sign-in request may take, in milliseconds: 10 seconds,
- * the reference's default request timeout, well inside the accepted tab's
- * 60-second wait for its page.
+ * the reference's default request timeout. The accepted tab waits for the
+ * exchange, so this is also what bounds its wait.
  */
 const BROWSER_SIGN_IN_REQUEST_TIMEOUT_MS = 10_000;
 

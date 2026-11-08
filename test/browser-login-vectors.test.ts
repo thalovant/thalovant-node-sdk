@@ -596,7 +596,7 @@ test("browser login: every section of the vectors is run", () => {
     .sort();
   assert.deepEqual(present, [...SECTIONS].sort());
   const total = SECTIONS.reduce((sum, section) => sum + (BROWSER[section as keyof BrowserVectors] as unknown[]).length, 0);
-  assert.equal(total, 98);
+  assert.equal(total, 119);
 });
 
 test("browser login: the RFC 7636 vector is the first PKCE case", () => {

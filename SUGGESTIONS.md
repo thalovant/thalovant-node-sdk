@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: #6 done for apiError; #11-#12 from the #110 review.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: #11 and #12 decided in the final browser sign-in contract (Python #113 at 39e31d8).
 
 # Suggestions
 
@@ -66,11 +66,15 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: #6 done for apiError; #11-#12 
 
 ## 11. Fall back from a listener that cannot start
 
+- **Status (2026-11-08):** decided against in the final contract (Python #113, "Decided and not changed"): a listener that cannot start still raises, in `auto` too, because a silent device login would hide a broken loopback stack.
+
 - **Problem:** in `auto`, a loopback port that cannot be bound (a sandbox without loopback, a seccomp profile) ends `interactiveLogin()` with that error, although nothing was shown yet and a device login would work (CodeRabbit #4 on #110). The reference does the same: its chooser falls back only on the configuration.
 - **Proposal:** in the brief, count a listener that cannot start as "not usable" in `auto`, before anything is shown, with a `chooser` vector; then every SDK follows it.
 - **Impact:** low; such machines are rare, and `{ method: "device" }` already works there.
 
 ## 12. A prompt for `interactiveLogin()`
+
+- **Status (2026-11-08):** left out of the final contract (Python #113, "Decided and not changed"): one callback would carry a URL for one method and a code for the other, so it needs a design decision first. Callers that present the sign-in themselves use `browserLogin({ prompt })` or the device-login steps.
 
 - **Problem:** the MCP server (thalovant-mcp#125) needs the URL or the device code to answer its begin tool, and `interactiveLogin()` takes no `prompt`, as the reference's `interactive_login` takes none; MCP reads the URL from `openUrl` and the device code from its own `fetch`.
 - **Proposal:** add an optional `prompt` to the reference's `interactive_login` (and the brief's API table), receiving either the URL or the device grant with the method named, then port it. Adding it here alone would change an API shape the brief fixes.
