@@ -27,10 +27,12 @@ import {
   newVerifier,
   SDK_CLIENT_ID,
   ThalovantApiError,
+  ThalovantApiUnreachableError,
   ThalovantControlPlane,
   ThalovantDeviceLoginExpiredError,
 } from "../src/index.js";
 import { classifyRequest, LoopbackListener, MAX_REQUEST_HEAD, responseBytes } from "../src/loopback.js";
+import { redactSecretsInJson, redactSecretsInString } from "../src/redact.js";
 
 type Json = Record<string, unknown>;
 
@@ -634,6 +636,8 @@ test("an authorization endpoint no browser can open is unusable", () => {
     "https://dash.thalovant.com /authorize",
     "https://dash.thalovant.com/authorize ",
     "https://dash.thalovant.com:99999/authorize",
+    "https://dash.thalovant.com:0/authorize",
+    "https://dash.thalovant.com:00/authorize",
     "https://dash.thalovant.com:8x/authorize",
     "https://[::1/authorize",
     "https://[nonsense]/authorize",
@@ -723,3 +727,311 @@ test("the URL builder leaves the endpoint as given and cuts nothing it need not"
   assert.ok(url.endsWith(`&device_name=${"x".repeat(120)}`));
   assert.ok(!url.includes("scope="));
 });
+
+// -- review follow-ups (#110) --------------------------------------------------------
+
+/** A `fetch` that answers from a table of paths, recording every URL it was asked for. */
+function scriptedFetch(routes: Record<string, () => Response | Promise<Response>>, asked: string[]): typeof fetch {
+  return (async (input: URL | string) => {
+    const url = new URL(String(input));
+    asked.push(url.href);
+    const route = routes[url.pathname];
+    if (!route) return new Response("{}", { status: 599 });
+    return route();
+  }) as unknown as typeof fetch;
+}
+
+const jsonResponse = (body: unknown, status = 200): Response =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+const DEVICE_GRANT = {
+  device_code: "dc-unit-device-code",
+  user_code: "WDJB-MJHT",
+  verification_uri: "https://thalovant.com/activate",
+  verification_uri_complete: "https://thalovant.com/activate?code=WDJB-MJHT",
+  expires_in: 900,
+  interval: 0,
+};
+
+/** An answer whose headers arrive and whose body breaks off. */
+function brokenBody(): Response {
+  return new Response(new ReadableStream({ start: (controller) => controller.error(new Error("connection reset")) }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+test("an echo that spells the secrets another way, or decodes into them, still never reaches the error", async () => {
+  const sent: Json = {};
+  // The first character of each secret \u-escaped: a spelling the text pass does not know.
+  const escaped = (value: string): string => `\\u${value.charCodeAt(0).toString(16).padStart(4, "0")}${value.slice(1)}`;
+  const api = new Api({
+    "/v1/auth/native/token": (body, response) => {
+      Object.assign(sent, body);
+      const text =
+        `{"detail":[{"loc":["body","code"],"msg":"bad","input":"${escaped(String(body.code))}"},` +
+        `{"loc":["body","code_verifier"],"msg":"bad","input":"${escaped(String(body.code_verifier))}"}],` +
+        `"${escaped(String(body.code))}":"seen","state":"${escaped(String(sent.state ?? ""))}"}`;
+      response.writeHead(422, { "content-type": "application/json" }).end(text);
+    },
+  });
+  await withApi(api, async () => {
+    const plane = new ThalovantControlPlane(api.url);
+    const seen = opened();
+    const task = plane.browserLogin({ openBrowser: false, prompt: seen.handOver }).catch((error: unknown) => error);
+    const { port, state } = parts(await seen.url);
+    sent.state = state;
+    await get(port, `/callback?code=secret-code-value&state=${state}`);
+    const error = await task;
+    assert.ok(error instanceof ThalovantApiError && error.statusCode === 422, String(error));
+    const shown = [error.message, inspect(error), JSON.stringify(error), JSON.stringify(error.problem), String(error.detail)].join("\n");
+    for (const secret of [sent.code, sent.code_verifier, sent.state]) assert.ok(!shown.includes(String(secret)), String(secret));
+    assert.ok(JSON.stringify(error.problem).includes("[redacted]"));
+  });
+});
+
+test("an escape in front of a secret that starts with its own digit is not cut in two", async () => {
+  // `\\u0032` then `2secret...`: replacing the secret's spellings in the text
+  // took the 2 out of the escape and left a body that no longer parsed.
+  const api = new Api({
+    "/v1/auth/native/token": (body, response) => {
+      const code = String(body.code);
+      const text = `{"detail":"invalid_grant","input":"\\u0032${code.slice(1)}"}`;
+      response.writeHead(400, { "content-type": "application/json" }).end(text);
+    },
+  });
+  await withApi(api, async () => {
+    const plane = new ThalovantControlPlane(api.url);
+    const seen = opened();
+    const task = plane.browserLogin({ openBrowser: false, prompt: seen.handOver }).catch((error: unknown) => error);
+    const { port, state } = parts(await seen.url);
+    await get(port, `/callback?code=2secret-code-value&state=${state}`);
+    const error = await task;
+    assert.ok(error instanceof ThalovantApiError, String(error));
+    assert.deepEqual(error.problem, { detail: "invalid_grant", input: "[redacted]" });
+    assert.equal(error.detail, "invalid_grant");
+    assert.ok(!error.message.includes("secret-code-value"), error.message);
+  });
+});
+
+test("a short code is taken out of the error where it stands alone, and the answer keeps its shape", async () => {
+  for (const [type, answer] of [
+    ["application/json", '{"detail":[{"loc":["body","code"],"msg":"bad","input":"ab1"}],"note":"cab1n is another word"}'],
+    ["text/plain", "the code ab1 was refused"],
+  ] as const) {
+    const api = new Api({
+      "/v1/auth/native/token": (_body, response) => void response.writeHead(400, { "content-type": type }).end(answer),
+    });
+    await withApi(api, async () => {
+      const plane = new ThalovantControlPlane(api.url);
+      const seen = opened();
+      const task = plane.browserLogin({ openBrowser: false, prompt: seen.handOver }).catch((error: unknown) => error);
+      const { port, state } = parts(await seen.url);
+      await get(port, `/callback?code=ab1&state=${state}`);
+      const error = await task;
+      assert.ok(error instanceof ThalovantApiError && error.statusCode === 400, String(error));
+      const shown = [error.message, JSON.stringify(error.problem ?? null), String(error.detail)].join("\n");
+      assert.ok(!/(^|[^\p{L}\p{N}])ab1([^\p{L}\p{N}]|$)/u.test(shown), shown);
+      if (type === "application/json") {
+        assert.deepEqual(error.problem, {
+          detail: [{ loc: ["body", "code"], msg: "bad", input: "[redacted]" }],
+          note: "cab1n is another word",
+        });
+      } else {
+        assert.match(error.message, /the code \[redacted\] was refused/);
+      }
+    });
+  }
+});
+
+test("decoded scrubbing covers values and keys, and a short secret only where it stands alone", () => {
+  assert.equal(redactSecretsInString("x abc y, xabcy, abc", ["abc"]), "x [redacted] y, xabcy, [redacted]");
+  assert.equal(redactSecretsInString("long-secret-value!", ["long-secret-value", "long"]), "[redacted]!");
+  assert.equal(redactSecretsInString("\u{1F399}abc", ["abc"]), "\u{1F399}[redacted]", "an emoji is not a letter");
+  assert.equal(redactSecretsInString("\u00e9abc", ["abc"]), "\u00e9abc", "an accented letter is one");
+  // One pass: never inside a [redacted] already there, and a secret that a longer one holds goes with it.
+  assert.equal(redactSecretsInString("[redacted] redacted!", ["redacted", "dacted"]), "[redacted] [redacted]!");
+  assert.equal(redactSecretsInString("xx-secret-code-value-xx", ["secret-code-value", "code"]), "xx-[redacted]-xx");
+  const scrubbed = redactSecretsInJson(JSON.parse('{"__proto__":{"k":"abc"},"abc":["abc",1,null],"x":{"secret-code-value-1":true}}'), [
+    "abc",
+    "secret-code-value-1",
+  ]) as Record<string, unknown>;
+  assert.equal(Object.getPrototypeOf(scrubbed), Object.prototype);
+  assert.deepEqual(Object.keys(scrubbed), ["__proto__", "[redacted]", "x"]);
+  assert.deepEqual(scrubbed["[redacted]"], ["[redacted]", 1, null]);
+  assert.deepEqual(scrubbed.x, { "[redacted]": true });
+  assert.deepEqual(redactSecretsInJson({ pin: 12345678, other: 7 }, ["12345678"]), { pin: "[redacted]", other: 7 });
+});
+
+test("a token endpoint that reads like an absolute URL stays a path on the API", async () => {
+  const asked: string[] = [];
+  const api = new Api({
+    "/v1/auth/native/config": (_body, response) => json(response, 200, { ...CONFIG, token_endpoint: "/https://attacker.example/token" }),
+    "/https://attacker.example/token": (_body, response) => json(response, 200, TOKEN),
+  });
+  await withApi(api, async () => {
+    const plane = new ThalovantControlPlane(api.url, {
+      fetch: ((input: URL | string, init?: RequestInit) => {
+        asked.push(String(input));
+        return fetch(input, init);
+      }) as typeof fetch,
+    });
+    const seen = opened();
+    const task = plane.browserLogin({ openBrowser: false, prompt: seen.handOver });
+    const { port, state } = parts(await seen.url);
+    await get(port, `/callback?code=unit-code-value&state=${state}`);
+    assert.equal((await task).access_token, TOKEN.access_token);
+    assert.deepEqual(asked, [`${api.url}/v1/auth/native/config`, `${api.url}/https://attacker.example/token`]);
+    assert.deepEqual(api.requests, ["GET /v1/auth/native/config", "POST /https://attacker.example/token"]);
+  });
+});
+
+test("a callback whose error carries the state never repeats it", async () => {
+  await withApi(new Api(), async ({ url: apiUrl }) => {
+    const plane = new ThalovantControlPlane(apiUrl);
+    const seen = opened();
+    const task = plane.browserLogin({ openBrowser: false, prompt: seen.handOver }).catch((error: unknown) => error);
+    const { port, state } = parts(await seen.url);
+    await get(port, `/callback?error=x${state}&state=${state}`);
+    const error = await task;
+    assert.ok(error instanceof ThalovantApiError && error.statusCode === undefined, String(error));
+    assert.equal(error.code, undefined);
+    for (const form of [error.message, inspect(error), JSON.stringify(error)]) assert.ok(!form.includes(state));
+  });
+});
+
+test("a leading byte-order mark is part of a callback value", () => {
+  const state = "S".repeat(32);
+  assert.deepEqual(classifyRequest("GET", `/callback?code=x&state=%EF%BB%BF${state}`, state), [400, null]);
+  assert.deepEqual(classifyRequest("GET", `/callback?code=%EF%BB%BFabc&state=${state}`, state), [200, { outcome: "code", code: "\uFEFFabc" }]);
+});
+
+test("a sign-in cancelled while its port is bound or its challenge made shows and opens nothing", async (t) => {
+  await withApi(new Api(), async ({ url: apiUrl }) => {
+    const plane = new ThalovantControlPlane(apiUrl);
+    const controller = new AbortController();
+    const subtle = globalThis.crypto.subtle;
+    const digest = subtle.digest.bind(subtle);
+    t.mock.method(subtle, "digest", (...args: Parameters<SubtleCrypto["digest"]>) => {
+      controller.abort();
+      return digest(...args);
+    });
+    const shown: string[] = [];
+    const { value: error, printed } = await capturedLog(() =>
+      plane
+        .browserLogin({ signal: controller.signal, prompt: (url) => void shown.push(url), openUrl: (url) => void shown.push(url) })
+        .catch((failure: unknown) => failure),
+    );
+    t.mock.restoreAll();
+    assert.ok(error instanceof Error && error.name === "AbortError", String(error));
+    assert.deepEqual(shown, []);
+    assert.deepEqual(printed, []);
+  });
+});
+
+test("a configuration answer that breaks off is a configuration failure: auto falls back, a forced browser says so", async () => {
+  const asked: string[] = [];
+  const routes = {
+    "/v1/auth/native/config": brokenBody,
+    "/v1/auth/device/authorize": () => jsonResponse(DEVICE_GRANT),
+    "/v1/auth/device/token": () => jsonResponse(TOKEN),
+  };
+  const plane = new ThalovantControlPlane("https://api.example.test", { fetch: scriptedFetch(routes, asked) });
+  const { value: token } = await capturedLog(() =>
+    asPlatform("darwin", {}, () => plane.interactiveLogin({ openUrl: () => undefined })),
+  );
+  assert.equal(token.access_token, TOKEN.access_token);
+  assert.deepEqual(asked.map((url) => new URL(url).pathname), ["/v1/auth/native/config", "/v1/auth/device/authorize", "/v1/auth/device/token"]);
+  await assert.rejects(plane.interactiveLogin({ method: "browser" }), (error: unknown) =>
+    error instanceof ThalovantApiUnreachableError && error.statusCode === undefined);
+  await assert.rejects(plane.browserLogin(), ThalovantApiUnreachableError);
+});
+
+test("an exchange slower than its bound fails the sign-in, and the tab says so", async () => {
+  const api = new Api({
+    "/v1/auth/native/token": (_body, response) => void setTimeout(() => json(response, 200, TOKEN), 1_000),
+  });
+  await withApi(api, async () => {
+    const plane = new ThalovantControlPlane(api.url);
+    const seen = opened();
+    const task = plane
+      .browserLogin({ openBrowser: false, prompt: seen.handOver, requestTimeoutMs: 100 })
+      .catch((error: unknown) => error);
+    const { port, state } = parts(await seen.url);
+    const page = await get(port, `/callback?code=unit-code-value&state=${state}`);
+    const error = await task;
+    assert.ok(error instanceof ThalovantApiUnreachableError && error.statusCode === undefined, String(error));
+    assert.ok(page.body.includes("Sign-in was not completed."));
+    assert.equal(plane.accessToken, undefined);
+  });
+});
+
+test("a configuration request slower than its bound sends auto to a device login", async () => {
+  const asked: string[] = [];
+  const routes = {
+    "/v1/auth/native/config": () => new Promise<Response>(() => undefined),
+    "/v1/auth/device/authorize": () => jsonResponse(DEVICE_GRANT),
+    "/v1/auth/device/token": () => jsonResponse(TOKEN),
+  };
+  // The scripted fetch never settles the configuration; the bound's signal must end it.
+  const fetchImpl = scriptedFetch(routes, asked);
+  const bounded = (async (input: URL | string, init?: RequestInit) => {
+    const answer = fetchImpl(input, init);
+    if (!new URL(String(input)).pathname.endsWith("/config")) return answer;
+    return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true }));
+  }) as typeof fetch;
+  const plane = new ThalovantControlPlane("https://api.example.test", { fetch: bounded });
+  const { value: token } = await capturedLog(() =>
+    asPlatform("win32", {}, () => plane.interactiveLogin({ openUrl: () => undefined, requestTimeoutMs: 100 })),
+  );
+  assert.equal(token.token_id, TOKEN.token_id);
+  assert.ok(asked.some((url) => url.endsWith("/v1/auth/device/authorize")));
+});
+
+test("cancelling a device login whose opener never returns ends it, and loginWithBrowser still waits for its opener", async () => {
+  const asked: string[] = [];
+  const routes = {
+    "/v1/auth/device/authorize": () => jsonResponse(DEVICE_GRANT),
+    "/v1/auth/device/token": () => jsonResponse(TOKEN),
+  };
+  const plane = new ThalovantControlPlane("https://api.example.test", { fetch: scriptedFetch(routes, asked) });
+  const controller = new AbortController();
+  const { value: error } = await capturedLog(async () => {
+    const task = plane
+      .interactiveLogin({
+        method: "device",
+        signal: controller.signal,
+        openUrl: () => {
+          setTimeout(() => controller.abort(), 10);
+          return new Promise(() => undefined);
+        },
+      })
+      .catch((failure: unknown) => failure);
+    return task;
+  });
+  assert.ok(error instanceof Error && error.name === "AbortError", String(error));
+  assert.ok(!asked.some((url) => url.endsWith("/v1/auth/device/token")), "polled after the cancel");
+  // Unchanged without a signal: the device login waits for its opener, then polls.
+  const order: string[] = [];
+  const waiting = new ThalovantControlPlane("https://api.example.test", {
+    fetch: scriptedFetch({ ...routes, "/v1/auth/device/token": () => (order.push("poll"), jsonResponse(TOKEN)) }, []),
+  });
+  await capturedLog(() =>
+    waiting.loginWithBrowser({ openUrl: () => new Promise<void>((resolve) => setTimeout(() => (order.push("opened"), resolve()), 50)) }),
+  );
+  assert.deepEqual(order, ["opened", "poll"]);
+});
+
+test("a NaN or negative wait, or a callback that is not a function, is refused before anything is sent", async () => {
+  const asked: string[] = [];
+  const plane = new ThalovantControlPlane("https://api.example.test", { fetch: scriptedFetch({}, asked) });
+  for (const method of ["auto", "browser", "device"] as const) {
+    await assert.rejects(plane.interactiveLogin({ method, timeoutMs: Number.NaN }), RangeError);
+    await assert.rejects(plane.interactiveLogin({ method, timeoutMs: -5 }), RangeError);
+    await assert.rejects(plane.interactiveLogin({ method, openUrl: "xdg-open" as never }), /openUrl must be a function/);
+  }
+  await assert.rejects(plane.browserLogin({ openUrl: "xdg-open" as never }), TypeError);
+  await assert.rejects(plane.browserLogin({ prompt: "print" as never }), /prompt must be a function/);
+  assert.deepEqual(asked, []);
+});
+

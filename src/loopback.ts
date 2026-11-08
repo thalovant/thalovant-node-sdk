@@ -89,7 +89,9 @@ export interface LoopbackListenerOptions {
  */
 function unquote(text: string): string {
   if (!text.includes("%")) return text;
-  const decoder = new TextDecoder("utf-8", { fatal: false });
+  // ignoreBOM: a leading U+FEFF is part of the value, as Python's decode keeps
+  // it. Dropping it would let `%EF%BB%BF` in front of the state still match.
+  const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
   let out = "";
   for (const run of text.match(/[\x00-\x7f]+|[^\x00-\x7f]+/g) ?? []) {
     if (run.charCodeAt(0) > 0x7f) {

@@ -483,7 +483,8 @@ function usableAuthorizationEndpoint(value: unknown): value is string {
     host = colon === -1 ? authority : authority.slice(0, colon);
     port = colon === -1 ? "" : authority.slice(colon + 1);
   }
-  if (port && (!/^[0-9]{1,5}$/.test(port) || Number(port) > 65535)) return false;
+  // Port 0 is no port a browser can open, and neither is one above 65535.
+  if (port && (!/^[0-9]{1,5}$/.test(port) || Number(port) === 0 || Number(port) > 65535)) return false;
   host = host.toLowerCase();
   if (!host) return false;
   // What a browser would make of it, too: a malformed IPv6 literal, say.

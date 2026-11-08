@@ -1,6 +1,44 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.11.0), ported from thalovant-python-sdk#113, with its verification and transparency report.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit review of #110 (14 threads): fixes, replies, verification and transparency report.
 
 # Maintenance report
+
+## 2026-11-08 — CodeRabbit review of #110 (browser sign-in)
+
+All 14 threads answered. Eleven are fixed with tests, and one (#11) is fixed inside the contract. Two are replied to, because the reference's contract decides them. The reference digests are left as they were (`57c7e71f6456`, `49744ee385bf`); the Python producer is reworking #113, and the lead sends the final digest.
+
+| # | Thread | Outcome |
+| :--- | :--- | :--- |
+| 0 | Redact decoded JSON | Fixed: a JSON error body is scrubbed once parsed, every string and key, and numbers (`redactSecretsInJson`, `src/redact.ts`). Doing so exposed AUDIT.md B10, a text pass cutting a `\u` escape in two; fixed too. |
+| 1 | Document `openUrl` as a callback | Fixed: README states the function type; `browserLogin()` and `interactiveLogin()` refuse a non-function `prompt` or `openUrl` with a `TypeError`. |
+| 2 | Validate the device login timeout | Fixed: `interactiveLogin()` refuses a `NaN` or negative `timeoutMs` for either method before sending anything. `loginWithBrowser()` is unchanged. |
+| 3 | Abortable opener wait | Fixed: with a `signal`, the device login's opener wait ends on abort with an `AbortError`; without one, `loginWithBrowser()` waits for its opener as before. |
+| 4 | Fall back when the listener cannot start | Replied: the brief's chooser falls back only on the browser rule and the configuration, and the reference raises the bind error too. SUGGESTIONS.md #11. |
+| 5 | Fall back when the configuration body breaks | Fixed: a broken-off answer is a `ThalovantApiUnreachableError`; `auto` falls back, a forced browser raises it, a cancel stays an `AbortError`. |
+| 6 | Keep an explicitly empty device name | Replied: the published reference treats `""` as none (`device_name or default_device_name()`); the pending #113 changes that, and it is ported with the final vectors (AUDIT.md B9). |
+| 7 | Check cancellation before presenting | Fixed: checked again after the port is bound and the challenge made. |
+| 8 | Keep the state out of callback errors | Fixed: an `error` carrying the state is not repeated. The pending reference keeps only RFC 6749 codes; ported with the final vectors (B9). |
+| 9 | Redact short codes | Fixed: a secret under 8 characters is replaced where it stands alone (no letter or digit beside it). |
+| 10 | Keep a leading BOM | Fixed: `TextDecoder` with `ignoreBOM: true`, as Python's decode keeps U+FEFF. |
+| 11 | Do not report failure while the exchange is pending | Fixed within the published contract: the configuration request and the exchange are bounded at 10 s, the reference's request timeout, so the exchange ends before the tab's 60 s bound. The pending reference drops that bound (B9). |
+| 12 | Reject port 0 | Fixed: unusable, as the brief's "a port no browser can open". The reference accepts it; reported (B8). |
+| 13 | Keep the token exchange on the API origin (major) | Fixed in `send()`: a scheme-like first segment stays a path segment, and a request off the API's origin is refused. The reference shares the bug (`urljoin(api_url, path.lstrip("/"))`); its pending fix refuses a colon in `token_endpoint`, ported with the final vectors (B9). |
+
+### Verification
+
+| Command | Result |
+| :--- | :--- |
+| `npm test` | 920 tests: 919 passed, 1 skipped (live interop), 0 failed |
+| `node --test dist/test/browser-login.test.js` | 46 passed (33 before, plus the regressions for the fixes above) |
+| `npm run record-conformance` | 920 tests, 919 passed, 1 skipped; `contracts/conformance-results.json` unchanged (all 98 browser-login digests still equal to the reference's) |
+| `check-sdk-parity.py --consumer thalovant-node-sdk` against Python `main` (44b6e2b) and against an archive of #113's head e3999cb | both verified; the one note is the capability being ahead of `main` |
+| `tsc --noEmit --noUnusedLocals --noUnusedParameters` | nothing in the changed files |
+| `GET https://api.thalovant.com/v1/auth/native/config` through `nativeSignInConfig()` | usable: `https://dash.thalovant.com/authorize`, `/v1/auth/native/token`, `thalovant-sdk`; no sign-in was attempted |
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (`claude-opus-5-5`), a Claude Code agent directed by the release lead.
+- **Actions Taken:** Read the 14 threads; fixed eleven, and #11 within the contract, in `src/control.ts`, `src/redact.ts`, `src/loopback.ts`, `src/native-auth.ts` and README, with tests in `test/browser-login.test.ts` and `test/browser-smoke.test.ts`; replied to #4 and #6; refreshed only the changed files' evidence hashes after the suite passed; read the producer's unpublished #113 work (read-only) to keep the fixes compatible with where the contract is going.
+- **Oversight:** No human review yet; the PR stays unmerged for the lead.
 
 ## 2026-11-08 — Browser sign-in (0.11.0)
 

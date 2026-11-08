@@ -109,10 +109,10 @@ port, so in a browser bundle `interactiveLogin()` uses the device login and
 | `scopes` | the API's: `hubs:read`, `clients:write` | What the token may do. Any non-admin scope may be asked for. |
 | `deviceName` | `thalovant-node-sdk on <hostname>` | What the consent page and the token show (at most 120 characters). |
 | `openBrowser` | `true` | `false` only prints the address. |
-| `timeoutMs` | 300000 (browser), 900000 (device login) | How long to wait for an answer. |
+| `timeoutMs` | 300000 (browser), 900000 (device login) | How long to wait for an answer, in milliseconds; a negative or `NaN` one is refused (`RangeError`). |
 | `signal` | none | An `AbortSignal` that cancels the sign-in and closes the port. |
-| `openUrl` | `open`, `xdg-open` or `rundll32 url.dll,FileProtocolHandler` | Opens the page in place of the platform's own opener. |
-| `prompt` (`browserLogin()` only) | prints the address | Receives the URL to show it yourself; the browser still opens. |
+| `openUrl` | the platform's opener (`open`, `xdg-open`, or `rundll32 url.dll,FileProtocolHandler` on Windows) | A function `(url: string) => unknown` that opens the page in its place. Anything but a function is refused (`TypeError`). |
+| `prompt` (`browserLogin()` only) | prints the address | A function `(url: string) => void` that shows the URL itself; the browser still opens. |
 
 The result is a scoped API token that lasts 365 days and is listed in the
 dashboard. It counts against your plan, and `api.revokeApiToken()` revokes it.

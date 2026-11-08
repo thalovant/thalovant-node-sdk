@@ -173,8 +173,10 @@ test("browser bundle drives the control plane through globalThis.fetch", async (
 test("browser bundle has no loopback listener: browserLogin refuses, and the chooser signs in with a device login", async () => {
   const bundle = await bundlePromise;
   const sandbox = createSandbox();
-  // The verifier is made with btoa, which every browser has.
+  // The verifier is made with btoa, and each sign-in request is bounded with
+  // an AbortController; every browser has both.
   sandbox.btoa = btoa;
+  sandbox.AbortController = AbortController;
   const asked: string[] = [];
   sandbox.fetch = async (url: unknown, init?: SandboxRequest["init"]) => {
     const target = String(url);

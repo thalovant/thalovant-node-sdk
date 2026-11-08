@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Add #7-#10 from the browser sign-in port (0.11.0).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: #6 done for apiError; #11-#12 from the #110 review.
 
 # Suggestions
 
@@ -34,6 +34,8 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Add #7-#10 from the browser si
 
 ## 6. Scrub secrets from the parsed error body as well
 
+- **Status (2026-11-08):** done for `apiError` in 0.11.0 (AUDIT.md B10); the device poll's own pending/denied/expired problems in `deviceTokenOnce` and `pollDeviceToken` remain, and wait for a change that may touch device login.
+
 - **Problem:** `redactSecretsInText` (`src/redact.ts`) replaces a secret's known spellings before `apiError` (`src/control.ts`) parses the body: the raw one, the `JSON.stringify` one, and the one with every non-ASCII character `\u`-escaped. Any other valid JSON spelling decodes the secret back into `problem` and the message (AUDIT.md, Open). That covers a `\u`-escaped ASCII character such as `\u0022`, `\/`, and non-ASCII escaped in some places only. The API does not write those spellings. Since 0.10.0, though, user-entered bridge secrets take this path.
 - **Proposal:** after `JSON.parse`, walk the parsed value and replace each secret in every string, keys included, then build the message from that. Keep the text pass for a body that is not JSON. Add a case to `test/home-link.test.ts` whose JSON body spells a quote inside the secret as `\u0022`, and assert that the decoded secret is in neither `message` nor `problem`. Port it to the other SDKs in the same release train.
 - **Impact:** low today. For a JSON body, the scrub then no longer depends on how the body is escaped. A body that is not JSON has no escapes to decode, so it keeps today's text pass: the raw spelling and the listed ones are scrubbed, and nothing else.
@@ -61,3 +63,15 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Add #7-#10 from the browser si
 - **Problem:** the MCP server turns browser sign-in into two tools (`thalovant_begin_browser_login`, `thalovant_poll_browser_login`), and this SDK offers one call that waits.
 - **Proposal:** none needed in this SDK: the begin tool can call `browserLogin({ prompt, openBrowser, signal })`, answer the URL its `prompt` receives, and keep the pending promise per principal; the poll tool reads that promise's state, and `signal` cancels it. Only if MCP needs to survive a server restart mid sign-in would a stepwise API help, and a loopback port does not survive one anyway.
 - **Impact:** informational for the MCP port.
+
+## 11. Fall back from a listener that cannot start
+
+- **Problem:** in `auto`, a loopback port that cannot be bound (a sandbox without loopback, a seccomp profile) ends `interactiveLogin()` with that error, although nothing was shown yet and a device login would work (CodeRabbit #4 on #110). The reference does the same: its chooser falls back only on the configuration.
+- **Proposal:** in the brief, count a listener that cannot start as "not usable" in `auto`, before anything is shown, with a `chooser` vector; then every SDK follows it.
+- **Impact:** low; such machines are rare, and `{ method: "device" }` already works there.
+
+## 12. A prompt for `interactiveLogin()`
+
+- **Problem:** the MCP server (thalovant-mcp#125) needs the URL or the device code to answer its begin tool, and `interactiveLogin()` takes no `prompt`, as the reference's `interactive_login` takes none; MCP reads the URL from `openUrl` and the device code from its own `fetch`.
+- **Proposal:** add an optional `prompt` to the reference's `interactive_login` (and the brief's API table), receiving either the URL or the device grant with the method named, then port it. Adding it here alone would change an API shape the brief fixes.
+- **Impact:** medium for MCP; none for the vectors.

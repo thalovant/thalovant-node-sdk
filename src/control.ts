@@ -62,7 +62,14 @@ import {
   SelectedHubEndpoint,
   selectDataPlaneEndpoint,
 } from "./protocols.js";
-import { REDACTED, redactSecretsInText, redactUrlUserinfo, withoutSecretKeys } from "./redact.js";
+import {
+  REDACTED,
+  redactSecretsInJson,
+  redactSecretsInString,
+  redactSecretsInText,
+  redactUrlUserinfo,
+  withoutSecretKeys,
+} from "./redact.js";
 import { USER_AGENT } from "./version.js";
 import { trimSlashes, trimTrailingSlashes } from "./slashes.js";
 
@@ -892,6 +899,13 @@ export interface BrowserLoginOptions {
    * Windows). Not awaited, and a failure changes nothing: the URL was shown.
    */
   openUrl?: (url: string) => unknown;
+  /**
+   * How long the configuration request and the code exchange may each take.
+   * Default 10000.
+   *
+   * @internal
+   */
+  requestTimeoutMs?: number;
 }
 
 /** Options for `interactiveLogin()`. */
@@ -913,6 +927,13 @@ export interface InteractiveLoginOptions {
   signal?: AbortSignal;
   /** Opens a URL in place of the platform's default, for either method. */
   openUrl?: (url: string) => unknown;
+  /**
+   * How long a browser sign-in's configuration request and code exchange may
+   * each take. Default 10000.
+   *
+   * @internal
+   */
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -1106,9 +1127,10 @@ export class ThalovantControlPlane {
     // Before anything is asked or opened: a code and its verifier never cross
     // the network in cleartext.
     assertSecureTokenExchange(this.apiUrl);
-    const timeoutMs = browserTimeout(options.timeoutMs);
+    assertCallbacks(options);
+    const timeoutMs = waitTimeout(options.timeoutMs, DEFAULT_BROWSER_LOGIN_TIMEOUT_MS);
     if (options.signal?.aborted) throw abortError();
-    const config = await this.nativeSignInConfig(options.signal);
+    const config = await this.nativeSignInConfig(options.signal, signInRequestTimeout(options));
     return this.signInThroughBrowser(config, { ...options, timeoutMs });
   }
 
@@ -1130,23 +1152,29 @@ export class ThalovantControlPlane {
    *
    * `deviceName` names this machine on the consent page (a device login's
    * `clientName`). `timeoutMs` defaults to each method's own: 300000 for the
-   * browser, 900000 for a device login, whose own timeout error is unchanged.
-   * `openUrl` opens both methods' pages. Resolves with the token answer, as
-   * both methods do.
+   * browser, 900000 for a device login, whose own timeout error is unchanged;
+   * a negative or `NaN` one is refused before anything is sent. `openUrl`
+   * opens both methods' pages. Resolves with the token answer, as both
+   * methods do.
    */
   async interactiveLogin(options: InteractiveLoginOptions = {}): Promise<JsonRecord> {
     const method = options.method ?? "auto";
     if (method !== "auto" && method !== "browser" && method !== "device") {
       throw new TypeError(`method must be "auto", "browser" or "device", not ${JSON.stringify(method)}.`);
     }
+    assertCallbacks(options);
+    // Either method's wait, checked before either starts: a NaN would never
+    // reach a device login's deadline.
+    waitTimeout(options.timeoutMs, 0);
     const signal = options.signal;
     if (signal?.aborted) throw abortError();
     const scopes = options.scopes ? [...options.scopes] : undefined;
     const name = options.deviceName || defaultDeviceName();
+    const requestTimeoutMs = signInRequestTimeout(options);
     let config: NativeSignInConfig | undefined;
     if (method === "browser") {
       assertSecureTokenExchange(this.apiUrl);
-      config = await this.nativeSignInConfig(signal);
+      config = await this.nativeSignInConfig(signal, requestTimeoutMs);
     } else if (method === "auto" && canOpenBrowser()) {
       let secure = true;
       try {
@@ -1156,7 +1184,7 @@ export class ThalovantControlPlane {
       }
       if (secure) {
         try {
-          config = await this.nativeSignInConfig(signal);
+          config = await this.nativeSignInConfig(signal, requestTimeoutMs);
         } catch (error) {
           // An older API (404), or one that cannot say: the browser has not
           // been opened, so a device login is not a downgrade.
@@ -1172,7 +1200,7 @@ export class ThalovantControlPlane {
           clientName: name,
           openBrowser: options.openBrowser,
           timeoutMs: options.timeoutMs ?? DEFAULT_DEVICE_LOGIN_TIMEOUT_MS,
-          openUrl: options.openUrl,
+          openUrl: options.openUrl ?? undefined,
         },
         signal,
       );
@@ -1181,16 +1209,16 @@ export class ThalovantControlPlane {
       scopes,
       deviceName: name,
       openBrowser: options.openBrowser,
-      timeoutMs: browserTimeout(options.timeoutMs),
+      timeoutMs: waitTimeout(options.timeoutMs, DEFAULT_BROWSER_LOGIN_TIMEOUT_MS),
       signal,
       openUrl: options.openUrl,
+      requestTimeoutMs,
     });
   }
 
   /** `GET /v1/auth/native/config`: where to send the browser, where to exchange the code. */
-  private async nativeSignInConfig(signal?: AbortSignal): Promise<NativeSignInConfig> {
-    const response = await this.send("GET", "/v1/auth/native/config", { auth: false, signal });
-    const text = await response.text();
+  private async nativeSignInConfig(signal: AbortSignal | undefined, timeoutMs: number): Promise<NativeSignInConfig> {
+    const { response, text } = await this.signInRequest("GET", "/v1/auth/native/config", undefined, signal, timeoutMs);
     if (response.status === 404) {
       const error = apiError(response.status, text, undefined, response.headers);
       throw new ThalovantApiError(
@@ -1202,6 +1230,42 @@ export class ThalovantControlPlane {
     // A 2xx the SDK cannot use is an error with no status, as a token
     // answer's is: the API did not refuse.
     return NativeSignInConfig.fromResponse(parseJsonBody(text)?.value);
+  }
+
+  /**
+   * One request of a browser sign-in, its answer read whole, within
+   * `timeoutMs`.
+   *
+   * Bounded as the reference bounds every request (10 seconds by default), so
+   * the exchange always ends before the accepted tab's own wait for its page
+   * does: the tab never says the sign-in failed while it is still going on. A
+   * request that runs out of time, or whose answer breaks off, is a
+   * {@link ThalovantApiUnreachableError} with no status -- `interactiveLogin()`
+   * falls back from one at the configuration -- and the caller's `signal`
+   * still rejects with an `AbortError`.
+   */
+  private async signInRequest(
+    method: string,
+    path: string,
+    body: JsonRecord | undefined,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+  ): Promise<{ response: Response; text: string }> {
+    const bound = boundedSignal(signal, timeoutMs);
+    try {
+      const response = await this.send(method, path, { ...(body ? { body } : {}), auth: false, signal: bound.signal });
+      return { response, text: await response.text() };
+    } catch (error) {
+      if (signal?.aborted) throw abortError();
+      if (bound.expired()) {
+        throw new ThalovantApiUnreachableError(`The Thalovant API did not answer within ${timeoutMs / 1000} seconds.`);
+      }
+      if (error instanceof ThalovantApiError) throw error;
+      // The answer began and broke off; nothing it said can be read.
+      throw new ThalovantApiUnreachableError("The Thalovant API's answer could not be read.");
+    } finally {
+      bound.dispose();
+    }
   }
 
   /** One browser sign-in against `config`: listen, open, wait, exchange, answer the tab. */
@@ -1227,6 +1291,9 @@ export class ThalovantControlPlane {
         scopes: options.scopes,
         deviceName: options.deviceName || defaultDeviceName(),
       });
+      // Cancelled while the port was bound or the challenge made: nothing is
+      // shown or opened for a listener that is about to close.
+      if (signal?.aborted) throw abortError();
       presentBrowserLogin(url, options);
       const callback = await listener.wait(options.timeoutMs, signal);
       if (!callback) {
@@ -1239,14 +1306,21 @@ export class ThalovantControlPlane {
         throw new ThalovantDeviceLoginDeniedError("The sign-in request was denied in the browser.");
       }
       if (!callback.code) {
-        // Only a word the problem-code rule allows is repeated: the page's
-        // `error` came from whoever opened the tab.
-        const code = callback.error && /^[A-Za-z0-9_.:-]{1,80}$/.test(callback.error) ? callback.error : undefined;
+        // Only a word the problem-code rule allows is repeated -- the page's
+        // `error` came from whoever opened the tab -- and never one that
+        // carries this sign-in's state.
+        const error = callback.error;
+        const code = error && /^[A-Za-z0-9_.:-]{1,80}$/.test(error) && !error.includes(state) ? error : undefined;
         throw new ThalovantApiError(`The browser came back without a sign-in code${code ? ` (${code}).` : "."}`, { code });
       }
       // A code is single-use: retrying the exchange would only revoke the
       // token a first exchange minted (RFC 9700), so it is never retried.
-      const token = await this.exchangeBrowserCode(config, callback.code, verifier, redirectUri, state, signal);
+      const token = await this.exchangeBrowserCode(
+        config,
+        { code: callback.code, verifier, redirectUri, state },
+        signal,
+        signInRequestTimeout(options),
+      );
       listener.finish(true);
       return token;
     } finally {
@@ -1261,28 +1335,27 @@ export class ThalovantControlPlane {
    * object, or has no `access_token`, is an error with no status -- the API
    * did not refuse, its answer could not be used -- and any other failure
    * carries the api-errors fields (`invalid_grant` for every way an exchange
-   * fails). The code, the verifier and the state are scrubbed from the body
-   * before it is read, so an API that echoes the request back (a 422 lists
-   * each field's `input`) puts none of them in the error.
+   * fails). The code, the verifier and the state are scrubbed from the body,
+   * as sent and once decoded, so an API that echoes the request back (a 422
+   * lists each field's `input`) puts none of them in the error.
    */
   private async exchangeBrowserCode(
     config: NativeSignInConfig,
-    code: string,
-    verifier: string,
-    redirectUri: string,
-    state: string,
-    signal?: AbortSignal,
+    secrets: { code: string; verifier: string; redirectUri: string; state: string },
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
   ): Promise<JsonRecord> {
     assertSecureTokenExchange(this.apiUrl);
     const body: JsonRecord = {
-      code,
-      code_verifier: verifier,
+      code: secrets.code,
+      code_verifier: secrets.verifier,
       client_id: config.sdkClientId,
-      redirect_uri: redirectUri,
+      redirect_uri: secrets.redirectUri,
     };
-    const response = await this.send("POST", config.tokenEndpoint, { body, auth: false, signal });
-    const text = await response.text();
-    if (!response.ok) throw apiError(response.status, text, [code, verifier, state], response.headers);
+    const { response, text } = await this.signInRequest("POST", config.tokenEndpoint, body, signal, timeoutMs);
+    if (!response.ok) {
+      throw apiError(response.status, text, [secrets.code, secrets.verifier, secrets.state], response.headers);
+    }
     const parsed = parseJsonBody(text)?.value;
     if (!isRecord(parsed)) {
       throw new ThalovantApiError("Thalovant API returned an unexpected response shape.");
@@ -1324,8 +1397,12 @@ export class ThalovantControlPlane {
       const completeUri = grant.verification_uri_complete;
       if (typeof completeUri === "string" && completeUri) {
         try {
-          await (options.openUrl ?? openExternalUrl)(completeUri);
+          const opening = (options.openUrl ?? openExternalUrl)(completeUri);
+          // Only interactiveLogin() passes a signal: an opener that never
+          // returns must not outlive a cancelled sign-in.
+          await (signal ? untilAborted(opening, signal) : opening);
         } catch {
+          if (signal?.aborted) throw abortError();
           // Browser availability is best-effort; the printed URL always works.
         }
       }
@@ -2694,11 +2771,23 @@ export class ThalovantControlPlane {
       if (!this.accessToken) throw new ThalovantApiError("Missing Thalovant API access token.");
       headers.authorization = `Bearer ${this.accessToken}`;
     }
+    // A path on the API, always. Without its leading slashes a path such as
+    // `/https://elsewhere.example/x` -- a browser sign-in's `token_endpoint`
+    // comes from the API's answer -- reads as an absolute URL, so a first
+    // segment that looks like a scheme is kept a segment.
+    let relative = path.replace(/^\/+/, "");
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(relative)) relative = `./${relative}`;
     let url: URL;
+    let base: URL;
     try {
-      url = new URL(path.replace(/^\/+/, ""), this.apiUrl);
+      base = new URL(this.apiUrl);
+      url = new URL(relative, base);
     } catch {
       throw new ThalovantApiError("The configured control-plane API URL is invalid.");
+    }
+    if (url.origin !== base.origin) {
+      // Whatever the path held: what is sent goes to the API and nowhere else.
+      throw new ThalovantApiError("Control-plane requests must stay on the configured API's origin.");
     }
     if (url.username || url.password) {
       throw new ThalovantApiError("Control-plane URLs must not include embedded credentials.");
@@ -2843,8 +2932,11 @@ function isRecord(value: unknown): value is JsonRecord {
  * The error for a response the API answered with a failure status.
  *
  * Any secrets the SDK itself generated and sent (`redactSecrets`) are scrubbed
- * from the body text first, so they reach neither the message nor `problem`.
- * The body is then parsed once: the message is built from it, and when it is a
+ * before a message is made of the body: from every decoded string and key of a
+ * JSON body, and from the text of any other, so they reach neither the message
+ * nor `problem`, however the body spelt them; a secret under 8 characters is
+ * replaced only where it stands alone.
+ * The body is parsed once: the message is built from it, and when it is a
  * JSON object it rides on the error whole, as `problem`, with its `code` and
  * its unshortened `detail` read out of it by the error itself.
  */
@@ -2854,8 +2946,23 @@ function apiError(
   redactSecrets?: ReadonlyArray<string | undefined>,
   headers?: Pick<Headers, "get">,
 ): ThalovantApiError {
-  const safeBody = redactSecrets?.length ? redactSecretsInText(bodyText, redactSecrets) : bodyText;
-  const body = parseJsonBody(safeBody);
+  let safeBody = bodyText;
+  let body = parseJsonBody(bodyText);
+  if (redactSecrets?.length) {
+    if (body) {
+      // A JSON body is scrubbed once decoded, every string and key in it:
+      // each JSON spelling of a secret (`\u0063` for `c`, `\/` for `/`)
+      // decodes back into the secret itself. Replacing spellings in the text
+      // could also cut an escape in two -- `\u0032` in front of a secret that
+      // starts with `2` -- and leave a body that no longer parses.
+      body = { value: redactSecretsInJson(body.value, redactSecrets) };
+      safeBody = JSON.stringify(body.value) ?? "";
+    } else {
+      // Text: every known spelling, then a secret under 8 characters where it
+      // stands alone.
+      safeBody = redactSecretsInString(redactSecretsInText(bodyText, redactSecrets), redactSecrets);
+    }
+  }
   const message = apiErrorMessage(status, safeBody, body);
   const options = {
     statusCode: status,
@@ -2899,13 +3006,53 @@ function retryAfterHeader(headers: Pick<Headers, "get"> | undefined): number | u
   return undefined;
 }
 
-/** A browser sign-in's wait: the caller's, or the default; a number of milliseconds, never negative. */
-function browserTimeout(timeoutMs: number | undefined): number {
-  if (timeoutMs === undefined) return DEFAULT_BROWSER_LOGIN_TIMEOUT_MS;
+/** A sign-in's wait: the caller's, or `fallback`; a number of milliseconds, never negative or `NaN`. */
+function waitTimeout(timeoutMs: number | undefined, fallback: number): number {
+  if (timeoutMs === undefined) return fallback;
   if (typeof timeoutMs !== "number" || Number.isNaN(timeoutMs) || timeoutMs < 0) {
     throw new RangeError(`timeoutMs must be a number of milliseconds, not ${String(timeoutMs)}.`);
   }
   return timeoutMs;
+}
+
+/**
+ * How long one browser sign-in request may take, in milliseconds: 10 seconds,
+ * the reference's default request timeout, well inside the accepted tab's
+ * 60-second wait for its page.
+ */
+const BROWSER_SIGN_IN_REQUEST_TIMEOUT_MS = 10_000;
+
+function signInRequestTimeout(options: { requestTimeoutMs?: number }): number {
+  return waitTimeout(options.requestTimeoutMs, BROWSER_SIGN_IN_REQUEST_TIMEOUT_MS);
+}
+
+/** `prompt` and `openUrl` are functions or absent: a string in their place would be ignored without a word. */
+function assertCallbacks(options: { prompt?: unknown; openUrl?: unknown }): void {
+  for (const name of ["prompt", "openUrl"] as const) {
+    const value = options[name];
+    if (value !== undefined && value !== null && typeof value !== "function") {
+      throw new TypeError(`${name} must be a function that receives the URL, not a ${typeof value}.`);
+    }
+  }
+}
+
+/** `value`, awaited, or an `AbortError` the moment `signal` aborts, whichever is first. */
+function untilAborted<T>(value: T | PromiseLike<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise<T>((resolve, reject) => {
+    const aborted = (): void => reject(abortError());
+    signal.addEventListener("abort", aborted, { once: true });
+    Promise.resolve(value).then(
+      (result) => {
+        signal.removeEventListener("abort", aborted);
+        resolve(result);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", aborted);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**
