@@ -1,6 +1,27 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit's second review of #110 (12 threads, 2 major): fixes and verification.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit's third review of #110 (10 threads): nine fixes, one contract reply.
 
 # Maintenance report
+
+## 2026-11-08 — CodeRabbit's third review of #110 (10 threads)
+
+Nine fixed (one major, M7), one replied to as the cross-SDK contract (M6). The browser-login conformance record is unchanged and equal to the reference's (Python 39e31d8, 119 cases).
+
+| Thread | Finding | Outcome |
+| :--- | :--- | :--- |
+| M0 | AUDIT: move the fixed spelling limitation out of Open; correct B10 | Fixed: the entry is under Fixed, the JSON path and the text fallback told apart; B10 says the device poll's problems use the decoded scrub too. |
+| M1 | CHANGELOG: qualify the drain's guarantee | Fixed: a browser that keeps sending past 2 s / 1 MiB can still see a reset. |
+| M2 | Cancel the active reader on timeout | Fixed: the body is read through a reader the bound can cancel (`readAnswer`); a late answer whose body is still free is cancelled. Test: the stream's `cancel` runs. |
+| M3 | Skip the opener after cancellation | Fixed: the queued opener checks the signal when it runs. Test: a prompt that aborts opens nothing. |
+| M4 | Abortable device-token polling | Fixed: with a signal, the authorize request and every poll (request and body) end on a cancel, and a token that answers after it is not kept. `loginWithBrowser()` is unchanged. Test: a poll whose fetch ignores the signal and answers late. |
+| M5 | One pass over overlapping secrets in a text error | Fixed: a text body is scrubbed once, over every secret and its JSON spellings (`secretSpellings`). Test: a code that overlaps the verifier's start. |
+| M6 | Reject browser-blocked ports | Replied: the final contract names the unusable ports (0 and above 65535); the reference accepts 6000, so refusing it would make `auto` choose differently. Reported to the lead. |
+| M7 | Quadratic marker scan (major) | Fixed: markers are found by binary search. Test: 100,000 markers and a one-character code, under 2 s. |
+| M8 | Secrets that extend beyond a marker | Fixed: only a match wholly inside a marker is skipped; one that reaches into a marker takes the marker with it. Tested. |
+| M9 | SUGGESTIONS: device-poll status | Fixed: #6 is done, nothing left to schedule. |
+
+Verification: `npm test` 975 tests, 974 passed, 1 skipped; `test/browser-login.test.ts` 77 passed; `npm run record-conformance` unchanged; `check-sdk-parity.py --consumer thalovant-node-sdk` verified against Python 39e31d8 and `main`; strict `tsc` clean on the changed files.
+
+Transparency Report: Claude Opus 5.5 (`claude-opus-5-5`), directed by the release lead, made these fixes and tests, refreshed only the changed files' evidence after the suite passed, and answered the threads. No human review yet; unmerged.
 
 ## 2026-11-08 — CodeRabbit's second review of #110 (12 threads)
 

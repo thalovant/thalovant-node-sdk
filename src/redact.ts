@@ -133,11 +133,12 @@ export interface RedactOptions {
  * Every occurrence of every secret is found in the text as given, and
  * occurrences that overlap are replaced together, by one marker: a short code
  * that overlaps the start of a verifier takes the whole verifier with it. An
- * occurrence that starts inside a {@link REDACTED} already there is left alone,
- * so scrubbing twice changes nothing; one that starts where a marker starts --
- * a secret that begins with `[redacted]` -- is still replaced. The text is a
- * decoded string, never JSON source, so nothing here can break a document's
- * structure.
+ * occurrence that lies wholly inside a {@link REDACTED} already there is left
+ * alone, so scrubbing twice changes nothing; one that only starts or ends
+ * inside a marker is replaced, and takes that marker with it. Markers are
+ * looked up by binary search, so a text full of them costs O(n log n), not
+ * O(n^2). The text is a decoded string, never JSON source, so nothing here can
+ * break a document's structure.
  */
 export function redactSecretsInString(
   text: string,
@@ -146,21 +147,42 @@ export function redactSecretsInString(
 ): string {
   const wanted = [...new Set(secrets.filter((secret): secret is string => typeof secret === "string" && secret !== ""))];
   if (!wanted.length) return text;
-  const markers: Array<[number, number]> = [];
-  for (let at = text.indexOf(REDACTED); at !== -1; at = text.indexOf(REDACTED, at + REDACTED.length)) {
-    markers.push([at, at + REDACTED.length]);
-  }
-  const insideMarker = (at: number): boolean => markers.some(([from, to]) => at > from && at < to);
+  // Marker starts, in order; markers never overlap, so the one that could
+  // hold a position is the last that starts at or before it.
+  const markers: number[] = [];
+  for (let at = text.indexOf(REDACTED); at !== -1; at = text.indexOf(REDACTED, at + REDACTED.length)) markers.push(at);
+  const markerAt = (position: number): number | undefined => {
+    let low = 0;
+    let high = markers.length - 1;
+    let found: number | undefined;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      if (markers[middle] <= position) {
+        found = markers[middle];
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    return found !== undefined && position < found + REDACTED.length ? found : undefined;
+  };
   const spans: Array<[number, number]> = [];
   for (const secret of wanted) {
     for (let at = text.indexOf(secret); at !== -1; at = text.indexOf(secret, at + 1)) {
-      if (insideMarker(at)) continue;
-      const end = at + secret.length;
+      let start = at;
+      let end = at + secret.length;
+      const opening = markerAt(start);
+      const closing = markerAt(end - 1);
+      // Wholly inside one marker: already redacted.
+      if (opening !== undefined && opening === closing) continue;
       if (!options.everywhere && secret.length < 8) {
         const after = end < text.length ? String.fromCodePoint(text.codePointAt(end)!) : undefined;
-        if (isWordCharacter(characterBefore(text, at)) || isWordCharacter(after)) continue;
+        if (isWordCharacter(characterBefore(text, start)) || isWordCharacter(after)) continue;
       }
-      spans.push([at, end]);
+      // Reaching into a marker takes the whole marker, so none is left cut.
+      if (opening !== undefined) start = opening;
+      if (closing !== undefined) end = closing + REDACTED.length;
+      spans.push([start, end]);
     }
   }
   if (!spans.length) return text;
@@ -286,6 +308,22 @@ export function redactSecretsInJsonNumbers(
     index += 1;
   }
   return out;
+}
+
+/**
+ * Each secret and the spellings JSON gives it ({@link jsonSpellings}): of
+ * those of 8 characters or more, or of every one with `everywhere`. Passed to
+ * {@link redactSecretsInString} together, so that overlapping occurrences of
+ * any of them in a text are found before any is replaced.
+ */
+export function secretSpellings(secrets: ReadonlyArray<string | undefined>, options: RedactOptions = {}): string[] {
+  const out = new Set<string>();
+  for (const secret of secrets) {
+    if (typeof secret !== "string" || secret === "") continue;
+    out.add(secret);
+    if (options.everywhere || secret.length >= 8) for (const spelling of jsonSpellings(secret)) out.add(spelling);
+  }
+  return [...out];
 }
 
 /**

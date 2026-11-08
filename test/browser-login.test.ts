@@ -1544,3 +1544,93 @@ test("an error body nested too deep for the stack still gives an error with its 
   assert.equal(plain.detail, "invalid_grant");
   JSON.stringify(plain.problem);
 });
+
+// -- CodeRabbit's third review of #110 -------------------------------------------------
+
+test("at the bound, the body being read is cancelled even when fetch ignores its signal", async () => {
+  let cancelled = false;
+  const plane = new ThalovantControlPlane("http://127.0.0.1:9", {
+    fetch: (async (input: URL | string) => {
+      if (String(input).endsWith("/v1/auth/native/config")) return jsonResponse(CONFIG);
+      // A body that would go on forever, and only stops when it is cancelled.
+      return new Response(new ReadableStream({ cancel: () => void (cancelled = true) }), { status: 200 });
+    }) as unknown as typeof fetch,
+  });
+  const handed = opened();
+  const task = plane.browserLogin({ openBrowser: false, prompt: handed.handOver, requestTimeoutMs: 100 }).catch((error: unknown) => error);
+  const { port, state } = parts(await handed.url);
+  await get(port, `/callback?code=unit-code-value&state=${state}`);
+  assert.ok((await task) instanceof ThalovantApiUnreachableError);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(cancelled, true);
+});
+
+test("a prompt that cancels the sign-in opens nothing", async () => {
+  await withApi(new Api(), async ({ url: apiUrl }) => {
+    const plane = new ThalovantControlPlane(apiUrl);
+    const controller = new AbortController();
+    const openedWith: string[] = [];
+    const error = await plane
+      .browserLogin({ signal: controller.signal, prompt: () => controller.abort(), openUrl: (url) => void openedWith.push(url) })
+      .catch((failure: unknown) => failure);
+    assert.ok(error instanceof Error && error.name === "AbortError", String(error));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(openedWith, []);
+  });
+});
+
+test("a cancelled device login ends even when fetch ignores its signal, and keeps no late token", async () => {
+  let answer!: (response: Response) => void;
+  const late = new Promise<Response>((resolve) => {
+    answer = resolve;
+  });
+  let polled = false;
+  const plane = new ThalovantControlPlane("https://api.example.test", {
+    fetch: (async (input: URL | string) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/v1/auth/device/authorize") return jsonResponse(DEVICE_GRANT);
+      polled = true;
+      return late;
+    }) as unknown as typeof fetch,
+  });
+  const controller = new AbortController();
+  const { value: error } = await capturedLog(async () => {
+    const task = plane
+      .interactiveLogin({ method: "device", signal: controller.signal, openUrl: () => undefined })
+      .catch((failure: unknown) => failure);
+    while (!polled) await new Promise((resolve) => setTimeout(resolve, 5));
+    controller.abort();
+    return task;
+  });
+  assert.ok(error instanceof Error && error.name === "AbortError", String(error));
+  answer(jsonResponse(TOKEN));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(plane.accessToken, undefined);
+  assert.equal(plane.tokenId, undefined);
+});
+
+test("a text error with a code overlapping the verifier keeps no part of either", async () => {
+  const verifier = "abcdefghij-verifier-0123456789";
+  const code = "secret-code-xxxxxxxxxxxxxxxxxx-abcdefghij";
+  const echoed = "secret-code-xxxxxxxxxxxxxxxxxx-abcdefghij-verifier-0123456789";
+  const plane = new ThalovantControlPlane("https://api.example.test", {
+    fetch: (async () => new Response(`refused: ${echoed}`, { status: 400, headers: { "content-type": "text/plain" } })) as unknown as typeof fetch,
+  });
+  const error = await plane.completeNativeSignIn(code, verifier, "app", "app://auth").catch((failure: unknown) => failure);
+  assert.ok(error instanceof ThalovantApiError && error.statusCode === 400, String(error));
+  assert.match(error.message, /refused: \[redacted\]$/);
+  for (const piece of ["verifier-0123456789", "secret-code", "abcdefghij"]) assert.ok(!error.message.includes(piece), error.message);
+});
+
+test("scrubbing a text full of markers stays linear enough, and takes a code that reaches past a marker", () => {
+  const everywhere = { everywhere: true };
+  const text = "[redacted]c".repeat(100_000);
+  const started = performance.now();
+  const out = redactSecretsInString(text, ["c"], everywhere);
+  assert.ok(performance.now() - started < 2_000, "scrubbing took too long");
+  assert.equal(out, "[redacted][redacted]".repeat(100_000));
+  // A code that starts inside a marker and goes on past it is replaced, marker and all.
+  assert.equal(redactSecretsInString("x [redacted]xyz y", ["acted]xyz"], everywhere), "x [redacted] y");
+  // One wholly inside a marker is not: it is already redacted.
+  assert.equal(redactSecretsInString("x [redacted] y", ["dacte"], everywhere), "x [redacted] y");
+});

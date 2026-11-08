@@ -67,8 +67,8 @@ import {
   redactSecretsInJson,
   redactSecretsInJsonNumbers,
   redactSecretsInString,
-  redactSecretsInText,
   redactUrlUserinfo,
+  secretSpellings,
   withoutSecretKeys,
   type RedactOptions,
 } from "./redact.js";
@@ -1270,15 +1270,20 @@ export class ThalovantControlPlane {
     });
     ended.catch(() => undefined);
     const sending = this.send(method, path, { ...(body ? { body } : {}), auth: false, signal: bound.signal });
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       const response = await Promise.race([sending, ended]);
-      const reading = response.text();
+      const reading = readAnswer(response, (active) => {
+        reader = active;
+      });
       reading.catch(() => undefined);
       return { response, text: await Promise.race([reading, ended]) };
     } catch (error) {
-      // An answer that arrives after the bound is let go unread.
+      // The body being read is cancelled, so that a producer that ignores the
+      // signal stops too; an answer that arrives later is let go unread.
+      void reader?.cancel().catch(() => undefined);
       void sending.then(
-        (late) => late.body?.cancel().catch(() => undefined),
+        (late) => (late.body && !late.body.locked ? late.body.cancel().catch(() => undefined) : undefined),
         () => undefined,
       );
       if (signal?.aborted) throw abortError();
@@ -1402,7 +1407,10 @@ export class ThalovantControlPlane {
     // Sent as given, an empty string included: the API refuses one (422),
     // which is better than signing in unverified in silence.
     if (options.clientId !== undefined && options.clientId !== null) body.client_id = options.clientId;
-    const grant = await this.request("POST", "/v1/auth/device/authorize", { body, auth: false, signal });
+    // With a signal, every wait ends on a cancel, even with a fetch that
+    // ignores its signal; without one (loginWithBrowser()), nothing changes.
+    const guard = <T>(work: Promise<T>): Promise<T> => (signal ? untilAborted(work, signal) : work);
+    const grant = await guard(this.request("POST", "/v1/auth/device/authorize", { body, auth: false, signal }));
 
     // Parsed for its checks: the fields are there, and neither URL a browser
     // is about to open carries credentials or leaves http(s).
@@ -1441,6 +1449,8 @@ export class ThalovantControlPlane {
       timeoutMs: options.timeoutMs ?? DEFAULT_DEVICE_LOGIN_TIMEOUT_MS,
       ...(signal ? { signal } : {}),
     });
+    // A cancelled sign-in keeps no token, however late the answer came.
+    if (signal?.aborted) throw abortError();
     this.acceptToken(ApiToken.fromResponse(token));
     return token;
   }
@@ -1636,12 +1646,13 @@ export class ThalovantControlPlane {
     let waitMs = options.intervalMs ?? DEFAULT_DEVICE_POLL_INTERVAL_MS;
     for (;;) {
       if (signal?.aborted) throw abortError();
-      const response = await this.send("POST", "/v1/auth/device/token", {
+      const guard = <T>(work: Promise<T>): Promise<T> => (signal ? untilAborted(work, signal) : work);
+      const response = await guard(this.send("POST", "/v1/auth/device/token", {
         body: { device_code: deviceCode },
         auth: false,
         ...(signal ? { signal } : {}),
-      });
-      const text = await response.text();
+      }));
+      const text = await guard(response.text());
       const parsed = parseJsonBody(text)?.value;
       if (response.ok) {
         if (!isRecord(parsed)) {
@@ -2993,9 +3004,11 @@ function apiError(
   // could also cut an escape in two -- `\u0032` in front of a secret that
   // starts with `2` -- and leave a body that no longer parses.
   if (!body && redactSecrets?.length) {
-    // Text: every known spelling, then a secret under 8 characters where it
-    // stands alone (anywhere, with `everywhere`).
-    safeBody = redactSecretsInString(redactSecretsInText(bodyText, redactSecrets), redactSecrets, scrub);
+    // Text: every secret and every spelling JSON gives it, in one pass, so
+    // that a code overlapping a verifier cannot hide the verifier's start from
+    // a second replacement; a secret under 8 characters where it stands alone
+    // (anywhere, with `everywhere`).
+    safeBody = redactSecretsInString(bodyText, secretSpellings(redactSecrets, scrub), scrub);
   }
   const message = apiErrorMessage(status, safeBody, body);
   const options = {
@@ -3038,6 +3051,31 @@ function retryAfterHeader(headers: Pick<Headers, "get"> | undefined): number | u
     if (/^\d{1,10}$/.test(text)) return Number.parseInt(text, 10);
   }
   return undefined;
+}
+
+/**
+ * An answer's body as text, read through a reader that `hold` receives, so
+ * that the caller can cancel it: `response.text()` locks the body where no
+ * cancel can reach it. Decoded as `text()` decodes (UTF-8, a leading BOM
+ * dropped). A response without a stream body -- a test double, say -- is read
+ * with its own `text()`.
+ */
+async function readAnswer(
+  response: Response,
+  hold: (reader: ReadableStreamDefaultReader<Uint8Array>) => void,
+): Promise<string> {
+  const body = response.body as ReadableStream<Uint8Array> | null | undefined;
+  if (!body || typeof body.getReader !== "function") return response.text();
+  const reader = body.getReader();
+  hold(reader);
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
 }
 
 /** A sign-in's wait: the caller's, or `fallback`; a number of milliseconds, never negative or `NaN`. */
@@ -3103,7 +3141,7 @@ function untilAborted<T>(value: T | PromiseLike<T>, signal: AbortSignal): Promis
  */
 function presentBrowserLogin(
   url: string,
-  options: Pick<BrowserLoginOptions, "prompt" | "openBrowser" | "openUrl">,
+  options: Pick<BrowserLoginOptions, "prompt" | "openBrowser" | "openUrl" | "signal">,
 ): void {
   const open = options.openBrowser ?? true;
   if (options.prompt) {
@@ -3116,7 +3154,9 @@ function presentBrowserLogin(
   if (open) {
     const opener = options.openUrl ?? openExternalUrl;
     void Promise.resolve()
-      .then(() => opener(url))
+      // A prompt (or anything before this turn) that cancelled the sign-in
+      // opens nothing: its listener is closing.
+      .then(() => (options.signal?.aborted ? undefined : opener(url)))
       .catch(() => undefined);
   }
 }

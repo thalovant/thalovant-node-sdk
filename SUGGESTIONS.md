@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: #11 and #12 decided in the final browser sign-in contract (Python #113 at 39e31d8).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: #6 done, the device poll's problems included (CodeRabbit on #110).
 
 # Suggestions
 
@@ -34,7 +34,7 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: #11 and #12 decided in the fin
 
 ## 6. Scrub secrets from the parsed error body as well
 
-- **Status (2026-11-08):** done for `apiError` in 0.11.0 (AUDIT.md B10); the device poll's own pending/denied/expired problems in `deviceTokenOnce` and `pollDeviceToken` remain, and wait for a change that may touch device login.
+- **Status (2026-11-08):** done in 0.11.0: `apiError` and the device poll's pending, denied and expired problems (`deviceTokenOnce`, `pollDeviceToken`) all scrub the decoded body (`scrubbedJsonBody` in `src/control.ts`). Nothing is left to schedule.
 
 - **Problem:** `redactSecretsInText` (`src/redact.ts`) replaces a secret's known spellings before `apiError` (`src/control.ts`) parses the body: the raw one, the `JSON.stringify` one, and the one with every non-ASCII character `\u`-escaped. Any other valid JSON spelling decodes the secret back into `problem` and the message (AUDIT.md, Open). That covers a `\u`-escaped ASCII character such as `\u0022`, `\/`, and non-ASCII escaped in some places only. The API does not write those spellings. Since 0.10.0, though, user-entered bridge secrets take this path.
 - **Proposal:** after `JSON.parse`, walk the parsed value and replace each secret in every string, keys included, then build the message from that. Keep the text pass for a body that is not JSON. Add a case to `test/home-link.test.ts` whose JSON body spells a quote inside the secret as `\u0022`, and assert that the decoded secret is in neither `message` nor `problem`. Port it to the other SDKs in the same release train.
