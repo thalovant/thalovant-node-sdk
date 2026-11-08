@@ -101,11 +101,13 @@ test("browser bundle builds without Node builtins, ws, or mqtt", async () => {
   // stay out of the bundle entirely.
   assert.ok(bundle.includes("platform/browser.js"), "expected the browser platform module in the bundle");
   assert.ok(bundle.includes("transport-mqtt.browser.js"), "expected the mqtt browser stub in the bundle");
+  assert.ok(bundle.includes("loopback.browser.js"), "expected the loopback browser stub in the bundle");
   assert.ok(!bundle.includes("platform/node.js"), "the Node platform module leaked into the browser bundle");
+  assert.ok(!/dist\/src\/loopback\.js/.test(bundle), "the Node loopback listener leaked into the browser bundle");
   assert.ok(!/node_modules\/ws\//.test(bundle), "the ws package leaked into the browser bundle");
   assert.ok(!/node_modules\/mqtt\//.test(bundle), "the mqtt package leaked into the browser bundle");
   assert.ok(!/node_modules\/yaml\//.test(bundle), "the yaml package leaked into the browser bundle");
-  for (const builtin of ["node:crypto", "node:fs", "node:os", "node:path", "node:zlib"]) {
+  for (const builtin of ["node:crypto", "node:fs", "node:net", "node:os", "node:path", "node:zlib"]) {
     assert.ok(!bundle.includes(builtin), `${builtin} leaked into the browser bundle`);
   }
 });
@@ -166,6 +168,56 @@ test("browser bundle drives the control plane through globalThis.fetch", async (
   assert.equal(result.identity.endpointFor("wss"), "wss://jokes.thalovant.io");
   assert.equal(requests.length, 4);
   assert.equal(requests[3].init?.headers?.authorization, "Bearer token-1");
+});
+
+test("browser bundle has no loopback listener: browserLogin refuses, and the chooser signs in with a device login", async () => {
+  const bundle = await bundlePromise;
+  const sandbox = createSandbox();
+  // The verifier is made with btoa, which every browser has.
+  sandbox.btoa = btoa;
+  const asked: string[] = [];
+  sandbox.fetch = async (url: unknown, init?: SandboxRequest["init"]) => {
+    const target = String(url);
+    asked.push(`${init?.method ?? "GET"} ${new URL(target).pathname}`);
+    if (target.endsWith("/v1/auth/native/config")) {
+      return jsonReply(200, {
+        authorization_endpoint: "https://dash.thalovant.com/authorize",
+        token_endpoint: "/v1/auth/native/token",
+        sdk_client_id: "thalovant-sdk",
+        code_challenge_methods_supported: ["S256"],
+      });
+    }
+    if (target.endsWith("/v1/auth/device/authorize")) {
+      assert.deepEqual(JSON.parse(String(init?.body)), { client_name: "thalovant-node-sdk" });
+      return jsonReply(200, {
+        device_code: "dc-browser-bundle",
+        user_code: "WDJB-MJHT",
+        verification_uri: "https://thalovant.com/activate",
+        expires_in: 900,
+        interval: 0,
+      });
+    }
+    if (target.endsWith("/v1/auth/device/token")) {
+      return jsonReply(200, { access_token: "tvpat-browser-bundle", token_type: "bearer", scopes: [], token_id: "tok-bundle" });
+    }
+    throw new Error(`unexpected URL ${target}`);
+  };
+  runInContext(bundle, sandbox as object);
+  const sdk = sandbox.__thalovantSdk as Record<string, any>;
+  const api = new sdk.ThalovantControlPlane("https://api.example.com");
+
+  // A web page cannot listen on a port: refused before anything is shown.
+  await assert.rejects(
+    api.browserLogin({ openBrowser: false, prompt: () => assert.fail("a URL was shown") }),
+    /a web page cannot/,
+  );
+  // A page has no `process`, so it has no browser to send by the rule, and
+  // auto never asks for the configuration.
+  asked.length = 0;
+  const token = await api.interactiveLogin({ openBrowser: false });
+  assert.equal(token.access_token, "tvpat-browser-bundle");
+  assert.equal(api.tokenId, "tok-bundle");
+  assert.deepEqual(asked, ["POST /v1/auth/device/authorize", "POST /v1/auth/device/token"]);
 });
 
 test("browser bundle connects WSS through the global WebSocket and Web Crypto", async () => {

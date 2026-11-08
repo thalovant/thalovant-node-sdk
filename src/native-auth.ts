@@ -19,7 +19,22 @@
  * `begun.verifier` never leaves the process and never enters the browser. That
  * is what PKCE is for: a code intercepted by whatever else claimed the
  * redirect is useless without it.
+ *
+ * The same grant signs a *program* in -- a script, a command line, the MCP
+ * server -- through `ThalovantControlPlane.browserLogin()`, which listens on a
+ * loopback port for the answer (RFC 8252 section 7.3). The pieces it is made
+ * of live here, so that each can be checked against the shared vectors on its
+ * own: `browserAuthorizationUrl()` builds the address the browser opens,
+ * `loopbackRedirectUri()` the redirect it comes back to, `newState()` the
+ * value that ties the two together, `NativeSignInConfig` reads where the API
+ * says to send the browser, and `canOpenBrowser()` says whether this machine
+ * has a browser to send. A loopback redirect cannot be relayed: the browser
+ * that approves hands the code to its own computer, never to whoever sent the
+ * link.
  */
+import { ThalovantApiError } from "./errors.js";
+import { hostName } from "./loopback.js";
+
 // `node:crypto` is not importable here: this package ships a browser bundle
 // and a test asserts the bundle pulls in no Node builtins. `globalThis.crypto`
 // is Web Crypto, present in Node >= 20 (which package.json requires) and in
@@ -89,6 +104,16 @@ export function newVerifier(): string {
   return base64Url(randomBytes(64));
 }
 
+/**
+ * An OAuth `state`: 24 random bytes (192 bits), base64url, no padding.
+ *
+ * It ties the answer the browser brings back to the request that sent it.
+ * Compare it in constant time.
+ */
+export function newState(): string {
+  return base64Url(randomBytes(24));
+}
+
 /** The S256 challenge for a verifier. */
 export async function challengeFor(verifier: string): Promise<string> {
   const digest = await webCrypto().subtle.digest("SHA-256", new TextEncoder().encode(verifier));
@@ -130,7 +155,7 @@ export async function beginNativeSignIn(options: BeginNativeSignInOptions): Prom
   if (!redirectUri) throw new TypeError("redirectUri is required to start a sign-in.");
   assertSafeDashboard(options.dashboardUrl ?? DEFAULT_DASHBOARD_URL);
   const verifier = newVerifier();
-  const state = base64Url(randomBytes(24));
+  const state = newState();
   const scopes = options.scopes ?? DEFAULT_NATIVE_SCOPES;
   // Not `replace(/\/+$/, "")`: CodeQL is right that a trailing-run regex on a
   // caller-supplied string backtracks polynomially, and this one is handed a
@@ -270,4 +295,293 @@ export function assertSafeDashboard(url: string): void {
   throw new TypeError(
     `dashboardUrl must be https (or a loopback address while developing), not ${url}`,
   );
+}
+
+// -- Browser sign-in: PKCE on a loopback redirect (RFC 8252 section 7.3) ------
+
+/**
+ * The SDKs' own registered app, which a program signs in as through the
+ * browser. `GET /v1/auth/native/config` names it as `sdk_client_id`.
+ */
+export const SDK_CLIENT_ID = "thalovant-sdk";
+/** The one path the loopback listener answers. */
+export const LOOPBACK_CALLBACK_PATH = "/callback";
+/** Milliseconds a browser sign-in waits for the browser to come back (5 minutes). */
+export const DEFAULT_BROWSER_LOGIN_TIMEOUT_MS = 300_000;
+/**
+ * The longest `device_name` the consent page shows and the token is named by,
+ * in Unicode code points (the API refuses a longer one).
+ */
+export const MAX_DEVICE_NAME_LENGTH = 120;
+/** The name this SDK gives itself in {@link defaultDeviceName}. */
+const SDK_DEVICE_LABEL = "thalovant-node-sdk";
+
+/**
+ * `http://127.0.0.1:<port>/callback`, the one redirect a program is answered on.
+ *
+ * The IP literal, never `localhost`, which a hosts file or a resolver can send
+ * elsewhere; that path; no query, no trailing slash. The API matches it
+ * exactly and only for an unprivileged port, which is what a port bound as
+ * port 0 always is, so a port outside 1024-65535 is refused here
+ * ({@link RangeError}) rather than sent.
+ */
+export function loopbackRedirectUri(port: number): string {
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new RangeError(`A loopback redirect needs a port from 1024 to 65535, not ${String(port)}.`);
+  }
+  return `http://127.0.0.1:${port}${LOOPBACK_CALLBACK_PATH}`;
+}
+
+/**
+ * RFC 3986 percent-encoding: unreserved characters as they are, every other
+ * byte of the UTF-8 form as `%XX` in uppercase hex, a space as `%20`.
+ * `encodeURIComponent` leaves `! ' ( ) *` alone, so those are encoded here.
+ */
+function queryValue(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+/** What {@link browserAuthorizationUrl} puts after the endpoint. */
+export interface BrowserAuthorizationUrlOptions {
+  /** `http://127.0.0.1:<port>/callback`, from {@link loopbackRedirectUri}. */
+  redirectUri: string;
+  /** The S256 challenge of the verifier, from {@link challengeFor}. */
+  codeChallenge: string;
+  /** This sign-in's state, from {@link newState}. */
+  state: string;
+  /**
+   * The scopes the token will carry. Empty strings are dropped; when nothing
+   * is left the parameter is left out and the API grants its default
+   * (`hubs:read clients:write`).
+   */
+  scopes?: readonly string[] | null;
+  /**
+   * What the consent page and the token show. Cut to
+   * {@link MAX_DEVICE_NAME_LENGTH} code points, and left out when empty.
+   */
+  deviceName?: string | null;
+  /** The registered app, the configuration's `sdk_client_id`. Default {@link SDK_CLIENT_ID}. */
+  clientId?: string;
+}
+
+/**
+ * The address a browser sign-in opens.
+ *
+ * `{authorizationEndpoint}?response_type=code&client_id=...&redirect_uri=...
+ * &code_challenge=...&code_challenge_method=S256&state=...&scope=...
+ * &device_name=...`, in that order, every value percent-encoded as RFC 3986
+ * has it (a space is `%20`).
+ */
+export function browserAuthorizationUrl(authorizationEndpoint: string, options: BrowserAuthorizationUrlOptions): string {
+  const parameters: Array<[string, string]> = [
+    ["response_type", "code"],
+    ["client_id", options.clientId ?? SDK_CLIENT_ID],
+    ["redirect_uri", options.redirectUri],
+    ["code_challenge", options.codeChallenge],
+    // S256 only: `plain` puts the verifier in the browser.
+    ["code_challenge_method", "S256"],
+    ["state", options.state],
+  ];
+  const scope = (options.scopes ?? []).filter((value) => value).join(" ");
+  if (scope) parameters.push(["scope", scope]);
+  // Code points, not UTF-16 units: a cut must never split a character, and
+  // the API counts code points.
+  const deviceName = Array.from(options.deviceName ?? "").slice(0, MAX_DEVICE_NAME_LENGTH).join("");
+  if (deviceName) parameters.push(["device_name", deviceName]);
+  const query = parameters.map(([key, value]) => `${key}=${queryValue(value)}`).join("&");
+  return `${authorizationEndpoint}?${query}`;
+}
+
+/**
+ * `thalovant-node-sdk on <hostname>`: what the consent page and the token
+ * show when the caller names nothing. Just `thalovant-node-sdk` when the host
+ * has no name (or in a browser), and cut to {@link MAX_DEVICE_NAME_LENGTH}
+ * code points.
+ */
+export function defaultDeviceName(): string {
+  const host = hostName();
+  const name = host ? `${SDK_DEVICE_LABEL} on ${host}` : SDK_DEVICE_LABEL;
+  return Array.from(name).slice(0, MAX_DEVICE_NAME_LENGTH).join("");
+}
+
+/**
+ * This machine as the browser rule names it: `linux`, `macos`, `windows`, or
+ * Node's own name for anything else (`freebsd`, `openbsd`, `android` ...).
+ * Read at every call, so a test that sets `process.platform` is answered.
+ */
+function platformName(): string {
+  const platform = (globalThis as { process?: { platform?: unknown } }).process?.platform;
+  if (platform === "darwin") return "macos";
+  if (platform === "win32") return "windows";
+  return typeof platform === "string" && platform ? platform : "unknown";
+}
+
+function processEnvironment(): Readonly<Record<string, string | undefined>> {
+  return (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
+}
+
+/**
+ * Whether this machine can show a browser to the person signing in.
+ *
+ * Never in CI (`CI` set) or over SSH (`SSH_CONNECTION` or `SSH_TTY` set): the
+ * browser would open on another machine, or nowhere. Otherwise yes on `macos`
+ * and `windows`; anywhere else -- Linux, the BSDs -- only with a display
+ * (`DISPLAY` or `WAYLAND_DISPLAY`). A variable counts as set when it has a
+ * value: an empty one is not set, and `CI=false` is. `env` and `platform`
+ * default to this process's (`process.env`, and `process.platform` named as
+ * above); a web page has neither, so it has no browser to send by this rule.
+ */
+export function canOpenBrowser(env?: Readonly<Record<string, string | undefined>>, platform?: string): boolean {
+  const vars = env ?? processEnvironment();
+  const present = (name: string): boolean => {
+    const value = vars[name];
+    return typeof value === "string" && value !== "";
+  };
+  if (present("CI") || present("SSH_CONNECTION") || present("SSH_TTY")) return false;
+  const system = platform ?? platformName();
+  if (system === "macos" || system === "windows") return true;
+  return present("DISPLAY") || present("WAYLAND_DISPLAY");
+}
+
+/** Whitespace, or a C0 or C1 control character, anywhere in `value`. */
+function hasSpaceOrControl(value: string): boolean {
+  for (const char of value) {
+    const code = char.codePointAt(0)!;
+    if (code < 32 || (code >= 127 && code <= 159) || /\s/u.test(char)) return true;
+  }
+  return false;
+}
+
+/**
+ * https, or http on a loopback host while developing; a host; a port a
+ * browser can open; no credentials, query (not even a bare `?`), fragment,
+ * backslash, whitespace or control characters.
+ */
+function usableAuthorizationEndpoint(value: unknown): value is string {
+  if (typeof value !== "string" || !value || hasSpaceOrControl(value)) return false;
+  if (value.includes("?") || value.includes("#") || value.includes("\\")) return false;
+  const match = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/]*)/.exec(value);
+  if (!match) return false;
+  const scheme = match[1].toLowerCase();
+  const authority = match[2];
+  if (authority.includes("@")) return false;
+  let host: string;
+  let port: string;
+  if (authority.startsWith("[")) {
+    const end = authority.indexOf("]");
+    if (end === -1) return false;
+    host = authority.slice(1, end);
+    const rest = authority.slice(end + 1);
+    if (rest && !rest.startsWith(":")) return false;
+    port = rest.slice(1);
+  } else {
+    if (authority.includes("[") || authority.includes("]")) return false;
+    const colon = authority.indexOf(":");
+    host = colon === -1 ? authority : authority.slice(0, colon);
+    port = colon === -1 ? "" : authority.slice(colon + 1);
+  }
+  if (port && (!/^[0-9]{1,5}$/.test(port) || Number(port) > 65535)) return false;
+  host = host.toLowerCase();
+  if (!host) return false;
+  // What a browser would make of it, too: a malformed IPv6 literal, say.
+  try {
+    new URL(value);
+  } catch {
+    return false;
+  }
+  return scheme === "https" || (scheme === "http" && (host === "localhost" || host === "127.0.0.1" || host === "::1"));
+}
+
+/** A path on the API: one leading slash, no query, fragment, backslash, whitespace or control character. */
+function usableTokenEndpoint(value: unknown): value is string {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return false;
+  return !/[?#\\]/.test(value) && !hasSpaceOrControl(value);
+}
+
+/**
+ * Where a program signs in through the browser (`GET /v1/auth/native/config`).
+ *
+ * `authorizationEndpoint` is the dashboard page the browser opens;
+ * `tokenEndpoint` the path on the API the code is exchanged at; `sdkClientId`
+ * the registered app the program signs in as. The API reads it from its own
+ * settings, so a staging or self-hosted API sends the browser to its own
+ * dashboard.
+ */
+export class NativeSignInConfig {
+  readonly authorizationEndpoint: string;
+  readonly tokenEndpoint: string;
+  readonly sdkClientId: string;
+  /** Where a device login starts, when the API said; nothing here reads it. */
+  readonly deviceAuthorizationEndpoint: string | null;
+
+  private constructor(fields: {
+    authorizationEndpoint: string;
+    tokenEndpoint: string;
+    sdkClientId: string;
+    deviceAuthorizationEndpoint: string | null;
+  }) {
+    this.authorizationEndpoint = fields.authorizationEndpoint;
+    this.tokenEndpoint = fields.tokenEndpoint;
+    this.sdkClientId = fields.sdkClientId;
+    this.deviceAuthorizationEndpoint = fields.deviceAuthorizationEndpoint;
+  }
+
+  /**
+   * Read the answer; refuse one a browser sign-in cannot safely use.
+   *
+   * Unusable -- a {@link ThalovantApiError} with no `statusCode`, because the
+   * API did not refuse anything -- when the answer is not a JSON object; when
+   * `authorization_endpoint` is not https (or http on a loopback host), has
+   * no host, carries credentials, a query or a fragment, whitespace or a
+   * control character, or a port no browser can open; when `token_endpoint`
+   * is not a path on the API; when `sdk_client_id` is not 1-64 characters of
+   * `A-Z a-z 0-9 . _ -`; or when `code_challenge_methods_supported` is not a
+   * list holding `S256`. Other members are ignored, `loopback_redirect_uri`
+   * included: the redirect is always {@link loopbackRedirectUri}'s.
+   */
+  static fromResponse(payload: unknown): NativeSignInConfig {
+    const refuse = (why: string): never => {
+      throw new ThalovantApiError(`Thalovant API answered an unusable browser sign-in configuration. ${why}`);
+    };
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+      return refuse("The browser sign-in configuration is not an object.");
+    }
+    const fields = payload as Record<string, unknown>;
+    const authorization = fields.authorization_endpoint;
+    const token = fields.token_endpoint;
+    const clientId = fields.sdk_client_id;
+    const methods = fields.code_challenge_methods_supported;
+    if (!usableAuthorizationEndpoint(authorization)) {
+      return refuse("The browser sign-in configuration has no usable authorization_endpoint.");
+    }
+    if (!usableTokenEndpoint(token)) {
+      return refuse("The browser sign-in configuration has no usable token_endpoint.");
+    }
+    if (typeof clientId !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(clientId)) {
+      return refuse("The browser sign-in configuration has no usable sdk_client_id.");
+    }
+    if (!Array.isArray(methods) || !methods.includes("S256")) {
+      return refuse("The browser sign-in configuration does not offer S256.");
+    }
+    const device = fields.device_authorization_endpoint;
+    return new NativeSignInConfig({
+      authorizationEndpoint: authorization,
+      tokenEndpoint: token,
+      sdkClientId: clientId,
+      deviceAuthorizationEndpoint: typeof device === "string" && device ? device : null,
+    });
+  }
+
+  /** The API's field names. */
+  toJSON(): Record<string, unknown> {
+    return {
+      authorization_endpoint: this.authorizationEndpoint,
+      token_endpoint: this.tokenEndpoint,
+      sdk_client_id: this.sdkClientId,
+      device_authorization_endpoint: this.deviceAuthorizationEndpoint,
+    };
+  }
 }

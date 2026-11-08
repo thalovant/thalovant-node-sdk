@@ -2,7 +2,7 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/control.ts": "7c80a8e975bbb9aa905fe74c18fc565fff8e8ae830a9673c99fc148edcdbaf4d",
+        "src/control.ts": "d3b61bc00318ad6a3045b4a90106b059d57e3446ffe409b5bb780d495eb1840d",
         "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939",
         "src/redact.ts": "2dfbdd623f2824bfcb81fdb67401555990d1f278ae879a34872ef19dae6737f0"
       },
@@ -38,10 +38,32 @@
         "binary-vectors.json": "test/binary-vectors.json"
       }
     },
+    "browser-login": {
+      "implementation": {
+        "src/control.ts": "d3b61bc00318ad6a3045b4a90106b059d57e3446ffe409b5bb780d495eb1840d",
+        "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939",
+        "src/loopback.browser.ts": "87f9475aa0e26e94f0b93c8578ff8f840fe27c54865383ec2fe3d866ae437324",
+        "src/loopback.ts": "a4b59c3ce3464c5a69c892a0564bcf6c05df4da88cc2b4173c4db4970c880316",
+        "src/native-auth.ts": "58486afdbcb0af6d600c2e23c1d5533a6a1dba52dca200b589283f8e3f669a9b",
+        "src/redact.ts": "2dfbdd623f2824bfcb81fdb67401555990d1f278ae879a34872ef19dae6737f0"
+      },
+      "reason": "browserLogin() in src/control.ts refuses an API URL that is neither https nor loopback before anything is asked or opened (assertSecureTokenExchange), reads GET /v1/auth/native/config through NativeSignInConfig.fromResponse() in src/native-auth.ts (a 404 is a ThalovantApiError with status 404 and the body's detail, any other failure apiError(), and a 2xx it cannot use, including one whose authorization_endpoint is not https or loopback http or carries credentials, a query, a fragment, whitespace or a bad port, a token_endpoint that is not a path, a bad sdk_client_id or no S256, an error with no status), binds 127.0.0.1 on port 0 in LoopbackListener (src/loopback.ts, a node:net server with a 16 KiB request-head reader and no logging; the browser map swaps in src/loopback.browser.ts, which refuses) before building the URL with browserAuthorizationUrl() (the contract's parameter order, RFC 3986 encoding with a space as %20, scope left out when no non-empty scope is asked for, device_name cut to 120 code points) and loopbackRedirectUri() (1024-65535, else RangeError), prints the URL or hands it to prompt, opens it without waiting through openUrl or openExternalUrl, and waits on the monotonic clock, never early. classifyRequest() serves only GET /callback (404 otherwise), answers a missing, repeated or wrong state with a 400 (timingSafeEqual on the UTF-8 bytes) and keeps waiting, decodes the query once as a form does, and lets any error win over a code; the first accepted callback stops the listening, a second on an open connection is a 400, and the accepted tab gets its page, with the five page headers, once the sign-in has ended. The code is exchanged once at the configuration's token_endpoint with exactly code, code_verifier, client_id and redirect_uri; a refusal goes through apiError() with the code, the verifier and the state scrubbed from the body before it is parsed (src/redact.ts), a 2xx that is not a JSON object with an access_token is an error with no status, and the token is kept by acceptToken() exactly as a device login's, so revokeApiToken() revokes it. Denied is ThalovantDeviceLoginDeniedError and a timeout ThalovantDeviceLoginExpiredError (src/errors.ts), both with no status; an AbortSignal cancels the sign-in and closes the port. interactiveLogin() signs in through the browser when canOpenBrowser() holds (never with CI, SSH_CONNECTION or SSH_TTY set; macOS and Windows; elsewhere DISPLAY or WAYLAND_DISPLAY; an empty variable is unset) and the configuration is usable, with a device login otherwise, and never falls back once the browser was opened. Run against the shared browser-login vectors, all 98 cases in their eight sections and recorded as <section>/<name>: the pure sections against the functions, the callbacks again through a real listener, and sign_ins and chooser for real, a loopback node:http peer serving each case's exchanges in order and checking every request (method, path, body with the verifier proven against the URL's challenge, Authorization) while a raw TCP client plays the browser; the chooser sets process.env and process.platform to the case's machine. test/browser-login.test.ts covers the prints, an opener that never returns or throws, idle, slow, malformed and oversized connections, cancelling either method, the 422 echo, the cleartext refusal and the default device name; test/browser-smoke.test.ts proves the browser bundle carries the refusing stub and signs in with a device login.",
+      "status": "required",
+      "tests": {
+        "test/browser-login-vectors.json": "9058adf2ad30fd8b7f255882ce718865170d0d4b84d36f8fbfa23bde51d1651e",
+        "test/browser-login-vectors.test.ts": "718f445a45ee6b02bd5159d71566e62cec4ea28de499a47dfc4f79ded34e2a94",
+        "test/browser-login.test.ts": "556330b9ec13af649dac1cb2937822f252a507ce6591849b3945e6fc33640b87",
+        "test/browser-smoke.test.ts": "802f5b6cf6d3f62df4b3c7111d618e77df4a681f0242a4ff599d88b28b80fc0e",
+        "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346"
+      },
+      "vectors": {
+        "browser-login-vectors.json": "test/browser-login-vectors.json"
+      }
+    },
     "chat-apps": {
       "implementation": {
         "src/chat-apps.ts": "3028dd30586b0c3e36d28f188259238ddb62145eea097c348f82744dbbac1687",
-        "src/control.ts": "7c80a8e975bbb9aa905fe74c18fc565fff8e8ae830a9673c99fc148edcdbaf4d",
+        "src/control.ts": "d3b61bc00318ad6a3045b4a90106b059d57e3446ffe409b5bb780d495eb1840d",
         "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939"
       },
       "reason": "ThalovantControlPlane in src/control.ts calls every owner route under /v1/bridges (listChatAppConnectors, getBridgeNetworks, listBridges, createBridge, getBridge, updateBridge with If-Match only when an etag is given, replaceBridgeToken, replaceBridgeSecrets, listBridgeChats, sendBridgeTestMessage, getBridgeAvatar as bytes and content type, deleteBridge); src/chat-apps.ts holds the snake_case models, their readers (open enumerations, documented defaults for absent optional members), the request bodies (exactly one of token and secrets, refused locally otherwise; connector, never network) and SecretValue, which prints [redacted] in every form and is read with reveal() only to build a body. ThalovantApiError.fields in src/errors.ts reads the problem's fields at its top or inside an object detail, strings only. test/chat-apps.test.ts drives each route through a scripted fetch and proves a fake token or secret never reaches the SecretValue's printed forms, the caller's options, an error the API echoed it in, or a network failure.",
@@ -56,7 +78,7 @@
     },
     "connection-admission": {
       "implementation": {
-        "src/control.ts": "7c80a8e975bbb9aa905fe74c18fc565fff8e8ae830a9673c99fc148edcdbaf4d",
+        "src/control.ts": "d3b61bc00318ad6a3045b4a90106b059d57e3446ffe409b5bb780d495eb1840d",
         "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939"
       },
       "reason": "waitForAdmission() follows the create's operation with GET /v1/operations/{id}, every read bounded by what is left of the wait: ready resolves, failed and timed_out reject with ThalovantAdmissionFailedError(errorCode, no status), 404 and no operation resolve at once, a 5xx is ridden out, and a 429 waits max(poll interval, the problem's retry_after_seconds, else Retry-After, else RateLimit-Reset), a timeout at once when that is more than is left. 401 and 403 pass through as the API's own error (ThalovantAuthError), an API out of reach as ThalovantApiUnreachableError, and any other refusal of the wait is ThalovantAdmissionFailedError keeping statusCode, code, detail and problem. The deadline rejects with ThalovantAdmissionTimeoutError (instanceof both ThalovantConnectionError and ThalovantTimeoutError), ending \"it may still admit it later\"; waits are re-armed on the monotonic clock. A links.self on another origin (scheme, host, port) is never fetched. Run against the shared admission vectors over a loopback node:http peer that sends the case's headers, with {api_host}/{api_port} filled in and a closed port for an unreachable API.",
@@ -73,7 +95,7 @@
     },
     "connection-kinds": {
       "implementation": {
-        "src/control.ts": "7c80a8e975bbb9aa905fe74c18fc565fff8e8ae830a9673c99fc148edcdbaf4d",
+        "src/control.ts": "d3b61bc00318ad6a3045b4a90106b059d57e3446ffe409b5bb780d495eb1840d",
         "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939"
       },
       "reason": "createClientIdentity(hub, { connectionType }) sends spec.connection_type and requireConnectionType() deletes (If-Match: the answer's etag) and refuses a client whose answer does not repeat it; a 422 whose detail or code, or a validation error's loc or msg (never its echoed input), names connection_type is ThalovantUnsupportedConnectionTypeError, and apiError() classes 402/403 plan_limit as ThalovantPlanError, 409 home_assistant_already_linked as ThalovantAlreadyLinkedError with clientId, and 401/423/403 'Insufficient scopes' as ThalovantAuthError, all keeping statusCode, code and detail. deleteClient() reads the etag when none is given, retries one 412 and counts 404 as deleted. Run against the shared connection-kinds vectors over a loopback node:http peer that checks method, path, body subset and If-Match of every request.",
@@ -90,12 +112,12 @@
     },
     "control": {
       "implementation": {
-        "src/control.ts": "7c80a8e975bbb9aa905fe74c18fc565fff8e8ae830a9673c99fc148edcdbaf4d",
+        "src/control.ts": "d3b61bc00318ad6a3045b4a90106b059d57e3446ffe409b5bb780d495eb1840d",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
-        "src/native-auth.ts": "0ae7a17915f31a23c25d9d551cc7ce018a7f499921777741c1fa3855875e185d",
+        "src/native-auth.ts": "58486afdbcb0af6d600c2e23c1d5533a6a1dba52dca200b589283f8e3f669a9b",
         "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host. src/native-auth.ts also holds browser sign-in's pure pieces (browserAuthorizationUrl, loopbackRedirectUri, newState, NativeSignInConfig, canOpenBrowser, defaultDeviceName), bound and run against the shared vectors under browser-login; beginNativeSignIn() now draws its state from newState(), the same 24 random bytes.",
       "status": "required",
       "tests": {
         "test/control-security.test.ts": "b8e89b545dacdc117367aa277651436fa5fe47d9959d02c52a1ff76e035c1c6d",
@@ -122,10 +144,10 @@
     },
     "device-login": {
       "implementation": {
-        "src/control.ts": "7c80a8e975bbb9aa905fe74c18fc565fff8e8ae830a9673c99fc148edcdbaf4d",
+        "src/control.ts": "d3b61bc00318ad6a3045b4a90106b059d57e3446ffe409b5bb780d495eb1840d",
         "src/errors.ts": "a9525554dd9ee80b11767e14433a155a8d3e44ca3cd04d562d2f6bb8e5ca7939"
       },
-      "reason": "beginDeviceLogin() (an empty scope list left out, as in loginWithBrowser(); clientId sent as client_id when given, HOME_ASSISTANT_CLIENT_ID for Home Assistant, and left out otherwise, in both) returns a DeviceAuthorization (DeviceAuthorization.fromGrant refuses a verification URL that is not http(s), has no host or carries credentials); each pollDeviceLogin() is one POST /v1/auth/device/token that resolves with an ApiToken kept as accessToken and tokenId, or rejects with ThalovantDeviceLoginPendingError (interval lengthened by five seconds for good per device code on slow_down), ThalovantDeviceLoginExpiredError or ThalovantDeviceLoginDeniedError, every other failure through apiError() with the api-errors fields; revokeApiToken() revokes and forgets the token the SDK signed in with, a 401 on its own revoke counting as revoked and a second revoke sending nothing; every sign-in (device, password, native) resets tokenId. describeDeviceLogin(userCode) reads GET /v1/auth/device/codes/{userCode} into a DeviceLoginRequest whose clientVerified is true only with a clientId. A 2xx token answer that is not a JSON object is an error with no status. Neither the device code nor the token is printed by an error (a refused poll scrubs the device code from the message and from problem), console.log or util.inspect. Run against the shared device-login vectors, each served in order by a loopback node:http peer that checks every request (body, Authorization) and read back through the public control plane.",
+      "reason": "beginDeviceLogin() (an empty scope list left out, as in loginWithBrowser(); clientId sent as client_id when given, HOME_ASSISTANT_CLIENT_ID for Home Assistant, and left out otherwise, in both) returns a DeviceAuthorization (DeviceAuthorization.fromGrant refuses a verification URL that is not http(s), has no host or carries credentials); each pollDeviceLogin() is one POST /v1/auth/device/token that resolves with an ApiToken kept as accessToken and tokenId, or rejects with ThalovantDeviceLoginPendingError (interval lengthened by five seconds for good per device code on slow_down), ThalovantDeviceLoginExpiredError or ThalovantDeviceLoginDeniedError, every other failure through apiError() with the api-errors fields; revokeApiToken() revokes and forgets the token the SDK signed in with, a 401 on its own revoke counting as revoked and a second revoke sending nothing; every sign-in (device, password, native) resets tokenId. describeDeviceLogin(userCode) reads GET /v1/auth/device/codes/{userCode} into a DeviceLoginRequest whose clientVerified is true only with a clientId. A 2xx token answer that is not a JSON object is an error with no status. Neither the device code nor the token is printed by an error (a refused poll scrubs the device code from the message and from problem), console.log or util.inspect. Run against the shared device-login vectors, each served in order by a loopback node:http peer that checks every request (body, Authorization) and read back through the public control plane. loginWithBrowser() runs on a private deviceLogin() that interactiveLogin() shares; only interactiveLogin() passes it an AbortSignal, which pollDeviceToken() honours between polls and in its requests. loginWithBrowser()'s options, defaults, prints and errors are unchanged, as the device-login vectors show.",
       "status": "required",
       "tests": {
         "test/conformance-record.ts": "1880a684709e37c0a17124c5f821a880e407d5a2c5d7b92e160b46c8b382b346",
@@ -328,7 +350,8 @@
     "600b10e7e159f6ca9c1d59d7f2a4103c2e1c66a0894b587e0224e4d9c0e66bd1",
     "5b973a65ab583082069afaa67e2baf7257cbc4950a89460c9912851821258d16",
     "1e56099da5dba82b48fb83b27e53192f3cd70e7d0f5a9c4f94bb08948e45a1d6",
-    "57c7e71f6456344877b34bb3093399f813c7a21fde3ae14f48c8b3fa04be43b9"
+    "57c7e71f6456344877b34bb3093399f813c7a21fde3ae14f48c8b3fa04be43b9",
+    "49744ee385bfce57439dadbef1e20e6116f72a6817649843adba7a450d2fc56b"
   ],
   "schema_version": 1
 }

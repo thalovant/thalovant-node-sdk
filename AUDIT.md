@@ -1,6 +1,22 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Record the secret-scrubbing spelling limitation (CodeRabbit on #89 and #109) as open, note exact secret key-name matching, and re-check the published typings on 0.10.0.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.11.0): findings from the port of thalovant-python-sdk#113, with the suite's results.
 
 # Audit
+
+## Browser sign-in (0.11.0, 2026-11-08)
+
+Test run: `npm test`, 907 tests, 906 passed, 1 skipped (the live interop test, AUDIT #5 below), 0 failed. `test/browser-login-vectors.test.ts` runs all 98 shared cases (and the 24 callbacks again through a real listener, 125 tests); every case's recorded digest equals the Python reference's (`contracts/conformance-results.json`). `test/browser-login.test.ts` adds 33, `test/browser-smoke.test.ts` one. Parity: `check-sdk-parity.py --consumer thalovant-node-sdk` verifies against the current reference (Python `main`, 57c7e71f6456; one rollout note, the capability being ahead of it) and the candidate (PR #113 head e3999cb, 49744ee385bf; nothing outstanding).
+
+| # | Finding | Evidence | Status |
+| :--- | :--- | :--- | :--- |
+| B1 | On Windows another process could bind the listener's port with `SO_REUSEADDR`: Node exposes no `SO_EXCLUSIVEADDRUSE`, and `exclusive: true` only keeps cluster workers from sharing the handle. The state still has to match, so a squatter receives at most a stray tab, never a code it can use without the verifier. | [`src/loopback.ts`](src/loopback.ts) line 276, `server.listen({ port: 0, host: "127.0.0.1", exclusive: true, backlog: 8 })`. | Accepted: a Node platform limit. Not testable on Linux CI. |
+| B2 | A cleartext API URL is refused with a `TypeError` (the `assertSecureTokenExchange` that `completeNativeSignIn()` already throws), where the Python reference raises `ThalovantAPIError`. No vector covers it. | [`src/native-auth.ts`](src/native-auth.ts) line 237; [`src/control.ts`](src/control.ts) `browserLogin` (line 1105) and `interactiveLogin` (line 1137, which counts it as "not usable" in `auto`); [`test/browser-login.test.ts`](test/browser-login.test.ts) line 364. | Documented (README, CHANGELOG); see SUGGESTIONS.md #7. |
+| B3 | Secret scrubbing ignores values shorter than 8 characters (#8 below), so an echoed authorization code under 8 characters would not be replaced. The verifier (86) and the state (32) are always longer, and the API's codes are far longer. | [`src/redact.ts`](src/redact.ts) line 100; the 422-echo test in [`test/browser-login.test.ts`](test/browser-login.test.ts). | Accepted, as #8. |
+| B4 | `src/platform/node.ts`'s header still says it is the only module besides `transport-mqtt.js` that may import `node:` builtins; `src/loopback.ts` now does too, behind the same `browser` map. Left as it is so that the `binary`, `identity` and `inventory` evidence does not move for a comment. | [`src/platform/node.ts`](src/platform/node.ts) line 2; [`src/loopback.ts`](src/loopback.ts) header; [`test/browser-smoke.test.ts`](test/browser-smoke.test.ts) asserts `node:net` and `dist/src/loopback.js` stay out of the browser bundle. | Open, cosmetic; fix with the next change to `platform/node.ts`. |
+| B5 | Browser sign-in has not run against a live API: thalovant-api #501 is not deployed yet, so `GET /v1/auth/native/config` answers 404 and `interactiveLogin()` falls back to a device login there. Every path is proved against loopback peers only. | The `chooser` case "auto falls back to a device login when the API answers the configuration 404" in [`test/browser-login-vectors.json`](test/browser-login-vectors.json). | Expected rollout state. |
+| B6 | The authorization endpoint parser refuses a backslash anywhere in `authorization_endpoint`, which the Python reference does not check. Stricter only; no vector has one. | [`src/native-auth.ts`](src/native-auth.ts) line 465. | Accepted: a backslash is not valid in a URL, and a browser reads it as `/`. |
+| B7 | The injectable opener is named `openUrl`, as `loginWithBrowser()` already names it, rather than the porting brief's `opener`. | [`src/control.ts`](src/control.ts) lines 850, 894 and 915. | Accepted: one name for one hook across both sign-ins. |
+
+## Chat apps (0.10.0, 2026-11-03)
 
 Findings from the 2026-11-03 chat apps change. Test run: `npm test`, 748 tests, 747 passed, 1 skipped, 0 failed.
 

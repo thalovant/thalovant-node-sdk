@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Created with chat apps questions (0.10.0).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in and interactiveLogin() questions (0.11.0).
 
 # FAQ
 
@@ -28,3 +28,30 @@ A running Telegram bridge owns the bot's update stream. Pause it, list the chats
 
 **What happens to a status reason the SDK does not know?**
 It is kept as the string the API sent. Every enumeration in `src/chat-apps.ts` is open.
+
+**How should a script or CLI sign somebody in?**
+`await api.interactiveLogin()`. On a machine with a browser it opens the Thalovant consent page and waits on `http://127.0.0.1:<port>/callback` (OAuth with PKCE, RFC 8252); elsewhere it prints a device code to approve from any browser. See the README's "Sign in" section.
+
+**Why did `interactiveLogin()` print a device code instead of opening my browser?**
+`auto` uses the browser only when `canOpenBrowser()` is true and `GET /v1/auth/native/config` answers with a usable configuration. It is false when `CI`, `SSH_CONNECTION` or `SSH_TTY` is set (`CI=false` counts), and on Linux or a BSD without `DISPLAY` or `WAYLAND_DISPLAY`. An API without browser sign-in answers the configuration 404. Pass `{ method: "browser" }` to force the browser.
+
+**Can a denied or timed-out browser sign-in fall back to a device code?**
+No. Once the consent page was shown, its outcome stands: `ThalovantDeviceLoginDeniedError` or `ThalovantDeviceLoginExpiredError` (both with no `statusCode`). Call `interactiveLogin()` again, or `{ method: "device" }`.
+
+**Why is a browser sign-in safer than a device code?**
+A device code can be read off one screen and typed in anywhere, so it can be relayed to somebody else (device-code phishing). A loopback redirect cannot: the browser that approves delivers the code to its own computer.
+
+**A browser tab says "This answer does not belong to the sign-in in progress." Did the sign-in fail?**
+No. That tab carried another sign-in's `state` (an old tab, another program) and was answered 400; the sign-in in progress keeps waiting for its own answer.
+
+**Can I use `browserLogin()` in a web page?**
+No: a page cannot listen on a port. In a browser bundle `browserLogin()` refuses, and `interactiveLogin()` uses the device login. Web apps use their own redirect with `beginNativeSignIn()` and `completeNativeSignIn()`.
+
+**How do I show the sign-in URL in my own UI, or cancel the wait?**
+`browserLogin({ prompt: (url) => show(url), openBrowser: false })` shows it without opening anything, and `signal` (an `AbortSignal`) cancels either method and closes the port.
+
+**Why does `browserLogin()` throw a `TypeError` about cleartext?**
+The API URL is neither https nor a loopback address. The SDK refuses before asking or opening anything, so a code and its verifier never cross the network in cleartext. `completeNativeSignIn()` refuses the same way.
+
+**How do I sign out after a browser sign-in?**
+`await api.revokeApiToken()`. The token is kept exactly as a device login's (`accessToken`, `tokenId`), and revoking it twice sends nothing the second time.
