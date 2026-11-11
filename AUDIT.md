@@ -1,6 +1,10 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit's third review of #110: the spelling limitation is fixed for JSON, B10 corrected, the drain's limits stated.
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): announce, speakers and settings on the control plane.
 
 # Audit
+
+## Intercom (0.12.0): the text is in the request body
+
+`announceBody()` (`src/intercom.ts`) builds the body that holds the text and `ThalovantControlPlane.announce()` (`src/control.ts`) sends it; nothing logs or throws it, and `Announcement` never carries it (`test/intercom.test.ts`, "announce sends the contract body"). It is not redacted from an error the API echoes it in (`ThalovantApiError.problem` keeps the body); the contract says the API never echoes it. The announcement list shape (`items`, `next_cursor`) is taken from the contract; `data` and `cursor` are accepted too. Not exercised against a live API.
 
 ## Browser sign-in (0.11.0, 2026-11-08)
 

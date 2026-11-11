@@ -1,6 +1,12 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit's third review of #110 (10 threads): nine fixes, one contract reply.
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): announce, speakers and settings on the control plane.
 
 # Maintenance report
+
+## 2026-11-11 - Intercom (0.12.0)
+
+Ported the `intercom` capability from thalovant-python-sdk 0.12.0 (digest `690784dbb9af`): `src/intercom.ts`, seven `ThalovantControlPlane` methods, three errors, `test/intercom.test.ts` (loopback fake API), parity record, README, QUICK_FACTS, FAQ, AUDIT, CHANGELOG. Evidence hashes of `src/control.ts` and `src/errors.ts` were refreshed for the other capabilities after `npm test` passed: the change to both is additive.
+
+Transparency Report: AI model Claude Sonnet 5.5; actions: wrote the module, methods, tests, docs and parity record from the contract and the Python reference; oversight: none yet, review pending.
 
 ## 2026-11-08 — CodeRabbit's third review of #110 (10 threads)
 

@@ -40,6 +40,7 @@ export {
   type ChatAppTargets,
   type LocalizedText,
 } from "./chat-apps.js";
+export * from "./intercom.js";
 export * from "./context.js";
 export * from "./noise.js";
 export * from "./noise-store.js";

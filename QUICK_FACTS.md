@@ -1,11 +1,11 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in to the final contract (Python #113 at 39e31d8, digest 6dfb3bb31ac7).
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): announce, speakers and settings on the control plane.
 
 # Quick facts: @thalovant/sdk
 
 | Fact | Value |
 | :--- | :--- |
 | Package | `@thalovant/sdk` (npm) |
-| Version | 0.11.0 (`package.json`, `src/version.ts` `SDK_VERSION`) |
+| Version | 0.12.0 (`package.json`, `src/version.ts` `SDK_VERSION`) |
 | Licence | MIT |
 | Runtime | Node.js 20 or newer; browsers through the package's `browser` map (`platform/node.js`, `loopback.js` and `transport-mqtt.js` swapped for their browser twins) |
 | Entry point | `dist/src/index.js` (ESM), types `dist/src/index.d.ts` |
@@ -60,4 +60,20 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in to the final c
 - Models and open enumerations: `src/chat-apps.ts` (`Bridge`, `BridgeStatus`, `BridgeHold`, `ChatAppConnector`, `BridgeStatusReason` ...).
 - Secrets: `SecretValue` (`src/chat-apps.ts`), printed as `[redacted]`, read with `reveal()`.
 - Errors: `ThalovantApiError.fields` (`src/errors.ts`), the setting or secret names a refusal is about.
+
+## Intercom (0.12.0; scopes `intercom:read`, `intercom:send`, `hubs:write`)
+
+Announce-only text spoken aloud on a hub's speakers. Not a certified safety system; the platform never stores the text. Named `announce` / `*Intercom*`: the mesh already has an `intercom` frame.
+
+| Call | Endpoint | Returns |
+|---|---|---|
+| `getIntercomSettings(hubId)` | `GET /v1/hubs/{id}/intercom/settings` | `IntercomSettings` |
+| `setIntercomSettings(hubId, enabled)` | `PUT /v1/hubs/{id}/intercom/settings` | `IntercomSettings` |
+| `listIntercomSpeakers(hubId)` | `GET /v1/hubs/{id}/intercom/speakers` | `IntercomSpeakerList` |
+| `updateIntercomSpeaker(hubId, clientId, { receive?, room?, groups?, dnd? })` | `PATCH /v1/hubs/{id}/intercom/speakers/{client_id}` | `IntercomSpeaker` |
+| `announce(hubId, { text, targets, priority?, repeat?, lang?, idempotencyKey?, wait?, waitTimeoutMs?, pollIntervalMs? })` | `POST /v1/hubs/{id}/intercom/announce` | `Announcement` |
+| `getAnnouncement(hubId, id)` | `GET /v1/hubs/{id}/intercom/announcements/{id}` | `Announcement` |
+| `listAnnouncements(hubId, { limit?, cursor? })` | `GET /v1/hubs/{id}/intercom/announcements` | `AnnouncementList` |
+
+- Models: `src/intercom.ts`. Errors (`src/errors.ts`): `ThalovantIntercomDisabledError`, `ThalovantHubUnreachableError`, `ThalovantRateLimitedError`.
 - Tests: `test/chat-apps.test.ts`.

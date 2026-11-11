@@ -1,6 +1,12 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: #6 done, the device poll's problems included (CodeRabbit on #110).
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): announce, speakers and settings on the control plane.
 
 # Suggestions
+
+## Shared intercom vectors
+
+- **Problem:** `intercom` has no conformance vectors; text rules (control characters, trimming, code-point length) are proved by each SDK's own tests.
+- **Proposal:** an `intercom-vectors.json` in the Python reference (validation and error-kind cases), claimed by the capability.
+- **Impact:** low effort; one more file for every consumer.
 
 ## 1. Shared vectors for `fields`
 

@@ -1,4 +1,4 @@
-<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit on #110: the loopback guarantee covers browser sign-in links, not device codes; when prompt opens nothing. -->
+<!-- Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): announce, speakers and settings on the control plane. -->
 
 <p align="center">
   <picture>
@@ -262,6 +262,31 @@ A 402 (Free plan) and a 403 `plan_limit` (`problem.resource` is
 | 502 | `bridge_network_unavailable`, `bridge_secret_store_failed` | The network, or the platform's secret storage, failed. |
 | 503 | `bridge_network_not_offered`, `bridge_secret_store_unavailable` | No bridge is offered for that network here; secret storage is unavailable. |
 | 504 | `bridge_network_timeout` | The network did not answer in time. |
+
+## Intercom
+
+Say a short text aloud on a hub's speakers. Off by default at every level, announce-only,
+and **not a certified safety system**: it does not replace smoke or CO alarms, medical
+alert devices or emergency services. The platform never stores the text. (The names are
+`announce` and `*Intercom*`: the HiveMind mesh already has an `intercom` frame.)
+Scopes: `intercom:read`, `intercom:send`, and `hubs:write` for settings and speakers.
+
+```ts
+await api.setIntercomSettings(hubId, true);                                   // hubs:write
+await api.updateIntercomSpeaker(hubId, "kitchen", { receive: true, room: "kitchen" });
+const said = await api.announce(hubId, { text: "Dinner is ready", targets: { rooms: ["kitchen"] } });
+console.log(said.status, said.deliveries.map((d) => `${d.name}: ${d.status}`));
+
+const urgent = await api.announce(hubId, {
+  text: "Please answer", targets: { all: true }, priority: "urgent",
+  repeat: { times: 3, interval_seconds: 20 }, wait: true,          // polls while `sending`
+});
+console.log(urgent.status, urgent.acked_by);
+```
+
+Refusals are `ThalovantIntercomDisabledError` (switch off, kid or public hub),
+`ThalovantHubUnreachableError` (nothing was spoken), `ThalovantRateLimitedError`
+(`retryAfterSeconds`) and `ThalovantPlanError`.
 
 ## Documentation
 

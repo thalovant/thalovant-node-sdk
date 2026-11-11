@@ -37,6 +37,24 @@ import {
   type SecretValue,
 } from "./chat-apps.js";
 import {
+  announceBody,
+  announcementFromRecord,
+  announcementListFromRecord,
+  intercomSettingsBody,
+  intercomSettingsFromRecord,
+  intercomSpeakerFromRecord,
+  intercomSpeakersFromRecord,
+  speakerUpdateBody,
+  type Announcement,
+  type AnnouncementList,
+  type AnnouncementListOptions,
+  type AnnounceOptions,
+  type IntercomSettings,
+  type IntercomSpeaker,
+  type IntercomSpeakerChanges,
+  type IntercomSpeakerList,
+} from "./intercom.js";
+import {
   ThalovantAdmissionFailedError,
   ThalovantAdmissionTimeoutError,
   ThalovantAlreadyLinkedError,
@@ -46,7 +64,10 @@ import {
   ThalovantDeviceLoginDeniedError,
   ThalovantDeviceLoginExpiredError,
   ThalovantDeviceLoginPendingError,
+  ThalovantHubUnreachableError,
+  ThalovantIntercomDisabledError,
   ThalovantPlanError,
+  ThalovantRateLimitedError,
   ThalovantTimeoutError,
   ThalovantUnsupportedConnectionTypeError,
   ThalovantUnsupportedProtocolError,
@@ -2283,6 +2304,114 @@ export class ThalovantControlPlane {
   }
 
   // -------------------------------------------------------------------------
+  // Intercom: `/v1/hubs/{hub_id}/intercom`.
+  //
+  // Announce-only text spoken aloud on a hub's speakers; not a certified
+  // safety system. Reads need `intercom:read`, `announce()` `intercom:send`,
+  // settings and speakers `hubs:write`. The platform never stores the text.
+  // Named `announce` and `*Intercom*` because the mesh already has an
+  // `intercom` frame.
+  // -------------------------------------------------------------------------
+
+  /** A hub's intercom switch and whether it can be turned on. Requires `intercom:read`. */
+  async getIntercomSettings(hubId: string): Promise<IntercomSettings> {
+    return intercomSettingsFromRecord(await this.request("GET", intercomPath(hubId, "settings")));
+  }
+
+  /**
+   * Turn a hub's intercom on or off (`PUT .../intercom/settings`). Requires
+   * `hubs:write`. A plan without intercom is a {@link ThalovantPlanError}; a
+   * kid or public hub is a 422 {@link ThalovantApiError}.
+   */
+  async setIntercomSettings(hubId: string, enabled: boolean): Promise<IntercomSettings> {
+    const body = intercomSettingsBody(enabled);
+    return intercomSettingsFromRecord(await this.request("PUT", intercomPath(hubId, "settings"), { body }));
+  }
+
+  /** Every client of the hub as a speaker, with presence and policy. Requires `intercom:read`. */
+  async listIntercomSpeakers(hubId: string): Promise<IntercomSpeakerList> {
+    return intercomSpeakersFromRecord(await this.request("GET", intercomPath(hubId, "speakers")));
+  }
+
+  /**
+   * Change a speaker's policy (`PATCH .../intercom/speakers/{client_id}`); only
+   * what is present is sent, and `room: null` clears the room. A speaker is
+   * spoken to only when `receive` is true. Requires `hubs:write`.
+   */
+  async updateIntercomSpeaker(hubId: string, clientId: string, changes: IntercomSpeakerChanges): Promise<IntercomSpeaker> {
+    const body = speakerUpdateBody(changes);
+    const path = intercomPath(hubId, "speakers", intercomSegment(clientId, "clientId"));
+    return intercomSpeakerFromRecord(await this.request("PATCH", path, { body }));
+  }
+
+  /**
+   * Say `text` aloud on a hub's speakers (`POST .../intercom/announce`). The
+   * text is 1-280 characters, trimmed, with no control characters, and is
+   * spoken aloud in a home; the platform keeps only its hash and length.
+   * Not a certified safety system.
+   *
+   * An urgent announcement may carry `repeat`; it is said again until somebody
+   * acknowledges, and the call returns at once with status `sending`. A normal
+   * one waits up to ten seconds for the hub. With `wait`, a `sending`
+   * announcement is polled with {@link getAnnouncement} until it completes or
+   * `waitTimeoutMs` passes (the latest answer is returned, still `sending`).
+   *
+   * `idempotencyKey`, when given, is sent as `Idempotency-Key`; keep it to
+   * retry after an uncertain outcome without speaking twice. Requires
+   * `intercom:send`. Intercom off is {@link ThalovantIntercomDisabledError}, an
+   * unreachable hub {@link ThalovantHubUnreachableError}, a rate limit
+   * {@link ThalovantRateLimitedError}.
+   */
+  async announce(hubId: string, options: AnnounceOptions): Promise<Announcement> {
+    const body = announceBody(options);
+    const pollMs = options.pollIntervalMs ?? 2000;
+    if (typeof pollMs !== "number" || !Number.isFinite(pollMs) || pollMs <= 0) {
+      throw new RangeError("pollIntervalMs must be a positive number of milliseconds.");
+    }
+    const headers: Record<string, string> = {};
+    if (options.idempotencyKey !== undefined) {
+      if (typeof options.idempotencyKey !== "string" || !options.idempotencyKey.trim()) {
+        throw new TypeError("idempotencyKey must be a non-empty string when given.");
+      }
+      headers["Idempotency-Key"] = options.idempotencyKey;
+    }
+    let announcement = announcementFromRecord(
+      await this.request("POST", intercomPath(hubId, "announce"), { body, headers, signal: options.signal }),
+    );
+    if (!options.wait || announcement.status !== "sending") return announcement;
+    const repeat = body.repeat as { times: number; interval_seconds: number } | undefined;
+    const timeoutMs = options.waitTimeoutMs ?? (repeat ? repeat.times * repeat.interval_seconds * 1000 : 0) + 15000;
+    const deadline = Date.now() + timeoutMs;
+    while (announcement.status === "sending" && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))));
+      announcement = await this.getAnnouncement(hubId, announcement.id, options.signal);
+    }
+    return announcement;
+  }
+
+  /** One announcement and its deliveries; poll it while `sending`. Requires `intercom:read`. */
+  async getAnnouncement(hubId: string, announcementId: string, signal?: AbortSignal): Promise<Announcement> {
+    const path = intercomPath(hubId, "announcements", intercomSegment(announcementId, "announcementId"));
+    return announcementFromRecord(await this.request("GET", path, { signal }));
+  }
+
+  /** A hub's announcements, newest first; continue with `next_cursor`. Requires `intercom:read`. */
+  async listAnnouncements(hubId: string, options: AnnouncementListOptions = {}): Promise<AnnouncementList> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) {
+      if (!Number.isInteger(options.limit) || options.limit < 1) throw new RangeError("limit must be a positive integer.");
+      params.set("limit", String(options.limit));
+    }
+    if (options.cursor !== undefined) {
+      if (typeof options.cursor !== "string" || !options.cursor.trim()) throw new TypeError("cursor must be a non-empty string when given.");
+      params.set("cursor", options.cursor);
+    }
+    const query = params.toString();
+    const path = intercomPath(hubId, "announcements");
+    return announcementListFromRecord(await this.request("GET", query ? `${path}?${query}` : path));
+  }
+
+  // -------------------------------------------------------------------------
   // Chat apps: `/v1/bridges`.
   //
   // Reads need the `hubs:read` scope and writes `hubs:write`. A bridge is
@@ -2859,6 +2988,16 @@ export class ThalovantControlPlane {
   }
 }
 
+function intercomPath(hubId: string, ...rest: string[]): string {
+  if (typeof hubId !== "string" || !hubId.trim()) throw new TypeError("hubId must be a non-empty string.");
+  return [`/v1/hubs/${encodeURIComponent(hubId)}/intercom`, ...rest].join("/");
+}
+
+function intercomSegment(value: string, name: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new TypeError(`${name} must be a non-empty string.`);
+  return encodeURIComponent(value);
+}
+
 function bridgePath(bridgeId: string): string {
   return `/v1/bridges/${encodeURIComponent(bridgeId)}`;
 }
@@ -3029,6 +3168,9 @@ function apiError(
   if (status === 409 && error.code === "home_assistant_already_linked") {
     return new ThalovantAlreadyLinkedError(message, { ...options, clientId: linkedClientId(error.problem) });
   }
+  if (error.code === "intercom_disabled") return new ThalovantIntercomDisabledError(message, options);
+  if (status === 502 && error.code === "hub_unreachable") return new ThalovantHubUnreachableError(message, options);
+  if (status === 429) return new ThalovantRateLimitedError(message, options);
   return error;
 }
 

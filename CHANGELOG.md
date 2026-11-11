@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.0 — Unreleased
+
+Intercom. Every addition is new API. Ports thalovant-python-sdk 0.12.0 (reference digest `690784dbb9af`; its `docs/intercom-porting.md` is the brief).
+
+- **Announce-only text spoken aloud on a hub's speakers**, through the routes under `/v1/hubs/{hub_id}/intercom`: `announce(hubId, { text, targets, priority, repeat, lang, idempotencyKey, wait, waitTimeoutMs, pollIntervalMs })`, `getAnnouncement()`, `listAnnouncements(hubId, { limit, cursor })`, `listIntercomSpeakers()`, `updateIntercomSpeaker()` (only what is passed is sent; `room: null` clears the room), `getIntercomSettings()` and `setIntercomSettings()` on `ThalovantControlPlane`. Scopes: `intercom:read`, `intercom:send`, `hubs:write` for settings and speakers. **Not a certified safety system**; the platform never stores the text. Named `announce` and `*Intercom*` because the mesh already has an `intercom` frame.
+- Models in the new `src/intercom.ts` (`IntercomSettings`, `IntercomSpeaker`, `IntercomPolicy`, `Announcement`, `IntercomDelivery`, `AnnouncementList`, `IntercomTargets`, `IntercomRepeat` ...), snake_case like the chat apps models; every status is open. The text (1-280 characters counted as code points, trimmed, no control characters), the targets (exactly one of all, speakers (at most 50), rooms, groups) and the repeat (urgent only, 1-10 times, 5-120 seconds) are validated before anything is sent. `wait: true` polls a `sending` announcement and returns the latest answer on timeout.
+- New errors, all `ThalovantApiError`: `ThalovantIntercomDisabledError` (`intercom_disabled`), `ThalovantHubUnreachableError` (502 `hub_unreachable`) and `ThalovantRateLimitedError` (any 429).
+- The `intercom` parity capability is recorded (required), and the other capabilities' evidence hashes for `src/control.ts` and `src/errors.ts` are refreshed: both files changed only by this addition.
+
 ## 0.11.0 — 2026-11-08
 
 Browser sign-in, and a chooser between it and device login. Every addition is new API; device login and `completeNativeSignIn()` are unchanged. Ports thalovant-python-sdk#113 at 39e31d8 (reference digest `6dfb3bb31ac7`).

@@ -244,6 +244,26 @@ export class ThalovantAuthError extends ThalovantApiError {}
 export class ThalovantPlanError extends ThalovantApiError {}
 
 /**
+ * Intercom is off for the hub, or never allowed on it.
+ *
+ * Code `intercom_disabled`: the hub's switch is off, or the hub is a kid or
+ * public hub. Turn it on with `setIntercomSettings` (needs `hubs:write` and a
+ * plan with intercom); on a kid or public hub it cannot be turned on.
+ */
+export class ThalovantIntercomDisabledError extends ThalovantApiError {}
+
+/** The API could not reach the hub to speak (502 `hub_unreachable`). Nothing was said aloud; trying again is safe. */
+export class ThalovantHubUnreachableError extends ThalovantApiError {}
+
+/**
+ * Too many requests (429). `retryAfterSeconds` says how long to wait.
+ *
+ * Intercom limits a hub to 20 normal announcements a minute and 10 urgent
+ * ones an hour.
+ */
+export class ThalovantRateLimitedError extends ThalovantApiError {}
+
+/**
  * A hub already has the one connection of this kind it allows.
  *
  * A 409 `home_assistant_already_linked`: a hub takes one Home Assistant
