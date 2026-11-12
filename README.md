@@ -271,7 +271,8 @@ alert devices or emergency services. The API does not store the text (it keeps a
 and the length), and intercom does not record or store speech: while an alert sounds, the hub
 only checks whether a reply is an acknowledgement. (The names are `announce` and `*Intercom*`:
 the HiveMind mesh already has an `intercom` frame.)
-Scopes: `intercom:read`, `intercom:send` (announce and cancel; plus `intercom:read` with `wait`), and `hubs:write` for settings and speakers.
+Scopes: `intercom:read`, `intercom:send` (announce and cancel; plus `intercom:read` with `wait`), `intercom:urgent`
+(**in addition to** `intercom:send`, for `priority: "urgent"` and so every `repeat`), and `hubs:write` for settings and speakers.
 
 ```ts
 await api.setIntercomSettings(hubId, true);                                   // hubs:write
@@ -287,7 +288,7 @@ console.log(said.status, said.deliveries.map((d) => `${d.name}: ${d.status}`));
 const urgent = await api.announce(hubId, {
   text: "Please answer", targets: { all: true }, priority: "urgent",
   repeat: { times: 3, interval_seconds: 20 }, idempotencyKey: crypto.randomUUID(),
-  wait: true,                          // polls while `sending`; needs intercom:read as well
+  wait: true,                          // polls while `sending`; needs intercom:read as well; urgent needs intercom:urgent
 });
 console.log(urgent.status, urgent.acked_by);
 
@@ -331,6 +332,74 @@ try {
 }
 ```
 
+### Scopes, who may write, and the platform switch
+
+`intercom:urgent` is not implied by anything and implies nothing (`intercom:send` still implies
+only `intercom:read`). A token without it is refused before anything is spent, with
+`ThalovantUrgentScopeRequiredError` (403 `urgent_scope_required`, a kind of `ThalovantAuthError`):
+no idempotency lookup, no rate token, no hub call. Free plans cannot mint it, so request it only
+when you offer an urgent control, and hide that control when the token lacks it. Writing needs the
+tenant owner, a manager or a platform administrator acting as themselves: a plain member can read
+but not enable, change a speaker or announce, and an impersonated session cannot announce
+(`ThalovantImpersonationNotAllowedError`); switching intercom off and `cancelAnnouncement` stay open
+to both, and to a locked hub (which otherwise answers `ThalovantHubLockedError`).
+
+Intercom ships dark: until the platform operator turns it on, `getIntercomSettings` reads
+`{ enabled: false, unavailable_reason: "platform" }` for every hub, and every write and every
+announcement is `ThalovantIntercomPlatformDisabledError` (503 `intercom_disabled_platform`, a kind
+of `ThalovantIntercomDisabledError`): nothing is stored or sent. Show "switched off for the
+platform", not an error toast; reads and `cancelAnnouncement` keep working. A platform that is not
+configured yet answers `ThalovantIntercomNotConfiguredError` (503 `intercom_not_configured`).
+
+### Speakers: `kind`, `can_play` and `policy_synced`
+
+`listIntercomSpeakers` lists every connection of the hub (the platform's own Intercom client is
+not listed). Each speaker has `kind` (`voice_satellite`, `web_chat`, `developer`, `embedded`,
+`home_assistant`; anything else reads `voice_satellite`) and `can_play`, the **effective** "can
+this connection play speech": true by default for a `voice_satellite` and `web_chat`, false for
+`home_assistant`, `developer` and `embedded` unless its owner declared `spec.intercom.can_play:
+true` on the **connection** (`PATCH /v1/clients/{id}`, never on the speaker). A connection that
+cannot play is listed (grey it out) but `receive: true` is refused with
+`ThalovantNotASpeakerError` (422 `not_a_speaker`, `error.kind`), it is excluded from `all`, rooms
+and groups, and naming it in `targets.speakers` is the same error with `error.notSpeakers`.
+`policy_synced` is set on the answer to `updateIntercomSpeaker` (null on list items); the list has
+its own and `unavailable_reason`. `false` means the hub may hold an out-of-date consent map (a push
+failed and is retried), so a speaker whose `receive` was just turned off can still be spoken to by
+a routine until it clears: show "Changes may take a moment to reach the home".
+
+`updateIntercomSpeaker` takes exactly `receive`, `room`, `groups` and `dnd`; any other key (also
+inside `dnd` and `quiet_hours`) is refused with a `RangeError`, so send only what changed.
+Do-not-disturb that is switched on needs `quiet_hours` with a valid IANA `timezone` (at most 64
+characters, spelt as the tz database spells it, e.g. `Europe/Paris`) and a `start` that differs
+from the `end`. All of that is checked before anything is sent.
+
+### The text, and what an answer means
+
+`announce` checks the text with the API's own rule first, so a refusal costs no request and never
+echoes the text: NFC-normalised and trimmed, 1 to 280 characters (counted after that, as code
+points), no `<` or `>` (a speaker's text-to-speech may read them as markup), no control characters
+(a newline or a tab included), no bidirectional overrides or isolates and no other invisible format
+characters (the zero-width joiner and non-joiner are allowed), no lone surrogates, no private-use
+characters and no line or paragraph separators (`RangeError`). `lang` is a language tag (`en`,
+`en-US`). Target lists hold at most 50 names of 1 to 64 characters; `all`, a room or a group that
+resolves to more than 50 speakers is `ThalovantTooManyTargetsError` (422, `error.matched`).
+
+`delivered` means the hub handed the speech to that speaker's connection. There is **no playback
+receipt**: do not say "heard" or "played". Only `acked` (an urgent announcement somebody answered)
+is a person's answer, and `failed` is not proof that nothing was spoken. A delivery's `detail` is
+a fixed code (`DELIVERY_DETAIL_CODES`: `hub_no_response`, `rate_limited`, `skill_not_installed`...)
+or null; treat an unknown one as opaque. `acked_by` is the display name of a client of the hub, or
+`"unknown"`. At most two urgent announcements repeat on one hub at a time: the next is
+`ThalovantUrgentBusyError` (429 `intercom_urgent_busy`, `error.scope` `hub` or `platform`,
+`retryAfterSeconds`) with nothing stored: cancel one that is running, or wait. An urgent
+announcement on a hub with no Intercom skill is `ThalovantSkillNotInstalledError` (409).
+
+`announce` also answers `replayed: true` when the answer is the stored announcement for your
+`idempotencyKey` (the response header `Idempotency-Replayed: true`; kept after `wait`): nothing new
+was sent, whatever its status, so do not clear what a person typed, or say "sent", without saying
+so. The same key with a different request is a 409; a key is at most 128 printable ASCII
+characters.
+
 ### Stopping an announcement
 
 An urgent announcement that repeats can be stopped. These are the real controls:
@@ -338,9 +407,11 @@ An urgent announcement that repeats can be stopped. These are the real controls:
 - **`cancelAnnouncement(hubId, announcementId)`** (`intercom:send`, owner or admin of the hub)
   asks the hub to stop repeating and resolves with the announcement as `cancelled`. It works only
   while the status is `sending`; for one that already completed, failed or was cancelled the API
-  answers 409 `not_cancellable` (`ThalovantNotCancellableError`). If the hub cannot confirm the
+  answers 409 `not_cancellable` (`ThalovantNotCancellableError`; its `announcementStatus` is the
+  current status: refresh the result instead of showing an error). If the hub cannot confirm the
   cancel, the record is still `cancelled` and `hub_confirmed` is `false`: speech already queued
-  on the hub may still play.
+  on the hub may still play. Stopping is never refused for platform, hub or plan reasons: it works
+  while the platform switch is off (then `hub_confirmed` is `false` and no hub was called).
 - **The hub's Intercom switch** (`setIntercomSettings(hubId, false)`, `hubs:write`) takes effect
   when the hub's runtime updates, which can take as long as a rollout; the hub's repeat loop
   also stops by itself when it sees the switch off.
@@ -373,12 +444,19 @@ Targets are arrays of names (a bare string such as `{ speakers: "ab" }` is refus
 into `a` and `b`), and a speaker's `dnd.enabled` must be a real boolean (the API replaces the
 whole do-not-disturb object, so a missing or non-boolean value is refused, not sent as `false`).
 
-Refusals are `ThalovantIntercomDisabledError` (switch off, kid or public hub),
-`ThalovantHubUnreachableError` (502: the text may or may not have been spoken; `announcementId`
-names the recorded `failed` announcement: read it before sending again, and use a new key, because
-the same key replays the failed record), `ThalovantNotCancellableError` (409 `not_cancellable`),
-`ThalovantRateLimitedError` (`retryAfterSeconds`) and `ThalovantPlanError` (HTTP 402, or 403 with
-`plan_limit`).
+Refusals are typed (`IntercomProblemCode` holds each `code`; read `code`, then `problem.message`):
+`ThalovantIntercomDisabledError` (switch off), its kinds `ThalovantIntercomUnavailableError` (422
+`intercom_unavailable`, `reason` `kid_hub` or `public_hub`) and `ThalovantIntercomPlatformDisabledError`
+(503), `ThalovantIntercomNotConfiguredError` (503), `ThalovantUrgentScopeRequiredError` (403),
+`ThalovantUrgentBusyError` (429), `ThalovantSkillNotInstalledError` (409), `ThalovantNotASpeakerError`
+(422), `ThalovantTooManyTargetsError` (422), `ThalovantReservedNameError` (422),
+`ThalovantManagedClientError` (403, `refusedClientRefs`), `ThalovantHubLockedError` (403),
+`ThalovantImpersonationNotAllowedError` (403), `ThalovantHubUnreachableError` (502: the text may or
+may not have been spoken; `announcementId` names the recorded `failed` announcement: read it before
+sending again, and use a new key, because the same key replays the failed record),
+`ThalovantNotCancellableError` (409), `ThalovantRateLimitedError` (`retryAfterSeconds`) and
+`ThalovantPlanError` (HTTP 402, or 403 with `plan_limit`). `owner_locked` and `account_locked` (403)
+arrive as a plain `ThalovantApiError` with `code` set.
 
 ## Documentation
 

@@ -1,6 +1,16 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom amendment 2 (contract section J): cancel, key replay docs, id validation, wording; new Python digest.
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom final API (platform security review): urgent scope, speaker kind/can_play/policy_synced, typed errors, one text rule, DND timezone, replayed; Python digest 69badc4fb072.
 
 # Maintenance report
+
+## 2026-11-11 - Intercom final API (platform security review; Python digest `69badc4fb072`)
+
+Ported the Python reference's final-API round (`thalovant-python-sdk` `feature/intercom-v1`, `docs/intercom-porting.md`). **Models** (`src/intercom.ts`): `IntercomSpeaker.kind`, `can_play`, `policy_synced`; `IntercomSpeakerList.policy_synced`, `unavailable_reason` (now also `platform`); `IntercomDelivery.detail`; `Announcement.replayed`. **Scope** `intercom:urgent` is documented everywhere the scopes are listed, with constants (`INTERCOM_READ_SCOPE`...). **Errors** (`src/errors.ts`, `INTERCOM_ERROR_KINDS` in `src/control.ts`): `IntercomProblemCode` and a typed error for each of the twelve new codes, `ThalovantNotCancellableError.announcementStatus`; the code decides the kind whatever the status, with the same relationships as Python (urgent-scope is an auth error, urgent-busy a rate-limit error, unavailable and platform kinds of disabled). **Validation**: `announcementText()` is the API's rule (NFC, trimmed the way Python's `str.strip` trims so the API and the SDK agree on edge characters, 1-280 code points, `<` `>`, Cc/Cf/Cs/Co/Zl/Zp except the joiners); `dndBody()` needs a valid IANA timezone (`Intl`, spelt in the database's case, shape for an offset) and `start !== end`; unknown keys are refused in `speakerUpdateBody`, `dnd` and `quiet_hours`; target lists are capped at 50 names of 64 characters; `lang`; `idempotencyKey()` (128 printable ASCII). **`announce`** reads `Idempotency-Replayed` through the new `requestWithHeaders` and keeps `replayed` after `wait`.
+
+Verification: `npm test` (`tsc` build, then `node --test`), 1062 tests, 1061 passed, 1 skipped (the live interop test), 0 failed; 43 of them are new in `test/intercom.test.ts` (87 tests there). One earlier run, under heavy machine load, failed a timing test in `test/home-link.test.ts` that passes alone and in the clean run. `scripts/check-sdk-parity.py --workspace /tmp/ic-work --consumer thalovant-node-sdk` verifies against the Python digest; the `intercom` evidence and the other capabilities' hashes for `src/control.ts` and `src/errors.ts` are refreshed (both changed additively).
+
+Not verified against a live API: the loopback fake API is built from the producer's notes and the API source.
+
+Transparency Report: AI model Claude Sonnet 5.5; actions: ported the final API to the Node SDK (code, tests, docs, parity record); oversight: none yet, review pending.
 
 ## 2026-11-11 - Intercom amendment 2 (client-side security review, contract section J)
 

@@ -2,8 +2,8 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/control.ts": "e20cef5d3cb3dff9987e3edada91ede6cd0a09c05e583c7e5dd40fb1ca17aa99",
-        "src/errors.ts": "83e7a61727337f1d33d243507ed4cad9f155cb397652a75d8d932c81fb1e25e5",
+        "src/control.ts": "f0067eb55ae01e0288c56734e437bc126975ff4ab8da52d8a86511fa2e73098e",
+        "src/errors.ts": "ee6081107f8b0f5db109cb79573f71a235e11628332f01f569c3c69e42344d70",
         "src/redact.ts": "4ee1dba0811e1ef920ab1b224057ce9665cd582a65d7bf2c913a27365540151f"
       },
       "reason": "ThalovantApiError in src/errors.ts carries statusCode, code, detail and a non-enumerable problem, filled by apiError() in src/control.ts for every failed control-plane response, device-flow polling included; the message is unchanged. Run against the shared api-error vectors, each served by a loopback node:http peer and read back through getHub(), plus a device sign-in poll and a createClientIdentity() whose generated secrets stay redacted. Secrets the SDK sent are scrubbed from the body before it is parsed in every spelling a JSON body gives them (as sent, JSON-escaped, and with non-ASCII \\u-escaped in either case, src/redact.ts), and a device-token refusal scrubs the device code the same way; an echoed validation input is never repeated in a message, whatever its key. It also carries fields, the setting or secret names a refusal lists in the problem's fields at its top or inside an object detail (strings only, never values, empty when absent), which the error's JSON shows beside statusCode and detail. Since 0.11.0 a JSON body is scrubbed once parsed rather than in its text (redactSecretsInJson in src/redact.ts): every decoded string and key, and a number that spells a secret, so no JSON spelling can decode a secret back into problem or the message and no escape is cut in two; a body that is not JSON keeps the text pass. A secret under 8 characters is replaced only where it stands alone (no letter or digit beside it). A number in a JSON body that spells a secret is replaced in the text before parsing can round it (redactSecretsInJsonNumbers), overlapping occurrences of secrets are replaced together, and a parsed body nested deeper than 64 levels is cut there, so that neither the scrub nor JSON.stringify overflows before the error carrying its status is made. A text body is scrubbed in one pass over every secret and every JSON spelling of it, and markers are found by binary search, so a body full of them stays near-linear.",
@@ -40,8 +40,8 @@
     },
     "browser-login": {
       "implementation": {
-        "src/control.ts": "e20cef5d3cb3dff9987e3edada91ede6cd0a09c05e583c7e5dd40fb1ca17aa99",
-        "src/errors.ts": "83e7a61727337f1d33d243507ed4cad9f155cb397652a75d8d932c81fb1e25e5",
+        "src/control.ts": "f0067eb55ae01e0288c56734e437bc126975ff4ab8da52d8a86511fa2e73098e",
+        "src/errors.ts": "ee6081107f8b0f5db109cb79573f71a235e11628332f01f569c3c69e42344d70",
         "src/loopback.browser.ts": "27a0f3f2afa43625c52787b237b49af6698c9e0d1c0056de2e116c9de973b1ef",
         "src/loopback.ts": "47692cdff6591a7c3ba9539dab89d11e480f080a8ed3c0e97e49b4704bca106c",
         "src/native-auth.ts": "bcd3e1499966ba1c251e7dda8488d60eea58213ca29507290278b4bf80910c87",
@@ -63,8 +63,8 @@
     "chat-apps": {
       "implementation": {
         "src/chat-apps.ts": "3028dd30586b0c3e36d28f188259238ddb62145eea097c348f82744dbbac1687",
-        "src/control.ts": "e20cef5d3cb3dff9987e3edada91ede6cd0a09c05e583c7e5dd40fb1ca17aa99",
-        "src/errors.ts": "83e7a61727337f1d33d243507ed4cad9f155cb397652a75d8d932c81fb1e25e5"
+        "src/control.ts": "f0067eb55ae01e0288c56734e437bc126975ff4ab8da52d8a86511fa2e73098e",
+        "src/errors.ts": "ee6081107f8b0f5db109cb79573f71a235e11628332f01f569c3c69e42344d70"
       },
       "reason": "ThalovantControlPlane in src/control.ts calls every owner route under /v1/bridges (listChatAppConnectors, getBridgeNetworks, listBridges, createBridge, getBridge, updateBridge with If-Match only when an etag is given, replaceBridgeToken, replaceBridgeSecrets, listBridgeChats, sendBridgeTestMessage, getBridgeAvatar as bytes and content type, deleteBridge); src/chat-apps.ts holds the snake_case models, their readers (open enumerations, documented defaults for absent optional members), the request bodies (exactly one of token and secrets, refused locally otherwise; connector, never network) and SecretValue, which prints [redacted] in every form and is read with reveal() only to build a body. ThalovantApiError.fields in src/errors.ts reads the problem's fields at its top or inside an object detail, strings only. test/chat-apps.test.ts drives each route through a scripted fetch and proves a fake token or secret never reaches the SecretValue's printed forms, the caller's options, an error the API echoed it in, or a network failure.",
       "status": "required",
@@ -78,8 +78,8 @@
     },
     "connection-admission": {
       "implementation": {
-        "src/control.ts": "e20cef5d3cb3dff9987e3edada91ede6cd0a09c05e583c7e5dd40fb1ca17aa99",
-        "src/errors.ts": "83e7a61727337f1d33d243507ed4cad9f155cb397652a75d8d932c81fb1e25e5"
+        "src/control.ts": "f0067eb55ae01e0288c56734e437bc126975ff4ab8da52d8a86511fa2e73098e",
+        "src/errors.ts": "ee6081107f8b0f5db109cb79573f71a235e11628332f01f569c3c69e42344d70"
       },
       "reason": "waitForAdmission() follows the create's operation with GET /v1/operations/{id}, every read bounded by what is left of the wait: ready resolves, failed and timed_out reject with ThalovantAdmissionFailedError(errorCode, no status), 404 and no operation resolve at once, a 5xx is ridden out, and a 429 waits max(poll interval, the problem's retry_after_seconds, else Retry-After, else RateLimit-Reset), a timeout at once when that is more than is left. 401 and 403 pass through as the API's own error (ThalovantAuthError), an API out of reach as ThalovantApiUnreachableError, and any other refusal of the wait is ThalovantAdmissionFailedError keeping statusCode, code, detail and problem. The deadline rejects with ThalovantAdmissionTimeoutError (instanceof both ThalovantConnectionError and ThalovantTimeoutError), ending \"it may still admit it later\"; waits are re-armed on the monotonic clock. A links.self on another origin (scheme, host, port) is never fetched. Run against the shared admission vectors over a loopback node:http peer that sends the case's headers, with {api_host}/{api_port} filled in and a closed port for an unreachable API.",
       "status": "required",
@@ -95,8 +95,8 @@
     },
     "connection-kinds": {
       "implementation": {
-        "src/control.ts": "e20cef5d3cb3dff9987e3edada91ede6cd0a09c05e583c7e5dd40fb1ca17aa99",
-        "src/errors.ts": "83e7a61727337f1d33d243507ed4cad9f155cb397652a75d8d932c81fb1e25e5"
+        "src/control.ts": "f0067eb55ae01e0288c56734e437bc126975ff4ab8da52d8a86511fa2e73098e",
+        "src/errors.ts": "ee6081107f8b0f5db109cb79573f71a235e11628332f01f569c3c69e42344d70"
       },
       "reason": "createClientIdentity(hub, { connectionType }) sends spec.connection_type and requireConnectionType() deletes (If-Match: the answer's etag) and refuses a client whose answer does not repeat it; a 422 whose detail or code, or a validation error's loc or msg (never its echoed input), names connection_type is ThalovantUnsupportedConnectionTypeError, and apiError() classes 402/403 plan_limit as ThalovantPlanError, 409 home_assistant_already_linked as ThalovantAlreadyLinkedError with clientId, and 401/423/403 'Insufficient scopes' as ThalovantAuthError, all keeping statusCode, code and detail. deleteClient() reads the etag when none is given, retries one 412 and counts 404 as deleted. Run against the shared connection-kinds vectors over a loopback node:http peer that checks method, path, body subset and If-Match of every request.",
       "status": "required",
@@ -112,7 +112,7 @@
     },
     "control": {
       "implementation": {
-        "src/control.ts": "e20cef5d3cb3dff9987e3edada91ede6cd0a09c05e583c7e5dd40fb1ca17aa99",
+        "src/control.ts": "f0067eb55ae01e0288c56734e437bc126975ff4ab8da52d8a86511fa2e73098e",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
         "src/native-auth.ts": "bcd3e1499966ba1c251e7dda8488d60eea58213ca29507290278b4bf80910c87",
         "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d"
@@ -144,8 +144,8 @@
     },
     "device-login": {
       "implementation": {
-        "src/control.ts": "e20cef5d3cb3dff9987e3edada91ede6cd0a09c05e583c7e5dd40fb1ca17aa99",
-        "src/errors.ts": "83e7a61727337f1d33d243507ed4cad9f155cb397652a75d8d932c81fb1e25e5"
+        "src/control.ts": "f0067eb55ae01e0288c56734e437bc126975ff4ab8da52d8a86511fa2e73098e",
+        "src/errors.ts": "ee6081107f8b0f5db109cb79573f71a235e11628332f01f569c3c69e42344d70"
       },
       "reason": "beginDeviceLogin() (an empty scope list left out, as in loginWithBrowser(); clientId sent as client_id when given, HOME_ASSISTANT_CLIENT_ID for Home Assistant, and left out otherwise, in both) returns a DeviceAuthorization (DeviceAuthorization.fromGrant refuses a verification URL that is not http(s), has no host or carries credentials); each pollDeviceLogin() is one POST /v1/auth/device/token that resolves with an ApiToken kept as accessToken and tokenId, or rejects with ThalovantDeviceLoginPendingError (interval lengthened by five seconds for good per device code on slow_down), ThalovantDeviceLoginExpiredError or ThalovantDeviceLoginDeniedError, every other failure through apiError() with the api-errors fields; revokeApiToken() revokes and forgets the token the SDK signed in with, a 401 on its own revoke counting as revoked and a second revoke sending nothing; every sign-in (device, password, native) resets tokenId. describeDeviceLogin(userCode) reads GET /v1/auth/device/codes/{userCode} into a DeviceLoginRequest whose clientVerified is true only with a clientId. A 2xx token answer that is not a JSON object is an error with no status. Neither the device code nor the token is printed by an error (a refused poll scrubs the device code from the message and from problem), console.log or util.inspect. Run against the shared device-login vectors, each served in order by a loopback node:http peer that checks every request (body, Authorization) and read back through the public control plane. loginWithBrowser() runs on a private deviceLogin() that interactiveLogin() shares; only interactiveLogin() passes it an AbortSignal, which pollDeviceToken() honours between polls and in its requests. loginWithBrowser()'s options, defaults, prints and errors are unchanged, as the device-login vectors show. A refused poll's problem (pending, denied, expired) is scrubbed of the device code once decoded, while the answer's kind is read from the body as sent. With interactiveLogin()'s signal, the authorize request and every poll (request and body) end on a cancel even when fetch ignores the signal, and a cancelled sign-in keeps no token that answers late.",
       "status": "required",
@@ -162,7 +162,7 @@
     "home-link": {
       "implementation": {
         "src/client.ts": "c565d166e87513e9e98ad0b7d2de936eecd4e15b3575831202979cbf9a688811",
-        "src/errors.ts": "83e7a61727337f1d33d243507ed4cad9f155cb397652a75d8d932c81fb1e25e5",
+        "src/errors.ts": "ee6081107f8b0f5db109cb79573f71a235e11628332f01f569c3c69e42344d70",
         "src/events.ts": "461177330c93685b07937ab2d5577ad4a29c4214690659ae877b8e2a49cbd752",
         "src/home.ts": "8a83815a8ae578658908ff8c18edddc973bf20bd1428db3569a7ebbb32e0d308",
         "src/link-keeping.ts": "466a3be7135437eeac402b7966da488fed753c01fd6da8ec969384ba605ac100",
@@ -210,14 +210,14 @@
     "intercom": {
       "status": "required",
       "implementation": {
-        "src/intercom.ts": "b52c55e62f19f3c7e3eb43b6e8fa5f3454094516dfe45fe544ca08486c653b7d",
-        "src/control.ts": "e20cef5d3cb3dff9987e3edada91ede6cd0a09c05e583c7e5dd40fb1ca17aa99",
-        "src/errors.ts": "83e7a61727337f1d33d243507ed4cad9f155cb397652a75d8d932c81fb1e25e5"
+        "src/intercom.ts": "74ada6e25b3ab70cd9b7f32ee669e5b7d8cf7725634332d6502271cde7934820",
+        "src/control.ts": "f0067eb55ae01e0288c56734e437bc126975ff4ab8da52d8a86511fa2e73098e",
+        "src/errors.ts": "ee6081107f8b0f5db109cb79573f71a235e11628332f01f569c3c69e42344d70"
       },
       "tests": {
-        "test/intercom.test.ts": "e53537ab881518aeedbc7e8a4206c187ff85c75ed32ea261b54007d9c06c72ae"
+        "test/intercom.test.ts": "d2bd72a765ed791a7325aa4408b5ca3b3d41f1a5334952ed4db7fad28ede82c0"
       },
-      "reason": "ThalovantControlPlane in src/control.ts calls every route under /v1/hubs/{hub_id}/intercom (announce with the text trimmed to 1-280 characters counted as code points and free of control characters, targets of exactly one of all, speakers (at most 50), rooms or groups, priority normal or urgent, repeat 1-10 times at 5-120 seconds for urgent only, an Idempotency-Key only when the caller gives one, and an optional wait that validates waitTimeoutMs (finite, not negative) and pollIntervalMs (finite, above zero) before the POST, sleeps abortably on the caller's signal, bounds each status read by the time left, starts no read once the deadline passed during the sleep, and returns the latest answer on timeout, while a poll that fails after the POST rejects and the idempotency key is the retry; wait also needs intercom:read; target lists are arrays of names and a bare string is refused; do-not-disturb enabled must be a real boolean; getAnnouncement; listAnnouncements with limit and cursor; listIntercomSpeakers; updateIntercomSpeaker sending only the fields present, with room null clearing it; getIntercomSettings; setIntercomSettings), the hub, speaker and announcement ids percent-escaped as one path segment and blank ids refused locally; src/intercom.ts holds the snake_case models and readers (open enumerations for announcement and delivery status and unavailable_reason) and the request builders; src/errors.ts has ThalovantIntercomDisabledError (intercom_disabled), ThalovantHubUnreachableError (502 hub_unreachable) and ThalovantRateLimitedError (429) as kinds of their own. Named announce and *Intercom*, never a bare intercom: the mesh already has an intercom frame. test/intercom.test.ts drives each route through a real loopback HTTP server and proves the wire shape, the validation, the escaping, the polling (deadline, abort, a stalled read, a failed poll) and the error kinds. Amendment 2 (client-side security review, contract section J): cancelAnnouncement (POST .../announcements/{id}/cancel, no body, intercom:send) resolves with the announcement, status cancelled, and an optional hub_confirmed that is a real boolean or absent (false when the hub could not confirm); a 409 not_cancellable is ThalovantNotCancellableError; the announcement status type gains cancelled; ThalovantHubUnreachableError.announcementId reads announcement_id from the problem (top or inside an object detail); the hub, speaker and announcement ids are refused locally, before any request, when empty or blank, a dot segment (. or ..), or holding /, ?, #, a backslash or a control character (intercomId), and are otherwise percent-encoded as one path segment; this SDK sets no request timeout, so the docs tell callers to give announce an AbortSignal of at least 20 seconds; README, QUICK_FACTS and FAQ use a fresh crypto.randomUUID() idempotency key per announcement and say that the same key replays the stored result (Idempotency-Replayed: true) and never re-sends, that a replayed failed announcement stays failed, that a deliberate second send needs a new key and that after a 502 hub_unreachable the announcement (announcementId) is read first, and the wording says intercom does not record or store speech instead of nothing listens and names the real controls (platform kill switch, per-hub switch, cancel, voice acknowledgement); test/intercom.test.ts proves each of these, with doc guards against constant keys and over-promising phrases."
+      "reason": "ThalovantControlPlane in src/control.ts calls every route under /v1/hubs/{hub_id}/intercom (announce with the text trimmed to 1-280 characters counted as code points and free of control characters, targets of exactly one of all, speakers (at most 50), rooms or groups, priority normal or urgent, repeat 1-10 times at 5-120 seconds for urgent only, an Idempotency-Key only when the caller gives one, and an optional wait that validates waitTimeoutMs (finite, not negative) and pollIntervalMs (finite, above zero) before the POST, sleeps abortably on the caller's signal, bounds each status read by the time left, starts no read once the deadline passed during the sleep, and returns the latest answer on timeout, while a poll that fails after the POST rejects and the idempotency key is the retry; wait also needs intercom:read; target lists are arrays of names and a bare string is refused; do-not-disturb enabled must be a real boolean; getAnnouncement; listAnnouncements with limit and cursor; listIntercomSpeakers; updateIntercomSpeaker sending only the fields present, with room null clearing it; getIntercomSettings; setIntercomSettings), the hub, speaker and announcement ids percent-escaped as one path segment and blank ids refused locally; src/intercom.ts holds the snake_case models and readers (open enumerations for announcement and delivery status and unavailable_reason) and the request builders; src/errors.ts has ThalovantIntercomDisabledError (intercom_disabled), ThalovantHubUnreachableError (502 hub_unreachable) and ThalovantRateLimitedError (429) as kinds of their own. Named announce and *Intercom*, never a bare intercom: the mesh already has an intercom frame. test/intercom.test.ts drives each route through a real loopback HTTP server and proves the wire shape, the validation, the escaping, the polling (deadline, abort, a stalled read, a failed poll) and the error kinds. Amendment 2 (client-side security review, contract section J): cancelAnnouncement (POST .../announcements/{id}/cancel, no body, intercom:send) resolves with the announcement, status cancelled, and an optional hub_confirmed that is a real boolean or absent (false when the hub could not confirm); a 409 not_cancellable is ThalovantNotCancellableError; the announcement status type gains cancelled; ThalovantHubUnreachableError.announcementId reads announcement_id from the problem (top or inside an object detail); the hub, speaker and announcement ids are refused locally, before any request, when empty or blank, a dot segment (. or ..), or holding /, ?, #, a backslash or a control character (intercomId), and are otherwise percent-encoded as one path segment; this SDK sets no request timeout, so the docs tell callers to give announce an AbortSignal of at least 20 seconds; README, QUICK_FACTS and FAQ use a fresh crypto.randomUUID() idempotency key per announcement and say that the same key replays the stored result (Idempotency-Replayed: true) and never re-sends, that a replayed failed announcement stays failed, that a deliberate second send needs a new key and that after a 502 hub_unreachable the announcement (announcementId) is read first, and the wording says intercom does not record or store speech instead of nothing listens and names the real controls (platform kill switch, per-hub switch, cancel, voice acknowledgement); test/intercom.test.ts proves each of these, with doc guards against constant keys and over-promising phrases. The final API (platform security review): the scope intercom:urgent in addition to intercom:send for an urgent announcement; speakers carry kind, can_play (default true, only an explicit false is false) and policy_synced, the speaker list carries policy_synced and unavailable_reason (which may be platform), a delivery its detail code, and an announcement replayed (the Idempotency-Replayed: true response header, kept after wait); the speaker update accepts only receive, room, groups and dnd (an unknown key, also inside dnd and quiet_hours, is refused); typed errors and the IntercomProblemCode constants in src/errors.ts for urgent_scope_required, intercom_urgent_busy (scope), skill_not_installed, not_a_speaker (kind, notSpeakers), reserved_name, hub_locked, impersonation_not_allowed, too_many_targets (matched), intercom_unavailable (reason), intercom_disabled_platform, intercom_not_configured, managed_client (refusedClientRefs), not_cancellable (announcementStatus) and hub_unreachable (announcementId), chosen by code whatever the status; one text rule checked before any request and never echoed (NFC, trimmed as the API trims, 1-280 code points, no < or >, no Unicode category Cc, Cf, Cs, Co, Zl or Zp except the zero-width joiner and non-joiner); quiet hours that are on need a valid IANA timezone (at most 64 characters, in the database's own case) and start !== end; target lists of at most 50 names of 1-64 characters; lang a language tag; the idempotency key at most 128 printable ASCII characters. The docs say delivered is not heard and the platform switch ships off."
     },
     "inventory": {
       "implementation": {
@@ -237,7 +237,7 @@
     },
     "link-carriers": {
       "implementation": {
-        "src/errors.ts": "83e7a61727337f1d33d243507ed4cad9f155cb397652a75d8d932c81fb1e25e5",
+        "src/errors.ts": "ee6081107f8b0f5db109cb79573f71a235e11628332f01f569c3c69e42344d70",
         "src/noise-store.ts": "03fefa0f4a6bd96d2b8d6267e1484a0705ba4f4f5cdf4eecae08355e64f9a447",
         "src/session.ts": "0169e76d3c1030a76b56e4700c046dbabfa8301d379a0da9e78e7bda67f5edad",
         "src/transport-core.ts": "46689882ef2536e4896cf30764dfb8c4c5361ebf7e618ab72d40d7deb397cca8",
@@ -293,7 +293,7 @@
     "refusal": {
       "implementation": {
         "src/client.ts": "c565d166e87513e9e98ad0b7d2de936eecd4e15b3575831202979cbf9a688811",
-        "src/errors.ts": "83e7a61727337f1d33d243507ed4cad9f155cb397652a75d8d932c81fb1e25e5",
+        "src/errors.ts": "ee6081107f8b0f5db109cb79573f71a235e11628332f01f569c3c69e42344d70",
         "src/refusal.ts": "b691a17793e8e837e59fb7301f0dad20797e297e9104e59b80be4b5b08aca235"
       },
       "reason": "refusalBelongsToAsk() and failureError() in src/refusal.ts, used by ask() in client.ts, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish rejects. Both helpers are exported so thalovant-mcp can run the same vectors against the version it resolves. Run against the shared refusal vectors plus five end-to-end asks over a fake transport.",
@@ -366,7 +366,8 @@
     "6dfb3bb31ac7590591febef1c4d8372984ca6cdad4700381f869db30c38452df",
     "690784dbb9af67d32523958808442d2b6ec5ea2f09ab881e56940b35333952a3",
     "66bfb1ac58791122702bf56281a290a09da1ba3753596177827b4f99c194d960",
-    "a82b669bc2cbc499fe92ea549d3ea2535132f94bf35be0383fe786efd0284f6f"
+    "a82b669bc2cbc499fe92ea549d3ea2535132f94bf35be0383fe786efd0284f6f",
+    "69badc4fb072703e675ce50ae3a09765bf49cbf65efcc2fef5befb46f2b32a8c"
   ],
   "schema_version": 1
 }

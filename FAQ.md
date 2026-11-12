@@ -1,6 +1,18 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom amendment 2: cancel, key replay, ids, wording.
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom amendment 2 and the final API: urgent scope, can_play, replayed, platform switch.
 
 # FAQ
+
+**Why does an urgent `announce` reject with `ThalovantUrgentScopeRequiredError`?**
+`priority: "urgent"` (and so every `repeat`) needs the scope `intercom:urgent` in addition to `intercom:send`. Nothing implies it, and nothing was spent (no rate token, no hub call). Sign in again with the scope (a paid plan), or send a normal announcement.
+
+**Why does `updateIntercomSpeaker(..., { receive: true })` reject with `ThalovantNotASpeakerError`?**
+A connection that cannot play speech (`can_play` false: `home_assistant`, `developer` and `embedded` unless its owner declared `spec.intercom.can_play: true` on the connection) is listed so it can be greyed out, but it cannot receive and is never part of `all`, a room or a group.
+
+**What does `announcement.replayed` mean?**
+The API answered with `Idempotency-Replayed: true`: this is the stored announcement for your key, nothing new was sent, whatever its status. Do not tell the person it was sent anew.
+
+**Why does everything reject with `ThalovantIntercomPlatformDisabledError`?**
+Intercom ships dark: until the platform operator turns it on, `getIntercomSettings` reads `unavailable_reason: "platform"` for every hub and every write and announcement is a 503 `intercom_disabled_platform`. Reads and `cancelAnnouncement` still work.
 
 **Is intercom a safety system, and why is there no `intercom()` method?**
 It is announce-only text spoken by each speaker's own text-to-speech, and **not a certified safety system**: it does not replace smoke or CO alarms, medical alert devices or emergency services. The mesh already has an `intercom` frame, so the HTTP calls are `announce`, `getAnnouncement`, `listAnnouncements` and `*Intercom*`. The API does not store the text (a keyed hash and the length only), and intercom does not record or store speech; while an alert sounds it only checks whether a reply is an acknowledgement.
@@ -21,7 +33,7 @@ Not to send again: a replayed `failed` announcement stays `failed`. The hub may 
 An id that is `.`, `..`, empty, or holds `/`, `?`, `#`, a backslash or a control character is refused before any request: a dot segment would change the route.
 
 **Why was nobody spoken to?**
-A speaker is skipped unless its `receive` is true (`skipped_not_receiving`, even for urgent); a normal announcement is skipped inside quiet hours (`skipped_dnd`; urgent bypasses them); an offline speaker is `offline`. `ThalovantIntercomDisabledError` means the hub's switch is off or it is a kid or public hub.
+A speaker is skipped unless its `receive` is true (`skipped_not_receiving`, even for urgent); a normal announcement is skipped inside quiet hours (`skipped_dnd`; urgent bypasses them); an offline speaker is `offline`. `ThalovantIntercomDisabledError` means the hub's switch is off; `ThalovantIntercomUnavailableError` (a kind of it) means a kid or public hub. `delivered` is not "heard": there is no playback receipt.
 
 **How do I connect a Telegram bot to a hub?**
 `createBridge({ hubId, connector: "telegram", token: new SecretValue(botToken) })`, add the bot to a group with `bridge.invite_links.add_to_group`, pick chats from `listBridgeChats(bridge.id)` and start it with `updateBridge(bridge.id, { allowed })`. See the README's "Chat apps" section.
