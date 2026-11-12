@@ -271,12 +271,14 @@ alert devices or emergency services. The API does not store the text (it keeps a
 and the length), and intercom does not record or store speech: while an alert sounds, the hub
 only checks whether a reply is an acknowledgement. (The names are `announce` and `*Intercom*`:
 the HiveMind mesh already has an `intercom` frame.)
-Scopes: `intercom:read`, `intercom:send` (announce and cancel; plus `intercom:read` with `wait`), `intercom:urgent`
+Scopes: `intercom:read`, `intercom:send` (announce and cancel; it implies `intercom:read`, which the polls of `wait` use), `intercom:urgent`
 (**in addition to** `intercom:send`, for `priority: "urgent"` and so every `repeat`), and `hubs:write` for settings and speakers.
 
 ```ts
 await api.setIntercomSettings(hubId, true);                                   // hubs:write
-const [speaker] = (await api.listIntercomSpeakers(hubId)).items;               // intercom:read; use its client_id
+const speakers = (await api.listIntercomSpeakers(hubId)).items;                // intercom:read; use a client_id
+const speaker = speakers.find((s) => s.can_play);   // can_play: false is listed but never receives
+if (!speaker) throw new Error("This hub has no connection that can play speech.");
 await api.updateIntercomSpeaker(hubId, speaker.client_id, { receive: true, room: "kitchen" });
 
 // A fresh unique key for each announcement you mean to send (see "Idempotency keys" below).
@@ -288,7 +290,7 @@ console.log(said.status, said.deliveries.map((d) => `${d.name}: ${d.status}`));
 const urgent = await api.announce(hubId, {
   text: "Please answer", targets: { all: true }, priority: "urgent",
   repeat: { times: 3, interval_seconds: 20 }, idempotencyKey: crypto.randomUUID(),
-  wait: true,                          // polls while `sending`; needs intercom:read as well; urgent needs intercom:urgent
+  wait: true,                          // polls while `sending` (intercom:read, implied by intercom:send); urgent needs intercom:urgent
 });
 console.log(urgent.status, urgent.acked_by);
 
@@ -309,9 +311,11 @@ scopes a key to `(hub, key)` and remembers it for 24 hours:
 - **The same key replays the stored announcement** (the response header is
   `Idempotency-Replayed: true`) and **never sends again**, whatever its status. A replayed
   `failed` announcement stays `failed`; it is not retried.
-- **A constant key silences you.** A literal key such as `"dinner"` sends once; every later
-  announcement with that key, for 24 hours, returns the first one's answer and nothing is
-  spoken. Never copy a literal key into real code, and never derive it from the text or the date.
+- **A constant key silences you.** A literal key such as `"dinner"` sends once. For the next 24
+  hours a later announcement with that key and the **same** request replays the first one's stored
+  answer, with the status it stored (`completed`, `failed`, ...), and nothing is spoken; one with a
+  **different** request is a 409. Never copy a literal key into real code, and never derive it
+  from the text or the date.
 - **Reuse a key only for the same attempt**, after a network drop or a timeout: the call then
   returns what the first attempt did (and its id) instead of speaking twice.
 - **To send the same text again on purpose, use a new key.**
@@ -319,7 +323,8 @@ scopes a key to `(hub, key)` and remembers it for 24 hours:
   spoken. The API recorded the attempt as a `failed` announcement and puts its id in the problem
   body: `error.announcementId`. Read it with `getAnnouncement(hubId, error.announcementId)` and look
   at the deliveries before you send again. Resending with the **same** key will not retry (it
-  replays the `failed` record); a deliberate second send needs a **new** key.
+  replays the `failed` record). A `failed` record is not proof that nothing was spoken: weigh the
+  risk of a repeated announcement, and use a **new** key only when you choose to send a second attempt.
 
 ```ts
 try {
@@ -382,7 +387,8 @@ points), no `<` or `>` (a speaker's text-to-speech may read them as markup), no 
 characters (the zero-width joiner and non-joiner are allowed), no lone surrogates, no private-use
 characters and no line or paragraph separators (`RangeError`). `lang` is a language tag (`en`,
 `en-US`). Target lists hold at most 50 names of 1 to 64 characters; `all`, a room or a group that
-resolves to more than 50 speakers is `ThalovantTooManyTargetsError` (422, `error.matched`).
+resolves to more than 50 speakers is `ThalovantTooManyTargetsError` (422, `error.matched`); naming the
+same room or group resolves to the same speakers, so choose a narrower target or name at most 50.
 
 `delivered` means the hub handed the speech to that speaker's connection. There is **no playback
 receipt**: do not say "heard" or "played". Only `acked` (an urgent announcement somebody answered)
@@ -404,8 +410,9 @@ characters.
 
 An urgent announcement that repeats can be stopped. These are the real controls:
 
-- **`cancelAnnouncement(hubId, announcementId)`** (`intercom:send`, owner or admin of the hub)
-  asks the hub to stop repeating and resolves with the announcement as `cancelled`. It works only
+- **`cancelAnnouncement(hubId, announcementId)`** (`intercom:send`; the hub's owner, a manager, a
+  plain member of the tenant or an administrator, and an impersonated session too: stopping speech
+  is not restricted to the people who may announce) asks the hub to stop repeating and resolves with the announcement as `cancelled`. It works only
   while the status is `sending`; for one that already completed, failed or was cancelled the API
   answers 409 `not_cancellable` (`ThalovantNotCancellableError`; its `announcementStatus` is the
   current status: refresh the result instead of showing an error). If the hub cannot confirm the
@@ -432,13 +439,16 @@ one, `RangeError` for the rest). The API waits up to ten seconds for the hub, an
 no request timeout of its own: if you pass a `signal` that aborts after a timeout, give
 `announce` at least 20 seconds.
 
-`wait: true` needs **`intercom:read` as well as `intercom:send`** (the polls are
-`getAnnouncement`), validates `waitTimeoutMs` (finite, not negative) and `pollIntervalMs`
+`wait: true` polls with `getAnnouncement` (`intercom:read`, which `intercom:send` implies, so no
+further scope is needed), validates `waitTimeoutMs` (finite, not negative) and `pollIntervalMs`
 (finite, above zero) before anything is sent, and bounds each poll by the deadline; `signal`
-cancels the sleep at once. A poll can fail after the announcement was accepted (a token with
-only `intercom:send` is refused at the first poll; a 429; the network): the promise rejects and
-you have no announcement id, so always pass a fresh `idempotencyKey` with `wait`: calling again
-with that same key replays the stored announcement (with its id) and does not announce a second time.
+cancels the sleep at once. A poll can fail after the announcement was accepted (a 429; the
+network): the promise rejects and you have no announcement id, so always pass an `idempotencyKey`
+with `wait`, created **before** the first call (a new key is a different attempt and can announce
+twice). To get the id back, call again with that same key and without `wait`: the POST replays the
+stored announcement (with its id, no status read) and does not announce a second time; read it with
+`getAnnouncement` afterwards. The same call with `wait` polls again while it is still `sending`, so
+it can reject with the same error.
 
 Targets are arrays of names (a bare string such as `{ speakers: "ab" }` is refused, never split
 into `a` and `b`), and a speaker's `dnd.enabled` must be a real boolean (the API replaces the

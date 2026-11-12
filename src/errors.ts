@@ -247,8 +247,10 @@ export class ThalovantPlanError extends ThalovantApiError {}
  * The `code` of every refusal the intercom routes (and the connection routes
  * beside them) add. The API's answers are `application/problem+json`: read
  * `code` first. The typed error for each code is named in its comment; any
- * code not listed here arrives as a plain {@link ThalovantApiError} with
- * `code` and `problem`.
+ * code not listed here follows the ordinary mappings by status (a 401 is a
+ * {@link ThalovantAuthError}, a 429 a {@link ThalovantRateLimitedError}, ...)
+ * and is otherwise a plain {@link ThalovantApiError}, with `code` and `problem`
+ * either way.
  */
 export const IntercomProblemCode = Object.freeze({
   /** 403: `priority: "urgent"` (and so every `repeat`) needs `intercom:urgent` as well as `intercom:send`. {@link ThalovantUrgentScopeRequiredError} */
@@ -429,8 +431,9 @@ export class ThalovantImpersonationNotAllowedError extends ThalovantApiError {}
 
 /**
  * `all`, a room or a group resolved to more than 50 speakers (422
- * `too_many_targets`). {@link matched} is how many it resolved to. Name a room
- * or a group.
+ * `too_many_targets`). {@link matched} is how many it resolved to. Naming that
+ * same room or group resolves to the same speakers: choose a narrower target
+ * (a smaller room or group) or name at most 50 speakers.
  */
 export class ThalovantTooManyTargetsError extends ThalovantApiError {
   /** How many speakers the targets resolved to, or undefined when the body did not say. */
@@ -464,8 +467,9 @@ export class ThalovantManagedClientError extends ThalovantApiError {
  * **Do not resend blindly.** Read the announcement first
  * (`getAnnouncement(hubId, error.announcementId)`). Reusing the same
  * `idempotencyKey` does *not* retry: the API replays the stored `failed`
- * record and never sends again. To send the text again on purpose, use a
- * **new** key, once you know nothing was spoken.
+ * record and never sends again. A `failed` record is not proof that nothing
+ * was spoken: weigh the risk of a repeated announcement, and use a **new** key
+ * only when you choose to send a second attempt.
  */
 export class ThalovantHubUnreachableError extends ThalovantApiError {
   /** The announcement the API recorded for the failed attempt (`announcement_id` in the problem), or undefined. */

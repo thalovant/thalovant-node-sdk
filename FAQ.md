@@ -18,22 +18,22 @@ Intercom ships dark: until the platform operator turns it on, `getIntercomSettin
 It is announce-only text spoken by each speaker's own text-to-speech, and **not a certified safety system**: it does not replace smoke or CO alarms, medical alert devices or emergency services. The mesh already has an `intercom` frame, so the HTTP calls are `announce`, `getAnnouncement`, `listAnnouncements` and `*Intercom*`. The API does not store the text (a keyed hash and the length only), and intercom does not record or store speech; while an alert sounds it only checks whether a reply is an acknowledgement.
 
 **Why did `announce({ wait: true })` reject after the announcement was accepted?**
-`wait` polls `getAnnouncement`, which needs `intercom:read` as well as `intercom:send`; a poll can also fail on a 429 or the network. The announcement exists and the rejection has no id. Pass a fresh `idempotencyKey` (`crypto.randomUUID()`) and call again with that same key: the API replays the stored announcement, with its id, and does not say it twice.
+`wait` polls `getAnnouncement` (`intercom:read`, which `intercom:send` implies); a poll can still fail on a 429 or the network. The announcement exists and the rejection has no id. Create a fresh `idempotencyKey` (`crypto.randomUUID()`) **before** the first call and keep that exact key (a new key is a different attempt and can announce twice), then call again with it and without `wait`: the POST replays the stored announcement, with its id, makes no status read and does not say it twice (with `wait` the repeat call polls again and can reject with the same error). If the first call had no key, nothing can replay it: find the announcement with `listAnnouncements(hubId, { limit: 5 })` (newest first) before sending again.
 
 **Why did my second announcement say nothing, and the result is the first one?**
 The same `idempotencyKey` replays the stored announcement (`Idempotency-Replayed: true`) for 24 hours and never sends again, whatever its status. You reused a key (or a constant like `"dinner"`). Use a fresh `crypto.randomUUID()` per announcement you mean to send; to send the same text again on purpose, use a new key.
 
 **`announce` rejected with `ThalovantHubUnreachableError`. Can I send again with the same key?**
-Not to send again: a replayed `failed` announcement stays `failed`. The hub may have spoken it. Read `getAnnouncement(hubId, error.announcementId)`, and only if nothing was spoken use a new key.
+Not to send again: a replayed `failed` announcement stays `failed`. The hub may have spoken it, and a `failed` record is not proof that it did not. Read `getAnnouncement(hubId, error.announcementId)`, weigh the risk of saying it twice, and use a new key only when you choose to send a second attempt.
 
 **How do I stop an urgent announcement that is repeating?**
-`cancelAnnouncement(hubId, announcementId)` (`intercom:send`): status `cancelled`, `hub_confirmed: false` when the hub could not confirm. Only while `sending`, else `ThalovantNotCancellableError` (409). Other controls: the hub's switch, the platform kill switch, a speaker's `receive`, and somebody acknowledging by voice.
+`cancelAnnouncement(hubId, announcementId)` (`intercom:send`; the owner, a manager, a plain member or an administrator, an impersonated session too): status `cancelled`, `hub_confirmed: false` when the hub could not confirm. Only while `sending`, else `ThalovantNotCancellableError` (409). Other controls: the hub's switch, the platform kill switch, a speaker's `receive`, and somebody acknowledging by voice.
 
 **Why is `getAnnouncement(hubId, "..")` refused?**
 An id that is `.`, `..`, empty, or holds `/`, `?`, `#`, a backslash or a control character is refused before any request: a dot segment would change the route.
 
 **Why was nobody spoken to?**
-A speaker is skipped unless its `receive` is true (`skipped_not_receiving`, even for urgent); a normal announcement is skipped inside quiet hours (`skipped_dnd`; urgent bypasses them); an offline speaker is `offline`. `ThalovantIntercomDisabledError` means the hub's switch is off; `ThalovantIntercomUnavailableError` (a kind of it) means a kid or public hub. `delivered` is not "heard": there is no playback receipt.
+A speaker is skipped unless its `receive` is true (`skipped_not_receiving`, even for urgent); a normal announcement is skipped inside quiet hours (`skipped_dnd`; urgent bypasses them); an offline speaker is `offline`. `ThalovantIntercomDisabledError` is the hub's switch being off only when the error is exactly that class: `ThalovantIntercomPlatformDisabledError` and `ThalovantIntercomUnavailableError` (a kid or public hub) are kinds of it, so check them first before telling anybody to change the hub's setting. `delivered` is not "heard": there is no playback receipt.
 
 **How do I connect a Telegram bot to a hub?**
 `createBridge({ hubId, connector: "telegram", token: new SecretValue(botToken) })`, add the bot to a group with `bridge.invite_links.add_to_group`, pick chats from `listBridgeChats(bridge.id)` and start it with `updateBridge(bridge.id, { allowed })`. See the README's "Chat apps" section.

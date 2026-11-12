@@ -1,4 +1,4 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom final API: replayed flag and caps fixed; open items (text in console.log of options, problem body, tz/Unicode databases, message vs detail).
+Last Edit: Claude Sonnet 5.5 - 2026-11-12 - Motive: Intercom review round 2 (CodeRabbit PR 112): wait deadline vs a fetch that ignores abort, urgent-scope precedence, docs aligned with the API.
 
 # Audit
 
@@ -25,9 +25,16 @@ The final intercom problems carry their sentence in `message`; `problemFields()`
 - **The text rule is the API's** (was: 1-280 and control characters only; "a text the API would refuse is refused first and never echoed"). The trim is the API's too: `pyStrip()` takes what Python's `str.isspace` calls white space, so `\u001f hi` is accepted as the API accepts it and a BOM at the edge is refused as the API refuses it.
 - **Quiet hours** that are on need a real IANA zone and `start !== end`; unknown `dnd`, `quiet_hours` and speaker keys are refused ("the speaker update takes only the documented fields").
 
+## Intercom (0.12.0): fixed in review round 2 (CodeRabbit PR 112)
+
+- **A fetch that ignores the abort signal held the `announce({ wait: true })` deadline** (`src/control.ts`, `announce` and `raceAbort`): each status read is now raced against the bounded signal (`test/intercom.test.ts`, "the wait deadline holds when an injected fetch ignores the abort signal", "... when an answer body never ends", "a caller's abort still rejects with an AbortError ...").
+- **`urgent_scope_required` with the generic "Insufficient scopes" sentence was a plain `ThalovantAuthError`** (`apiError`): the intercom code now wins ("urgent_scope_required wins over the generic Insufficient scopes refusal ...").
+- **Docs said `wait` needs `intercom:read` as well, and that cancel is owner/admin only**: both were wrong against the API (`thalovant-api` `app/auth/utils.py:232`, `app/routes/intercom.py` `cancel_announcement`); corrected.
+- **Declined:** redacting the sent text from API error messages. The API strips `input` and `ctx` from every 422 under `/intercom/` (`thalovant-api` `app/middleware/errors.py` `NO_ECHO_FRAGMENT`), and a redaction of a short text would rewrite the `code` the typed errors are read from.
+
 ## Intercom (0.12.0): a poll that fails after the POST leaves an accepted announcement
 
-`ThalovantControlPlane.announce({ wait: true })` (`src/control.ts`) sends the POST, then polls `getAnnouncement`, which needs `intercom:read`. A token with only `intercom:send`, a 429 or a network error fails a poll after the announcement was accepted, and the rejection carries no announcement id (`test/intercom.test.ts`, "a failed poll rejects after the POST was accepted"). The answer is a fresh `idempotencyKey`: calling again with the same key replays the stored announcement (with its id) and does not send again. Not fixed in the SDK because a rejection cannot also return the announcement; the README and the JSDoc say so.
+`ThalovantControlPlane.announce({ wait: true })` (`src/control.ts`) sends the POST, then polls `getAnnouncement` (`intercom:read`, which `intercom:send` implies: `thalovant-api` `app/auth/utils.py` `expand_granted_scopes`). A 429 or a network error fails a poll after the announcement was accepted, and the rejection carries no announcement id (`test/intercom.test.ts`, "a failed poll rejects after the POST was accepted"). The answer is a fresh `idempotencyKey`: calling again with the same key replays the stored announcement (with its id) and does not send again. Not fixed in the SDK because a rejection cannot also return the announcement; the README and the JSDoc say so.
 
 ## Intercom (0.12.0): the settings reader is lenient
 

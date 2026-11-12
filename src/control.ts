@@ -2421,14 +2421,17 @@ export class ThalovantControlPlane {
    * The deadline bounds each status read as well as the sleep between reads,
    * and `signal` cancels the sleep at once.
    *
-   * **`wait` needs `intercom:read` as well as `intercom:send`**: the polls are
-   * {@link getAnnouncement}. A token with only `intercom:send` is accepted by
-   * the POST and then refused at the first poll, and a poll can fail for other
-   * reasons (a 429, the network): the promise then rejects after the
-   * announcement was accepted, and the caller has no announcement id. Always
-   * pass a fresh `idempotencyKey` with `wait`: calling again with that same
-   * key replays the stored announcement, with its id, and does not announce a
-   * second time.
+   * **`wait` polls with {@link getAnnouncement}** (`intercom:read`, which
+   * `intercom:send` implies, so no further scope is needed). A poll can still
+   * fail after the announcement was accepted (a 429, the network): the promise
+   * then rejects and the caller has no announcement id. Always pass an
+   * `idempotencyKey` with `wait`, created before the first call: calling again
+   * with that same key and no `wait` returns the stored announcement, with its
+   * id, from the POST alone (no status read) and does not announce a second
+   * time; read it with {@link getAnnouncement} afterwards. With `wait` the
+   * repeat call polls again while the announcement is still `sending`, and can
+   * reject with the same poll error. A new key is a different attempt and can
+   * announce twice.
    *
    * **Idempotency.** `idempotencyKey`, when given, is sent as
    * `Idempotency-Key`. Use a **fresh unique key** (`crypto.randomUUID()`) for
@@ -2498,7 +2501,12 @@ export class ThalovantControlPlane {
       // slow to answer must not carry the wait past its deadline.
       const read = boundedSignal(options.signal, remaining);
       try {
-        announcement = { ...(await this.getAnnouncement(hubId, announcement.id, read.signal)), replayed };
+        // Raced against the bounded signal as well as handed to it: a fetch (or
+        // an answer body) that ignores the signal must not hold the wait either.
+        announcement = {
+          ...(await raceAbort(this.getAnnouncement(hubId, announcement.id, read.signal), read.signal)),
+          replayed,
+        };
       } catch (error) {
         if (options.signal?.aborted) throw abortError();
         if (read.expired()) break; // the latest answer, still `sending`
@@ -2528,8 +2536,8 @@ export class ThalovantControlPlane {
    * record `cancelled` and the answer has `hub_confirmed: false`: then speech
    * already queued on the hub may still play, and the hub's own stop paths
    * (the hub switch, the platform kill switch, somebody acknowledging) remain.
-   * Requires `intercom:send` (owner or admin of the hub); a hub-scoped token is
-   * honoured. Stopping speech is never refused: it works while the platform
+   * Requires `intercom:send` (the hub's owner, a manager, a plain member of
+   * the tenant or an administrator); a hub-scoped token is honoured. Stopping speech is never refused: it works while the platform
    * switch is off, while the hub's switch is off, on a plan that lost
    * intercom, and in an impersonated session. Not a certified safety system.
    */
@@ -3314,9 +3322,12 @@ function apiError(
   };
   const error = new ThalovantApiError(message, options);
   // The class says what kind of refusal it is; every one is a ThalovantApiError.
-  if (status === 401 || status === 423 || (status === 403 && error.detail === "Insufficient scopes")) {
+  const intercomKind = error.code === undefined ? undefined : INTERCOM_ERROR_KINDS.get(error.code);
+  if (status === 401 || status === 423 || (status === 403 && error.detail === "Insufficient scopes" && intercomKind === undefined)) {
     // A token that is unknown, expired or revoked; a locked account; or a
-    // token without the scope: signing in again is the way out of each.
+    // token without the scope: signing in again is the way out of each. A 403
+    // that names an intercom code (`urgent_scope_required` is the one that is
+    // a refusal of scope) is that code's own typed error instead.
     return new ThalovantAuthError(message, options);
   }
   if (status === 402 || (status === 403 && error.code === "plan_limit")) {
@@ -3325,7 +3336,6 @@ function apiError(
   if (status === 409 && error.code === "home_assistant_already_linked") {
     return new ThalovantAlreadyLinkedError(message, { ...options, clientId: linkedClientId(error.problem) });
   }
-  const intercomKind = error.code === undefined ? undefined : INTERCOM_ERROR_KINDS.get(error.code);
   if (intercomKind !== undefined) return new intercomKind(message, options);
   if (status === 429) return new ThalovantRateLimitedError(message, options);
   return error;
@@ -3617,6 +3627,32 @@ function boundedSignal(parent: AbortSignal | undefined, ms: number): {
       parent?.removeEventListener("abort", onAbort);
     },
   };
+}
+
+/**
+ * `work`, or an `AbortError` the moment `signal` aborts, whichever comes first.
+ * `work` is let go, not stopped: what it answers later is dropped unread.
+ */
+function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  work.catch(() => undefined);
+  return new Promise<T>((resolve, reject) => {
+    const stop = (): void => reject(abortError());
+    if (signal.aborted) {
+      stop();
+      return;
+    }
+    signal.addEventListener("abort", stop, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", stop);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", stop);
+        reject(error);
+      },
+    );
+  });
 }
 
 /** Wait `ms`, or reject with an `AbortError` the moment `signal` aborts. */

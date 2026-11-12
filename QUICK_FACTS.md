@@ -63,7 +63,7 @@ Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): wait scop
 
 ## Intercom (0.12.0; scopes `intercom:read`, `intercom:send`, `intercom:urgent`, `hubs:write`)
 
-`announce({ wait: true })` also needs `intercom:read` (it polls `getAnnouncement`); `priority: "urgent"` (every `repeat`) needs `intercom:urgent` as well as `intercom:send`. Announce-only text spoken aloud on a hub's speakers. Not a certified safety system; the API does not store the text (keyed hash and length only). Named `announce` / `*Intercom*`: the mesh already has an `intercom` frame.
+`announce({ wait: true })` polls `getAnnouncement` (`intercom:read`, which `intercom:send` implies); `priority: "urgent"` (every `repeat`) needs `intercom:urgent` as well as `intercom:send`. Announce-only text spoken aloud on a hub's speakers. Not a certified safety system; the API does not store the text (keyed hash and length only). Named `announce` / `*Intercom*`: the mesh already has an `intercom` frame.
 
 | Call | Endpoint | Returns |
 |---|---|---|
@@ -78,4 +78,4 @@ Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): wait scop
 
 - Models: `src/intercom.ts`. Errors (`src/errors.ts`): `ThalovantIntercomDisabledError`, `ThalovantHubUnreachableError` (502; the text may or may not have been spoken; `announcementId` names the `failed` record: read it before sending again, and use a new key), `ThalovantNotCancellableError` (409), `ThalovantRateLimitedError`; the plan error is HTTP 402 or 403 `plan_limit` (`ThalovantPlanError`). Final-API errors (constants in `IntercomProblemCode`): `ThalovantUrgentScopeRequiredError`, `ThalovantUrgentBusyError` (`scope`), `ThalovantSkillNotInstalledError`, `ThalovantNotASpeakerError` (`kind`, `notSpeakers`), `ThalovantReservedNameError`, `ThalovantHubLockedError`, `ThalovantImpersonationNotAllowedError`, `ThalovantTooManyTargetsError` (`matched`), `ThalovantIntercomUnavailableError` (`reason`), `ThalovantIntercomPlatformDisabledError`, `ThalovantIntercomNotConfiguredError`, `ThalovantManagedClientError`; `ThalovantNotCancellableError.announcementStatus`. Text rule: NFC, 1-280 code points, no `<` `>`, control, bidi/format characters or lone surrogates; DND on needs a valid IANA timezone and `start !== end`; at most 50 names per target list.
 - Idempotency: one fresh `crypto.randomUUID()` key per announcement; the same key replays the stored result (`Idempotency-Replayed: true`) and never re-sends (a replayed `failed` stays `failed`). Ids (hub, client, announcement) that are `.`, `..`, empty or hold `/ ? #`, a backslash or a control character are refused before any request (`intercomId`, `src/intercom.ts`). No request timeout is set by the SDK.
-- Tests: `test/chat-apps.test.ts`.
+- Tests: `test/intercom.test.ts`.

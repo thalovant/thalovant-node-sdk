@@ -274,6 +274,54 @@ test("the wait deadline bounds a stalled status read", async () => {
   } finally { await fake.close(); }
 });
 
+// A fetch of the caller's own that ignores the signal it is given: the wait deadline must still hold.
+function nonCooperativeFetch(poll: () => Promise<Response>): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if ((init?.method ?? "GET") === "POST" && url.endsWith("/announce")) {
+      return new Response(JSON.stringify(announcement("sending", { priority: "urgent" })), {
+        status: 202, headers: { "content-type": "application/json" },
+      });
+    }
+    return poll(); // never looks at init.signal
+  }) as typeof fetch;
+}
+
+test("the wait deadline holds when an injected fetch ignores the abort signal", async () => {
+  const api = new ThalovantControlPlane("http://127.0.0.1:1/", {
+    accessToken: "tok", fetch: nonCooperativeFetch(() => new Promise<Response>(() => undefined)),
+  });
+  const started = performance.now();
+  const result = await api.announce(HUB, { ...URGENT, waitTimeoutMs: 250, pollIntervalMs: 10 });
+  assert.equal(result.status, "sending"); // the latest answer, not a hang and not an error
+  assert.equal(result.id, ANN);
+  assert.ok(performance.now() - started < 3000);
+});
+
+test("the wait deadline holds when an answer body never ends", async () => {
+  const stalled = (): Promise<Response> => {
+    const body = new ReadableStream<Uint8Array>({ start() { /* never enqueues, never closes */ } });
+    return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }));
+  };
+  const api = new ThalovantControlPlane("http://127.0.0.1:1/", { accessToken: "tok", fetch: nonCooperativeFetch(stalled) });
+  const started = performance.now();
+  const result = await api.announce(HUB, { ...URGENT, waitTimeoutMs: 250, pollIntervalMs: 10 });
+  assert.equal(result.status, "sending");
+  assert.ok(performance.now() - started < 3000);
+});
+
+test("a caller's abort still rejects with an AbortError when the fetch ignores the signal", async () => {
+  const api = new ThalovantControlPlane("http://127.0.0.1:1/", {
+    accessToken: "tok", fetch: nonCooperativeFetch(() => new Promise<Response>(() => undefined)),
+  });
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 80);
+  await assert.rejects(
+    api.announce(HUB, { ...URGENT, waitTimeoutMs: 60_000, pollIntervalMs: 10, signal: controller.signal }),
+    (error: any) => error.name === "AbortError",
+  );
+});
+
 test("no read starts once the deadline passed during the sleep", async () => {
   const fake = await fakeApi();
   try {
@@ -921,6 +969,17 @@ test("the problem codes are constants and each has a typed error", () => {
   const codes = new Set(Object.values(IntercomProblemCode));
   assert.deepEqual(codes, new Set([...CASES.map(([, code]) => code), "intercom_disabled"]));
   assert.equal(IntercomProblemCode.URGENT_SCOPE_REQUIRED, "urgent_scope_required");
+});
+
+test("urgent_scope_required wins over the generic Insufficient scopes refusal and is still an auth error", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announce`, [403, { status: 403, code: "urgent_scope_required", detail: "Insufficient scopes" }]);
+    await assert.rejects(
+      fake.api.announce(HUB, { text: "x", targets: { all: true }, priority: "urgent" }),
+      (error: any) => error instanceof ThalovantUrgentScopeRequiredError && error instanceof ThalovantAuthError && error.statusCode === 403,
+    );
+  } finally { await fake.close(); }
 });
 
 test("a plain 403 Insufficient scopes is still the auth error, and a code named like a prototype member is a plain error", async () => {

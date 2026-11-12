@@ -281,7 +281,9 @@ export interface AnnounceOptions {
  * What {@link ThalovantControlPlane.updateIntercomSpeaker} takes: only what is
  * present is sent; `room: null` clears it. Only these four fields exist: any
  * other key (also inside `dnd` and `quiet_hours`) is refused. `dnd` enabled
- * needs `quiet_hours` with a valid IANA `timezone` and `start !== end`.
+ * needs `quiet_hours` with a valid IANA `timezone` and `start !== end`. `dnd`
+ * replaces the speaker's whole do-not-disturb setting: to change `enabled` and
+ * keep its quiet hours, send the hours again.
  */
 export interface IntercomSpeakerChanges {
   receive?: boolean;
