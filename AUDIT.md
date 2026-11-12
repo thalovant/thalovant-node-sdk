@@ -1,6 +1,48 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: CodeRabbit's third review of #110: the spelling limitation is fixed for JSON, B10 corrected, the drain's limits stated.
+Last Edit: Claude Sonnet 5.5 - 2026-11-12 - Motive: Intercom review round 2 (CodeRabbit PR 112): wait deadline vs a fetch that ignores abort, urgent-scope precedence, docs aligned with the API.
 
 # Audit
+
+## Intercom (0.12.0): `AnnounceOptions` is a plain object, so `console.log(options)` prints the text (security review L4)
+
+`AnnounceOptions` (`src/intercom.ts`) is an interface the caller builds; a `console.log(options)` or a logger that serialises it prints `text`. The Rust SDK redacts its `Debug` (the contract names Rust and Go only); in Node the SDK cannot change how the caller's own object prints. Documented in the porting brief; no SDK code logs it (`test/intercom.test.ts`). Not changed.
+
+## Intercom (0.12.0): `ThalovantApiError.problem` keeps the whole API body (review L5)
+
+The API strips `input` and `ctx` from `/intercom/` errors, so the text does not reach `problem` today; a regression would. Not in contract section J; proposed in `SUGGESTIONS.md`.
+
+## Intercom (0.12.0): the timezone and Unicode checks use this runtime's databases
+
+`timezoneName()` (`src/intercom.ts`) asks `Intl.DateTimeFormat`, which accepts any case, an alias and, on Node 22, an offset such as `+01:00`; the API asks Python's `zoneinfo`, which does not. The SDK refuses the offset form by shape and a name that is the right zone in the wrong case (`europe/paris`, `utc`), but an alias in the wrong case (`us/pacific`) passes here and is a 422 there. A runtime without `Intl` checks the shape only. `announcementText()` uses the engine's Unicode tables (`\p{Cc}`...) and `String.prototype.normalize`: a character assigned in a newer Unicode than the SDK's or the API's can pass in one and be refused in the other. The API's answer stays authoritative (`test/intercom.test.ts`, "an unusable do-not-disturb is refused before anything is sent").
+
+## Intercom (0.12.0): `ThalovantApiError.detail` does not read `message`
+
+The final intercom problems carry their sentence in `message`; `problemFields()` (`src/errors.ts`) reads `detail` only, so `error.detail` is undefined for them (the sentence is in `problem.message` and in the error message). Changing it moves the shared api-error behaviour in every SDK; proposed in `SUGGESTIONS.md`.
+
+## Intercom (0.12.0): fixed in the final-API round
+
+- **Rooms, groups and the key length** (was L6): every target list is capped at 50 names of 64 characters and `idempotencyKey()` caps the key at 128 printable ASCII characters (`test/intercom.test.ts`, "a speakers target list holds at most 50 names of at most 64 characters", "an idempotency key is at most 128 printable ASCII characters").
+- **A replayed announcement is marked** (`Announcement.replayed`, from `Idempotency-Replayed: true`; "a replayed announcement says so and a first answer does not").
+- **The text rule is the API's** (was: 1-280 and control characters only; "a text the API would refuse is refused first and never echoed"). The trim is the API's too: `pyStrip()` takes what Python's `str.isspace` calls white space, so `\u001f hi` is accepted as the API accepts it and a BOM at the edge is refused as the API refuses it.
+- **Quiet hours** that are on need a real IANA zone and `start !== end`; unknown `dnd`, `quiet_hours` and speaker keys are refused ("the speaker update takes only the documented fields").
+
+## Intercom (0.12.0): fixed in review round 2 (CodeRabbit PR 112)
+
+- **A fetch that ignores the abort signal held the `announce({ wait: true })` deadline** (`src/control.ts`, `announce` and `raceAbort`): each status read is now raced against the bounded signal (`test/intercom.test.ts`, "the wait deadline holds when an injected fetch ignores the abort signal", "... when an answer body never ends", "a caller's abort still rejects with an AbortError ...").
+- **`urgent_scope_required` with the generic "Insufficient scopes" sentence was a plain `ThalovantAuthError`** (`apiError`): the intercom code now wins ("urgent_scope_required wins over the generic Insufficient scopes refusal ...").
+- **Docs said `wait` needs `intercom:read` as well, and that cancel is owner/admin only**: both were wrong against the API (`thalovant-api` `app/auth/utils.py:232`, `app/routes/intercom.py` `cancel_announcement`); corrected.
+- **Declined:** redacting the sent text from API error messages. The API strips `input` and `ctx` from every 422 under `/intercom/` (`thalovant-api` `app/middleware/errors.py` `NO_ECHO_FRAGMENT`), and a redaction of a short text would rewrite the `code` the typed errors are read from.
+
+## Intercom (0.12.0): a poll that fails after the POST leaves an accepted announcement
+
+`ThalovantControlPlane.announce({ wait: true })` (`src/control.ts`) sends the POST, then polls `getAnnouncement` (`intercom:read`, which `intercom:send` implies: `thalovant-api` `app/auth/utils.py` `expand_granted_scopes`). A 429 or a network error fails a poll after the announcement was accepted, and the rejection carries no announcement id (`test/intercom.test.ts`, "a failed poll rejects after the POST was accepted"). The answer is a fresh `idempotencyKey`: calling again with the same key replays the stored announcement (with its id) and does not send again. Not fixed in the SDK because a rejection cannot also return the announcement; the README and the JSDoc say so.
+
+## Intercom (0.12.0): the settings reader is lenient
+
+`intercomSettingsFromRecord()` (`src/intercom.ts`) reads a missing `plan_allowed` or `enabled` as `false`, as the Python reference does (`IntercomSettings.from_dict`), so a successful answer that omits one looks like a denial. Kept for parity (an unverified review finding): the API always sends both (`app/schemas/intercom.py`, `IntercomSettingsResource`), and changing one SDK alone would break the shared behaviour.
+
+## Intercom (0.12.0): the text is in the request body
+
+`announceBody()` (`src/intercom.ts`) builds the body that holds the text and `ThalovantControlPlane.announce()` (`src/control.ts`) sends it; nothing logs or throws it, and `Announcement` never carries it (`test/intercom.test.ts`, "announce sends the contract body"). It is not redacted from an error the API echoes it in (`ThalovantApiError.problem` keeps the body); the contract says the API never echoes it. The announcement list shape (`items`, `next_cursor`) is taken from the contract; `data` and `cursor` are accepted too. Not exercised against a live API.
 
 ## Browser sign-in (0.11.0, 2026-11-08)
 

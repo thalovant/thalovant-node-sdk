@@ -37,6 +37,26 @@ import {
   type SecretValue,
 } from "./chat-apps.js";
 import {
+  announceBody,
+  announcementFromRecord,
+  announcementListFromRecord,
+  idempotencyKey,
+  intercomId,
+  intercomSettingsBody,
+  intercomSettingsFromRecord,
+  intercomSpeakerFromRecord,
+  intercomSpeakersFromRecord,
+  speakerUpdateBody,
+  type Announcement,
+  type AnnouncementList,
+  type AnnouncementListOptions,
+  type AnnounceOptions,
+  type IntercomSettings,
+  type IntercomSpeaker,
+  type IntercomSpeakerChanges,
+  type IntercomSpeakerList,
+} from "./intercom.js";
+import {
   ThalovantAdmissionFailedError,
   ThalovantAdmissionTimeoutError,
   ThalovantAlreadyLinkedError,
@@ -46,10 +66,26 @@ import {
   ThalovantDeviceLoginDeniedError,
   ThalovantDeviceLoginExpiredError,
   ThalovantDeviceLoginPendingError,
+  ThalovantHubLockedError,
+  ThalovantHubUnreachableError,
+  ThalovantImpersonationNotAllowedError,
+  ThalovantIntercomDisabledError,
+  ThalovantIntercomNotConfiguredError,
+  ThalovantIntercomPlatformDisabledError,
+  ThalovantIntercomUnavailableError,
+  ThalovantManagedClientError,
+  ThalovantNotASpeakerError,
+  ThalovantNotCancellableError,
   ThalovantPlanError,
+  ThalovantRateLimitedError,
+  ThalovantReservedNameError,
+  ThalovantSkillNotInstalledError,
   ThalovantTimeoutError,
+  ThalovantTooManyTargetsError,
   ThalovantUnsupportedConnectionTypeError,
   ThalovantUnsupportedProtocolError,
+  ThalovantUrgentBusyError,
+  ThalovantUrgentScopeRequiredError,
 } from "./errors.js";
 import { ThalovantIdentity } from "./identity.js";
 import { openExternalUrl, randomBytes, randomUUID } from "./platform/node.js";
@@ -2283,6 +2319,250 @@ export class ThalovantControlPlane {
   }
 
   // -------------------------------------------------------------------------
+  // Intercom: `/v1/hubs/{hub_id}/intercom`.
+  //
+  // Announce-only text spoken aloud on a hub's speakers; not a certified
+  // safety system. Reads need `intercom:read`, `announce()` and
+  // `cancelAnnouncement()` `intercom:send` (an urgent announcement also
+  // `intercom:urgent`), settings and speakers `hubs:write`. The API does not
+  // store the text. Named `announce` and `*Intercom*` because the mesh already
+  // has an `intercom` frame.
+  // -------------------------------------------------------------------------
+
+  /**
+   * A hub's intercom switch and whether it can run. `unavailable_reason` is
+   * `platform` (the platform's own switch is off: every
+   * hub reads it, and it wins over the others), `plan`, `kid_hub` or
+   * `public_hub`; `enabled` is true only when the hub's switch is on and there
+   * is no reason. Requires `intercom:read`.
+   */
+  async getIntercomSettings(hubId: string): Promise<IntercomSettings> {
+    return intercomSettingsFromRecord(await this.request("GET", intercomPath(hubId, "settings")));
+  }
+
+  /**
+   * Turn a hub's intercom on or off (`PUT .../intercom/settings`). Requires
+   * `hubs:write` (owner, manager or administrator of the hub) and a session
+   * that is not an impersonation
+   * ({@link ThalovantImpersonationNotAllowedError}). A plan without intercom
+   * is a {@link ThalovantPlanError}; a kid or public hub is
+   * {@link ThalovantIntercomUnavailableError} (422 `intercom_unavailable`,
+   * `reason`); a locked hub {@link ThalovantHubLockedError}. While the
+   * platform switch is off even `false` is
+   * {@link ThalovantIntercomPlatformDisabledError} (503
+   * `intercom_disabled_platform`: nothing was changed), and a platform that is
+   * not configured is {@link ThalovantIntercomNotConfiguredError}.
+   */
+  async setIntercomSettings(hubId: string, enabled: boolean): Promise<IntercomSettings> {
+    const body = intercomSettingsBody(enabled);
+    return intercomSettingsFromRecord(await this.request("PUT", intercomPath(hubId, "settings"), { body }));
+  }
+
+  /**
+   * Every connection of the hub as a speaker, with presence, policy, `kind` and
+   * `can_play`. The answer's `policy_synced` is `false` while the hub may hold
+   * an out-of-date consent map; `unavailable_reason` is the hub's (`platform`
+   * when intercom is off platform-wide: reads still work). A connection that
+   * cannot play speech (`can_play` false) is listed so it can be greyed out.
+   * Requires `intercom:read`.
+   */
+  async listIntercomSpeakers(hubId: string): Promise<IntercomSpeakerList> {
+    return intercomSpeakersFromRecord(await this.request("GET", intercomPath(hubId, "speakers")));
+  }
+
+  /**
+   * Change a speaker's policy (`PATCH .../intercom/speakers/{client_id}`); only
+   * what is present is sent, and `room: null` clears the room. A speaker is
+   * spoken to only when `receive` is true. Only `receive`, `room`, `groups` and
+   * `dnd` exist: any other key is refused with a `RangeError`, so send only
+   * what changed. `dnd` enabled needs quiet hours with a valid IANA `timezone`
+   * and a `start` that differs from the `end`, checked before anything is
+   * sent. `receive: true` on a connection that cannot play speech is
+   * {@link ThalovantNotASpeakerError} (422 `not_a_speaker`, `kind`). The
+   * answer's `policy_synced` is `false` while the hub may hold an out-of-date
+   * consent map ("changes may take a moment to reach the home"). Requires
+   * `hubs:write` (owner, manager or administrator; a plain member and an
+   * impersonated session are refused).
+   */
+  async updateIntercomSpeaker(hubId: string, clientId: string, changes: IntercomSpeakerChanges): Promise<IntercomSpeaker> {
+    const body = speakerUpdateBody(changes);
+    const path = intercomPath(hubId, "speakers", intercomSegment(clientId, "clientId"));
+    return intercomSpeakerFromRecord(await this.request("PATCH", path, { body }));
+  }
+
+  /**
+   * Say `text` aloud on a hub's speakers (`POST .../intercom/announce`). The
+   * text is 1-280 characters, NFC-normalised and trimmed, with no `<` or `>`,
+   * no control, bidirectional or other invisible format characters (the
+   * zero-width joiner and non-joiner excepted), no lone surrogates and no
+   * private-use characters (the API's own rule, checked first, and never
+   * echoed in an error); it is spoken aloud in a home, and the API keeps only
+   * a keyed hash of it and its length. Target lists hold at most 50 names of
+   * 1-64 characters; `all`, a room or a group that resolves to more than 50
+   * speakers is {@link ThalovantTooManyTargetsError}, and a named connection
+   * that cannot play speech is {@link ThalovantNotASpeakerError}. Not a
+   * certified safety system.
+   *
+   * `priority: "urgent"` (and so every `repeat`) needs the scope
+   * `intercom:urgent` **in addition to** `intercom:send`; without it the
+   * promise rejects with {@link ThalovantUrgentScopeRequiredError} before
+   * anything is spent. At most 2 urgent announcements repeat on one hub at a
+   * time ({@link ThalovantUrgentBusyError}, 429, `retryAfterSeconds`), and an
+   * urgent one needs the Intercom skill on the hub
+   * ({@link ThalovantSkillNotInstalledError}).
+   *
+   * An urgent announcement may carry `repeat`; it is said again until somebody
+   * acknowledges, and the call returns at once with status `sending`. A normal
+   * one waits up to ten seconds for the hub. With `wait`, a `sending`
+   * announcement is polled with {@link getAnnouncement} every `pollIntervalMs`
+   * until it completes or `waitTimeoutMs` passes (the latest answer is
+   * returned, still `sending`). `waitTimeoutMs` (finite, not negative) and
+   * `pollIntervalMs` (finite, above zero) are checked before anything is sent.
+   * The deadline bounds each status read as well as the sleep between reads,
+   * and `signal` cancels the sleep at once.
+   *
+   * **`wait` polls with {@link getAnnouncement}** (`intercom:read`, which
+   * `intercom:send` implies, so no further scope is needed). A poll can still
+   * fail after the announcement was accepted (a 429, the network): the promise
+   * then rejects and the caller has no announcement id. Always pass an
+   * `idempotencyKey` with `wait`, created before the first call: calling again
+   * with that same key and no `wait` returns the stored announcement, with its
+   * id, from the POST alone (no status read) and does not announce a second
+   * time; read it with {@link getAnnouncement} afterwards. With `wait` the
+   * repeat call polls again while the announcement is still `sending`, and can
+   * reject with the same poll error. A new key is a different attempt and can
+   * announce twice.
+   *
+   * **Idempotency.** `idempotencyKey`, when given, is sent as
+   * `Idempotency-Key`. Use a **fresh unique key** (`crypto.randomUUID()`) for
+   * each announcement you mean to send, and reuse it only to repeat the *same*
+   * attempt after a network drop or timeout. The key is scoped to the hub and
+   * lasts 24 hours: the same key replays the stored announcement (response
+   * header `Idempotency-Replayed: true`, which the answer carries as
+   * `replayed: true`, kept after `wait`) and **never sends again**, whatever
+   * its status; a replayed `failed` announcement stays `failed`. A key is at
+   * most 128 printable ASCII characters, and the same key with a different
+   * request is a 409. To send the same text again on purpose, use a **new**
+   * key. After a
+   * {@link ThalovantHubUnreachableError} (502 `hub_unreachable`) read the
+   * announcement first (`error.announcementId`, then {@link getAnnouncement})
+   * before sending again: the hub may have spoken it. A constant key such as
+   * `"dinner"` would silence every later announcement for 24 hours.
+   *
+   * **Timeout.** The API waits up to ten seconds for the hub. This SDK sets no
+   * request timeout of its own; a `signal` that aborts sooner than twenty
+   * seconds can report a spoken announcement as failed, so give `announce` at
+   * least 20 s. If it rejects without an answer, the outcome is unknown: call
+   * again with the **same** key to find out.
+   *
+   * Requires `intercom:send` and the owner, a manager or an administrator
+   * acting as themselves (an impersonated session is
+   * {@link ThalovantImpersonationNotAllowedError}, a locked hub
+   * {@link ThalovantHubLockedError}). Intercom off (for the hub, the platform,
+   * or on a kid or public hub) is {@link ThalovantIntercomDisabledError} and
+   * its subclasses, a platform that is not configured
+   * {@link ThalovantIntercomNotConfiguredError}, a hub that did not answer in
+   * 5 s {@link ThalovantHubUnreachableError} (`announcementId`), a rate limit
+   * {@link ThalovantRateLimitedError}. `delivered` means the hub handed the
+   * speech to the speaker's connection: there is no playback receipt, and
+   * `failed` is not proof that nothing was spoken.
+   */
+  async announce(hubId: string, options: AnnounceOptions): Promise<Announcement> {
+    const path = intercomPath(hubId, "announce"); // an invalid hub id is refused before anything is sent
+    const body = announceBody(options);
+    const pollMs = options.pollIntervalMs ?? 2000;
+    if (typeof pollMs !== "number" || !Number.isFinite(pollMs) || pollMs <= 0) {
+      throw new RangeError("pollIntervalMs must be a finite, positive number of milliseconds.");
+    }
+    const waitMs = options.waitTimeoutMs;
+    if (waitMs !== undefined && (typeof waitMs !== "number" || !Number.isFinite(waitMs) || waitMs < 0)) {
+      throw new RangeError("waitTimeoutMs must be a finite, non-negative number of milliseconds.");
+    }
+    const headers: Record<string, string> = {};
+    if (options.idempotencyKey !== undefined) headers["Idempotency-Key"] = idempotencyKey(options.idempotencyKey);
+    const answer = await this.requestWithHeaders("POST", path, { body, headers, signal: options.signal });
+    // `Idempotency-Replayed: true`: the stored announcement for this key; nothing new was sent.
+    const replayed = (answer.headers?.get("Idempotency-Replayed") ?? "").trim().toLowerCase() === "true";
+    let announcement = { ...announcementFromRecord(answer.body), replayed };
+    if (!options.wait || announcement.status !== "sending") return announcement;
+    const repeat = body.repeat as { times: number; interval_seconds: number } | undefined;
+    const timeoutMs = waitMs ?? (repeat ? repeat.times * repeat.interval_seconds * 1000 : 0) + 15000;
+    const deadline = performance.now() + timeoutMs;
+    while (announcement.status === "sending") {
+      const left = deadline - performance.now();
+      if (left <= 0) break;
+      // Abortable, and the whole of it on the monotonic clock: a timer that
+      // fires early is re-armed, so a sleep cut to the deadline ends at it.
+      await sleepAtLeast(Math.min(pollMs, left), options.signal);
+      // With nothing left after the sleep, no read starts at all.
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      // Each read is bounded by what is left of the wait: a read the API is
+      // slow to answer must not carry the wait past its deadline.
+      const read = boundedSignal(options.signal, remaining);
+      try {
+        // Raced against the bounded signal as well as handed to it: a fetch (or
+        // an answer body) that ignores the signal must not hold the wait either.
+        announcement = {
+          ...(await raceAbort(this.getAnnouncement(hubId, announcement.id, read.signal), read.signal)),
+          replayed,
+        };
+      } catch (error) {
+        if (options.signal?.aborted) throw abortError();
+        if (read.expired()) break; // the latest answer, still `sending`
+        throw error;
+      } finally {
+        read.dispose();
+      }
+    }
+    return announcement;
+  }
+
+  /** One announcement and its deliveries; poll it while `sending`. Requires `intercom:read`. */
+  async getAnnouncement(hubId: string, announcementId: string, signal?: AbortSignal): Promise<Announcement> {
+    const path = intercomPath(hubId, "announcements", intercomSegment(announcementId, "announcementId"));
+    return announcementFromRecord(await this.request("GET", path, { signal }));
+  }
+
+  /**
+   * Stop an urgent announcement that is still repeating
+   * (`POST .../announcements/{id}/cancel`). Resolves with the announcement,
+   * status `cancelled`. Only while it is `sending`: one that already
+   * completed, failed or was cancelled is a
+   * {@link ThalovantNotCancellableError} (409 `not_cancellable`;
+   * `announcementStatus` is its current status: read it instead of showing an
+   * error). The API asks
+   * the hub to stop repeating; a hub that cannot confirm still leaves the
+   * record `cancelled` and the answer has `hub_confirmed: false`: then speech
+   * already queued on the hub may still play, and the hub's own stop paths
+   * (the hub switch, the platform kill switch, somebody acknowledging) remain.
+   * Requires `intercom:send` (the hub's owner, a manager, a plain member of
+   * the tenant or an administrator); a hub-scoped token is honoured. Stopping speech is never refused: it works while the platform
+   * switch is off, while the hub's switch is off, on a plan that lost
+   * intercom, and in an impersonated session. Not a certified safety system.
+   */
+  async cancelAnnouncement(hubId: string, announcementId: string, signal?: AbortSignal): Promise<Announcement> {
+    const path = intercomPath(hubId, "announcements", intercomSegment(announcementId, "announcementId"), "cancel");
+    return announcementFromRecord(await this.request("POST", path, { signal }));
+  }
+
+  /** A hub's announcements, newest first; continue with `next_cursor`. Requires `intercom:read`. */
+  async listAnnouncements(hubId: string, options: AnnouncementListOptions = {}): Promise<AnnouncementList> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) {
+      if (!Number.isInteger(options.limit) || options.limit < 1) throw new RangeError("limit must be a positive integer.");
+      params.set("limit", String(options.limit));
+    }
+    if (options.cursor !== undefined) {
+      if (typeof options.cursor !== "string" || !options.cursor.trim()) throw new TypeError("cursor must be a non-empty string when given.");
+      params.set("cursor", options.cursor);
+    }
+    const query = params.toString();
+    const path = intercomPath(hubId, "announcements");
+    return announcementListFromRecord(await this.request("GET", query ? `${path}?${query}` : path));
+  }
+
+  // -------------------------------------------------------------------------
   // Chat apps: `/v1/bridges`.
   //
   // Reads need the `hubs:read` scope and writes `hubs:write`. A bridge is
@@ -2779,13 +3059,29 @@ export class ThalovantControlPlane {
       signal?: AbortSignal;
     } = {},
   ): Promise<JsonRecord> {
+    return (await this.requestWithHeaders(method, path, options)).body;
+  }
+
+  /** {@link request}, and the response's headers beside the body (for `Idempotency-Replayed`). */
+  private async requestWithHeaders(
+    method: string,
+    path: string,
+    options: {
+      body?: JsonRecord;
+      headers?: Record<string, string>;
+      auth?: boolean;
+      redactSecrets?: ReadonlyArray<string | undefined>;
+      scrub?: RedactOptions;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<{ body: JsonRecord; headers: Pick<Headers, "get"> | undefined }> {
     const response = await this.send(method, path, options);
     if (!response.ok) {
       throw apiError(response.status, await response.text(), options.redactSecrets, response.headers, options.scrub);
     }
     const text = await response.text();
     if (!text.trim()) {
-      return {};
+      return { body: {}, headers: response.headers };
     }
     let body: unknown;
     try { body = JSON.parse(text); }
@@ -2793,7 +3089,7 @@ export class ThalovantControlPlane {
     if (!isRecord(body)) {
       throw new ThalovantApiError("Thalovant API returned an unexpected response shape.", { statusCode: response.status });
     }
-    return body;
+    return { body, headers: response.headers };
   }
 
   private async send(
@@ -2857,6 +3153,14 @@ export class ThalovantControlPlane {
       throw cause === "unexpected redirect" ? new ThalovantApiError(message) : new ThalovantApiUnreachableError(message);
     }
   }
+}
+
+function intercomPath(hubId: string, ...rest: string[]): string {
+  return [`/v1/hubs/${encodeURIComponent(intercomId(hubId, "hubId"))}/intercom`, ...rest].join("/");
+}
+
+function intercomSegment(value: string, name: string): string {
+  return encodeURIComponent(intercomId(value, name));
 }
 
 function bridgePath(bridgeId: string): string {
@@ -3018,9 +3322,12 @@ function apiError(
   };
   const error = new ThalovantApiError(message, options);
   // The class says what kind of refusal it is; every one is a ThalovantApiError.
-  if (status === 401 || status === 423 || (status === 403 && error.detail === "Insufficient scopes")) {
+  const intercomKind = error.code === undefined ? undefined : INTERCOM_ERROR_KINDS.get(error.code);
+  if (status === 401 || status === 423 || (status === 403 && error.detail === "Insufficient scopes" && intercomKind === undefined)) {
     // A token that is unknown, expired or revoked; a locked account; or a
-    // token without the scope: signing in again is the way out of each.
+    // token without the scope: signing in again is the way out of each. A 403
+    // that names an intercom code (`urgent_scope_required` is the one that is
+    // a refusal of scope) is that code's own typed error instead.
     return new ThalovantAuthError(message, options);
   }
   if (status === 402 || (status === 403 && error.code === "plan_limit")) {
@@ -3029,8 +3336,30 @@ function apiError(
   if (status === 409 && error.code === "home_assistant_already_linked") {
     return new ThalovantAlreadyLinkedError(message, { ...options, clientId: linkedClientId(error.problem) });
   }
+  if (intercomKind !== undefined) return new intercomKind(message, options);
+  if (status === 429) return new ThalovantRateLimitedError(message, options);
   return error;
 }
+
+/** The typed error of each intercom problem `code`, whatever the status. */
+const INTERCOM_ERROR_KINDS: ReadonlyMap<string, new (message?: string, options?: ConstructorParameters<typeof ThalovantApiError>[1]) => ThalovantApiError> =
+  new Map([
+    ["intercom_disabled", ThalovantIntercomDisabledError],
+    ["intercom_unavailable", ThalovantIntercomUnavailableError],
+    ["intercom_disabled_platform", ThalovantIntercomPlatformDisabledError],
+    ["intercom_not_configured", ThalovantIntercomNotConfiguredError],
+    ["urgent_scope_required", ThalovantUrgentScopeRequiredError],
+    ["intercom_urgent_busy", ThalovantUrgentBusyError],
+    ["skill_not_installed", ThalovantSkillNotInstalledError],
+    ["not_a_speaker", ThalovantNotASpeakerError],
+    ["reserved_name", ThalovantReservedNameError],
+    ["hub_locked", ThalovantHubLockedError],
+    ["impersonation_not_allowed", ThalovantImpersonationNotAllowedError],
+    ["too_many_targets", ThalovantTooManyTargetsError],
+    ["managed_client", ThalovantManagedClientError],
+    ["hub_unreachable", ThalovantHubUnreachableError],
+    ["not_cancellable", ThalovantNotCancellableError],
+  ]);
 
 /**
  * `Retry-After` in whole seconds, else `RateLimit-Reset`, from an answer's
@@ -3298,6 +3627,32 @@ function boundedSignal(parent: AbortSignal | undefined, ms: number): {
       parent?.removeEventListener("abort", onAbort);
     },
   };
+}
+
+/**
+ * `work`, or an `AbortError` the moment `signal` aborts, whichever comes first.
+ * `work` is let go, not stopped: what it answers later is dropped unread.
+ */
+function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  work.catch(() => undefined);
+  return new Promise<T>((resolve, reject) => {
+    const stop = (): void => reject(abortError());
+    if (signal.aborted) {
+      stop();
+      return;
+    }
+    signal.addEventListener("abort", stop, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", stop);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", stop);
+        reject(error);
+      },
+    );
+  });
 }
 
 /** Wait `ms`, or reject with an `AbortError` the moment `signal` aborts. */

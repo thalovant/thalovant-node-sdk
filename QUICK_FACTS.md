@@ -1,11 +1,11 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in to the final contract (Python #113 at 39e31d8, digest 6dfb3bb31ac7).
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): wait scope after the PR 112 review; final API (urgent scope, speaker kind/can_play/policy_synced, typed errors, replayed).
 
 # Quick facts: @thalovant/sdk
 
 | Fact | Value |
 | :--- | :--- |
 | Package | `@thalovant/sdk` (npm) |
-| Version | 0.11.0 (`package.json`, `src/version.ts` `SDK_VERSION`) |
+| Version | 0.12.0 (`package.json`, `src/version.ts` `SDK_VERSION`) |
 | Licence | MIT |
 | Runtime | Node.js 20 or newer; browsers through the package's `browser` map (`platform/node.js`, `loopback.js` and `transport-mqtt.js` swapped for their browser twins) |
 | Entry point | `dist/src/index.js` (ESM), types `dist/src/index.d.ts` |
@@ -60,4 +60,22 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in to the final c
 - Models and open enumerations: `src/chat-apps.ts` (`Bridge`, `BridgeStatus`, `BridgeHold`, `ChatAppConnector`, `BridgeStatusReason` ...).
 - Secrets: `SecretValue` (`src/chat-apps.ts`), printed as `[redacted]`, read with `reveal()`.
 - Errors: `ThalovantApiError.fields` (`src/errors.ts`), the setting or secret names a refusal is about.
-- Tests: `test/chat-apps.test.ts`.
+
+## Intercom (0.12.0; scopes `intercom:read`, `intercom:send`, `intercom:urgent`, `hubs:write`)
+
+`announce({ wait: true })` polls `getAnnouncement` (`intercom:read`, which `intercom:send` implies); `priority: "urgent"` (every `repeat`) needs `intercom:urgent` as well as `intercom:send`. Announce-only text spoken aloud on a hub's speakers. Not a certified safety system; the API does not store the text (keyed hash and length only). Named `announce` / `*Intercom*`: the mesh already has an `intercom` frame.
+
+| Call | Endpoint | Returns |
+|---|---|---|
+| `getIntercomSettings(hubId)` | `GET /v1/hubs/{id}/intercom/settings` | `IntercomSettings` |
+| `setIntercomSettings(hubId, enabled)` | `PUT /v1/hubs/{id}/intercom/settings` | `IntercomSettings` |
+| `listIntercomSpeakers(hubId)` | `GET /v1/hubs/{id}/intercom/speakers` | `IntercomSpeakerList` (speakers have `kind`, `can_play`; the list `policy_synced`, `unavailable_reason`) |
+| `updateIntercomSpeaker(hubId, clientId, { receive?, room?, groups?, dnd? })` | `PATCH /v1/hubs/{id}/intercom/speakers/{client_id}` | `IntercomSpeaker` |
+| `announce(hubId, { text, targets, priority?, repeat?, lang?, idempotencyKey?, wait?, waitTimeoutMs?, pollIntervalMs? })` | `POST /v1/hubs/{id}/intercom/announce` | `Announcement` (`replayed`; deliveries have `detail`) |
+| `getAnnouncement(hubId, id)` | `GET /v1/hubs/{id}/intercom/announcements/{id}` | `Announcement` |
+| `cancelAnnouncement(hubId, id)` | `POST /v1/hubs/{id}/intercom/announcements/{id}/cancel` (`intercom:send`; 409 `not_cancellable`) | `Announcement` (`status: "cancelled"`, optional `hub_confirmed`) |
+| `listAnnouncements(hubId, { limit?, cursor? })` | `GET /v1/hubs/{id}/intercom/announcements` | `AnnouncementList` |
+
+- Models: `src/intercom.ts`. Errors (`src/errors.ts`): `ThalovantIntercomDisabledError`, `ThalovantHubUnreachableError` (502; the text may or may not have been spoken; `announcementId` names the `failed` record: read it before sending again, and use a new key), `ThalovantNotCancellableError` (409), `ThalovantRateLimitedError`; the plan error is HTTP 402 or 403 `plan_limit` (`ThalovantPlanError`). Final-API errors (constants in `IntercomProblemCode`): `ThalovantUrgentScopeRequiredError`, `ThalovantUrgentBusyError` (`scope`), `ThalovantSkillNotInstalledError`, `ThalovantNotASpeakerError` (`kind`, `notSpeakers`), `ThalovantReservedNameError`, `ThalovantHubLockedError`, `ThalovantImpersonationNotAllowedError`, `ThalovantTooManyTargetsError` (`matched`), `ThalovantIntercomUnavailableError` (`reason`), `ThalovantIntercomPlatformDisabledError`, `ThalovantIntercomNotConfiguredError`, `ThalovantManagedClientError`; `ThalovantNotCancellableError.announcementStatus`. Text rule: NFC, 1-280 code points, no `<` `>`, control, bidi/format characters or lone surrogates; DND on needs a valid IANA timezone and `start !== end`; at most 50 names per target list.
+- Idempotency: one fresh `crypto.randomUUID()` key per announcement; the same key replays the stored result (`Idempotency-Replayed: true`) and never re-sends (a replayed `failed` stays `failed`). Ids (hub, client, announcement) that are `.`, `..`, empty or hold `/ ? #`, a backslash or a control character are refused before any request (`intercomId`, `src/intercom.ts`). No request timeout is set by the SDK.
+- Tests: `test/intercom.test.ts`.

@@ -244,6 +244,254 @@ export class ThalovantAuthError extends ThalovantApiError {}
 export class ThalovantPlanError extends ThalovantApiError {}
 
 /**
+ * The `code` of every refusal the intercom routes (and the connection routes
+ * beside them) add. The API's answers are `application/problem+json`: read
+ * `code` first. The typed error for each code is named in its comment; any
+ * code not listed here follows the ordinary mappings by status (a 401 is a
+ * {@link ThalovantAuthError}, a 429 a {@link ThalovantRateLimitedError}, ...)
+ * and is otherwise a plain {@link ThalovantApiError}, with `code` and `problem`
+ * either way.
+ */
+export const IntercomProblemCode = Object.freeze({
+  /** 403: `priority: "urgent"` (and so every `repeat`) needs `intercom:urgent` as well as `intercom:send`. {@link ThalovantUrgentScopeRequiredError} */
+  URGENT_SCOPE_REQUIRED: "urgent_scope_required",
+  /** 429: the hub (or the platform) already has its urgent announcements repeating; `scope` says which. {@link ThalovantUrgentBusyError} */
+  URGENT_BUSY: "intercom_urgent_busy",
+  /** 409: an urgent announcement on a hub whose runtime has no active Intercom skill. {@link ThalovantSkillNotInstalledError} */
+  SKILL_NOT_INSTALLED: "skill_not_installed",
+  /** 422: `receive: true`, or a `speakers` target, on a connection that cannot play speech. {@link ThalovantNotASpeakerError} */
+  NOT_A_SPEAKER: "not_a_speaker",
+  /** 422: a connection named like the platform's own Intercom client. {@link ThalovantReservedNameError} */
+  RESERVED_NAME: "reserved_name",
+  /** 403: the hub is locked; nothing was changed. {@link ThalovantHubLockedError} */
+  HUB_LOCKED: "hub_locked",
+  /** 403: an impersonated session cannot send announcements. {@link ThalovantImpersonationNotAllowedError} */
+  IMPERSONATION_NOT_ALLOWED: "impersonation_not_allowed",
+  /** 422: `all`, a room or a group resolved to more than 50 speakers. {@link ThalovantTooManyTargetsError} */
+  TOO_MANY_TARGETS: "too_many_targets",
+  /** 422: intercom is never available on this hub (a kid hub or a public hub); `reason` says which. {@link ThalovantIntercomUnavailableError} */
+  UNAVAILABLE: "intercom_unavailable",
+  /** 503: intercom is switched off for the whole platform; nothing was sent. {@link ThalovantIntercomPlatformDisabledError} */
+  DISABLED_PLATFORM: "intercom_disabled_platform",
+  /** 503: the operator has not configured intercom yet; nothing was sent. {@link ThalovantIntercomNotConfiguredError} */
+  NOT_CONFIGURED: "intercom_not_configured",
+  /** 403: the platform-managed Intercom client cannot be managed or given credentials. {@link ThalovantManagedClientError} */
+  MANAGED_CLIENT: "managed_client",
+  /** 409: only an announcement that is still `sending` can be cancelled; `announcement_status` is its current status. {@link ThalovantNotCancellableError} */
+  NOT_CANCELLABLE: "not_cancellable",
+  /** 502: the hub did not take the announcement; `announcement_id` names the failed record. {@link ThalovantHubUnreachableError} */
+  HUB_UNREACHABLE: "hub_unreachable",
+  /** The hub's switch is off. {@link ThalovantIntercomDisabledError} */
+  DISABLED: "intercom_disabled",
+} as const);
+
+/** A member of a problem body, at its top or inside an object `detail` (FastAPI's envelope). */
+function problemMember(problem: Record<string, unknown> | undefined, key: string): unknown {
+  if (!problem) return undefined;
+  for (const source of [problem, isRecord(problem.detail) ? problem.detail : {}]) {
+    if (key in source) return (source as Record<string, unknown>)[key];
+  }
+  return undefined;
+}
+
+function problemString(problem: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = problemMember(problem, key);
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function problemStrings(problem: Record<string, unknown> | undefined, key: string): readonly string[] {
+  const value = problemMember(problem, key);
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item !== "") : [];
+}
+
+/**
+ * Intercom is off for the hub (code `intercom_disabled`), or cannot run on it
+ * at all.
+ *
+ * The hub's feature flag is off: turn it on with `setIntercomSettings` (needs
+ * `hubs:write` and a plan with intercom). The subclasses say the stronger
+ * cases, which turning the hub's switch on cannot change:
+ * {@link ThalovantIntercomUnavailableError} (a kid hub or a public hub) and
+ * {@link ThalovantIntercomPlatformDisabledError} (the platform's own switch).
+ */
+export class ThalovantIntercomDisabledError extends ThalovantApiError {}
+
+/**
+ * Intercom is never available on the hub (422 `intercom_unavailable`):
+ * {@link reason} is `kid_hub` or `public_hub`. It cannot be turned on there
+ * for any plan. Not retryable.
+ */
+export class ThalovantIntercomUnavailableError extends ThalovantIntercomDisabledError {
+  /** Why: `kid_hub` or `public_hub` (an open value), or undefined when the body did not say. */
+  get reason(): string | undefined {
+    return problemString(this.problem, "reason");
+  }
+}
+
+/**
+ * Intercom is switched off for the whole platform (503
+ * `intercom_disabled_platform`). Nothing was written, sent or spent. Show an
+ * explanation, not an error toast: only the platform operator can turn it on,
+ * and no hub setting changes that. Reads (speakers, history) and
+ * `cancelAnnouncement` still work.
+ */
+export class ThalovantIntercomPlatformDisabledError extends ThalovantIntercomDisabledError {}
+
+/**
+ * Intercom is not configured on this platform yet (503
+ * `intercom_not_configured`). The operator has not finished setting it up.
+ * Nothing was sent. Disabling, reads and cancelling are unaffected. Say
+ * "Intercom is not available yet".
+ */
+export class ThalovantIntercomNotConfiguredError extends ThalovantApiError {}
+
+/**
+ * An urgent announcement was sent without `intercom:urgent` (403
+ * `urgent_scope_required`). `priority: "urgent"` (and so every `repeat`) needs
+ * `intercom:urgent` IN ADDITION to `intercom:send`; nothing implies it. It is
+ * checked before the idempotency lookup, the rate limit and the hub: nothing
+ * was spent. Sign in again asking for the scope (the plan must allow it), or
+ * send a normal announcement.
+ */
+export class ThalovantUrgentScopeRequiredError extends ThalovantAuthError {}
+
+/**
+ * Too many requests (429). `retryAfterSeconds` says how long to wait.
+ *
+ * Intercom limits a hub to 20 normal announcements a minute and 10 urgent
+ * ones an hour. A full urgent pool is the subclass
+ * {@link ThalovantUrgentBusyError}.
+ */
+export class ThalovantRateLimitedError extends ThalovantApiError {}
+
+/**
+ * The urgent pool is full (429 `intercom_urgent_busy`). A hub may have 2 urgent
+ * announcements repeating at once, and the platform a fixed number per API
+ * replica; {@link scope} says which one is full (`hub` or `platform`).
+ * `retryAfterSeconds` says when to ask again. Nothing was stored and no rate
+ * token was spent; cancel one that is running (`cancelAnnouncement`) or wait.
+ */
+export class ThalovantUrgentBusyError extends ThalovantRateLimitedError {
+  /** `hub` or `platform` (an open value), or undefined when the body did not say. */
+  get scope(): string | undefined {
+    return problemString(this.problem, "scope");
+  }
+}
+
+/**
+ * The hub has no Intercom skill yet (409 `skill_not_installed`). An urgent
+ * announcement needs the skill active on the hub's runtime. Nothing was sent.
+ * Switch intercom on for the hub (`setIntercomSettings`), wait for the skill to
+ * install, and try again.
+ */
+export class ThalovantSkillNotInstalledError extends ThalovantApiError {}
+
+/**
+ * A connection that cannot play speech was asked to receive (422
+ * `not_a_speaker`). Two cases: `updateIntercomSpeaker({ receive: true })` on a
+ * connection whose effective `can_play` is false ({@link kind} is its
+ * connection kind), and an announcement that names such connections in
+ * `targets.speakers` ({@link notSpeakers} lists them). Its owner declares
+ * `can_play` on the connection (`spec.intercom.can_play`), never on the speaker.
+ */
+export class ThalovantNotASpeakerError extends ThalovantApiError {
+  /** The connection kind of a refused `receive` (`home_assistant`, `developer`, `embedded`...), or undefined. */
+  get kind(): string | undefined {
+    return problemString(this.problem, "kind");
+  }
+
+  /** The named connections that cannot play speech, for a refused announcement; empty otherwise. */
+  get notSpeakers(): readonly string[] {
+    return problemStrings(this.problem, "not_speakers");
+  }
+}
+
+/**
+ * A connection was created or renamed onto a name the platform reserves (422
+ * `reserved_name`): the name `thalovant-intercom-...` and the slug
+ * `thalovant-intercom` belong to the platform's own Intercom client. Choose
+ * another name.
+ */
+export class ThalovantReservedNameError extends ThalovantApiError {}
+
+/**
+ * The hub is locked (403 `hub_locked`): nothing was changed or sent. An
+ * announcement, a switch or a speaker change is refused on a locked hub;
+ * switching intercom off (by a platform administrator) and
+ * `cancelAnnouncement` still work. Not retryable until the hub is unlocked.
+ */
+export class ThalovantHubLockedError extends ThalovantApiError {}
+
+/**
+ * An impersonated session tried to announce (403 `impersonation_not_allowed`).
+ * A staff member looking through somebody's session cannot enable intercom,
+ * change a speaker or announce. Switching it off and cancelling stay open.
+ */
+export class ThalovantImpersonationNotAllowedError extends ThalovantApiError {}
+
+/**
+ * `all`, a room or a group resolved to more than 50 speakers (422
+ * `too_many_targets`). {@link matched} is how many it resolved to. Naming that
+ * same room or group resolves to the same speakers: choose a narrower target
+ * (a smaller room or group) or name at most 50 speakers.
+ */
+export class ThalovantTooManyTargetsError extends ThalovantApiError {
+  /** How many speakers the targets resolved to, or undefined when the body did not say. */
+  get matched(): number | undefined {
+    const value = problemMember(this.problem, "matched");
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+  }
+}
+
+/**
+ * A connection the platform manages (403 `managed_client`). The platform's own
+ * Intercom client cannot be edited, paused, deleted, given credentials or named
+ * in an access policy by anybody; switch Intercom off and on for the hub to
+ * repair it. It is identified by `spec.intercomApi === "platform"`.
+ * {@link refusedClientRefs} lists the managed connections an access policy
+ * named, when it was one. Not retryable.
+ */
+export class ThalovantManagedClientError extends ThalovantApiError {
+  /** The managed connections an access policy named; empty otherwise. */
+  get refusedClientRefs(): readonly string[] {
+    return problemStrings(this.problem, "refused_client_refs");
+  }
+}
+
+/**
+ * The API could not reach the hub to speak (502 `hub_unreachable`). Whether the
+ * text was spoken is not guaranteed either way: the hub may have spoken it and
+ * lost the answer. The API records the attempt as a `failed` announcement and
+ * names it in {@link announcementId}.
+ *
+ * **Do not resend blindly.** Read the announcement first
+ * (`getAnnouncement(hubId, error.announcementId)`). Reusing the same
+ * `idempotencyKey` does *not* retry: the API replays the stored `failed`
+ * record and never sends again. A `failed` record is not proof that nothing
+ * was spoken: weigh the risk of a repeated announcement, and use a **new** key
+ * only when you choose to send a second attempt.
+ */
+export class ThalovantHubUnreachableError extends ThalovantApiError {
+  /** The announcement the API recorded for the failed attempt (`announcement_id` in the problem), or undefined. */
+  get announcementId(): string | undefined {
+    return problemString(this.problem, "announcement_id");
+  }
+}
+
+/**
+ * An announcement cannot be cancelled (409 `not_cancellable`). Only an
+ * announcement that is still `sending` can be; one that has completed, failed
+ * or been cancelled already cannot. {@link announcementStatus} is its current
+ * status: refresh the result (`getAnnouncement`) instead of showing an error.
+ */
+export class ThalovantNotCancellableError extends ThalovantApiError {
+  /** The announcement's current status (`completed`, `partial`, `failed` or `cancelled`), or undefined. */
+  get announcementStatus(): string | undefined {
+    return problemString(this.problem, "announcement_status");
+  }
+}
+
+/**
  * A hub already has the one connection of this kind it allows.
  *
  * A 409 `home_assistant_already_linked`: a hub takes one Home Assistant

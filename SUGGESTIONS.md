@@ -1,6 +1,24 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: #6 done, the device poll's problems included (CodeRabbit on #110).
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom final API: `replayed` and the caps are done; shared vectors matter more now; `message` in `detail`.
 
 # Suggestions
+
+## Scrub `input` and `ctx` from `problem` on intercom calls
+
+- **Problem:** `.problem` keeps the whole API body; a regression in the API's error middleware would put the announcement text there (review L5).
+- **Proposal:** in `announce`, drop `input` and `ctx` from `problem` before rejecting.
+- **Impact:** low; defence in depth.
+
+## `ThalovantApiError.detail` does not read `message`
+
+- **Problem:** the final intercom problems carry their sentence in `message`, so `error.detail` is undefined for them (the sentence is in `problem.message` and the error message).
+- **Proposal:** fall back to `message` when `detail` is absent, in every SDK at once, with a case in `api-error-vectors.json`.
+- **Impact:** low effort; a coordinated round, because it changes the shared api-error vectors.
+
+## Shared intercom vectors
+
+- **Problem:** `intercom` has no conformance vectors; the text rule (NFC, 1-280, `<` `>`, control/bidi/format characters, lone surrogates), the do-not-disturb rule (valid IANA zone, `start != end`) and the problem-code to error-kind mapping are proved by each SDK's own tests, against five different Unicode and timezone databases.
+- **Proposal:** an `intercom-vectors.json` in the Python reference (validation and error-kind cases), claimed by the capability.
+- **Impact:** low effort; one more file for every consumer.
 
 ## 1. Shared vectors for `fields`
 

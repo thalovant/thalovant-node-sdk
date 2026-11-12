@@ -40,6 +40,45 @@ export {
   type ChatAppTargets,
   type LocalizedText,
 } from "./chat-apps.js";
+// Explicit, so the request builders and response readers of intercom.ts stay
+// internal: only the public models, limits and `announcementText` are the API.
+export {
+  DELIVERY_DETAIL_CODES,
+  INTERCOM_READ_SCOPE,
+  INTERCOM_SEND_SCOPE,
+  INTERCOM_URGENT_SCOPE,
+  MAX_ANNOUNCEMENT_SPEAKERS,
+  MAX_ANNOUNCEMENT_TEXT,
+  MAX_GROUPS,
+  MAX_GROUP_LENGTH,
+  MAX_IDEMPOTENCY_KEY_LENGTH,
+  MAX_REPEAT_INTERVAL_SECONDS,
+  MAX_REPEAT_TIMES,
+  MAX_ROOM_LENGTH,
+  MAX_TARGET_NAMES,
+  MAX_TARGET_NAME_LENGTH,
+  MAX_TIMEZONE_LENGTH,
+  MIN_REPEAT_INTERVAL_SECONDS,
+  announcementText,
+  type AnnounceOptions,
+  type Announcement,
+  type AnnouncementList,
+  type AnnouncementListOptions,
+  type AnnouncementStatus,
+  type DeliveryStatus,
+  type IntercomDelivery,
+  type IntercomDnd,
+  type IntercomPolicy,
+  type IntercomPriority,
+  type IntercomQuietHours,
+  type IntercomRepeat,
+  type IntercomSettings,
+  type IntercomSpeaker,
+  type IntercomSpeakerChanges,
+  type IntercomSpeakerList,
+  type IntercomTargets,
+  type IntercomUnavailableReason,
+} from "./intercom.js";
 export * from "./context.js";
 export * from "./noise.js";
 export * from "./noise-store.js";
