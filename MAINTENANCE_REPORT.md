@@ -1,6 +1,12 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: CodeRabbit review of PR 112: wait validation and deadline, strict targets and DND, docs corrections; digest 66bfb1ac5879.
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom amendment 2 (contract section J): cancel, key replay docs, id validation, wording; new Python digest.
 
 # Maintenance report
+
+## 2026-11-11 - Intercom amendment 2 (client-side security review, contract section J)
+
+Added `cancelAnnouncement(hubId, announcementId, signal?)` (`POST .../announcements/{id}/cancel`), the optional `Announcement.hub_confirmed`, the `cancelled` status, `ThalovantNotCancellableError` (409 `not_cancellable`) and `ThalovantHubUnreachableError.announcementId` (`src/errors.ts`). `intercomId()` (`src/intercom.ts`) refuses `.`, `..`, empty ids and ids holding `/`, `?`, `#`, a backslash or a control character before any request, for hub, client and announcement ids; `intercomPath` and `intercomSegment` (`src/control.ts`) use it (review L1). The SDK sets no request timeout, so the announce timeout item needs no code; the docs say to give a `signal` at least 20 s (review M2). Docs: every example uses a fresh `crypto.randomUUID()` key; README, FAQ and QUICK_FACTS say that the same key replays the stored result and never re-sends, that a replayed `failed` stays `failed`, that a deliberate second send needs a new key, and to read the announcement after a 502 (review H3); the wording no longer says "nothing listens" or "stops every announcement at once" (J7). Tests (`test/intercom.test.ts`): cancel route/body/scope/409, `hub_confirmed`, 502 `announcementId`, unsafe ids on every call, a replayed failed announcement, and two doc guards. Verification: `npm test`, `scripts/check-sdk-parity.py --consumer thalovant-node-sdk`. Not done (not in section J): L4 for Node (a plain options object), L5, L6, a `replayed` flag (`SUGGESTIONS.md`, `AUDIT.md`).
+
+Transparency Report: AI model Claude Sonnet 5.5; actions: implemented contract section J for the Node SDK (code, tests, docs, parity record); oversight: none yet, review pending.
 
 ## 2026-11-11 - Intercom review fixes (CodeRabbit, PR 112; Python digest `66bfb1ac5879`)
 

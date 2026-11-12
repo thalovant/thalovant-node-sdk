@@ -63,7 +63,7 @@ Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): wait scop
 
 ## Intercom (0.12.0; scopes `intercom:read`, `intercom:send`, `hubs:write`)
 
-`announce({ wait: true })` also needs `intercom:read` (it polls `getAnnouncement`). Announce-only text spoken aloud on a hub's speakers. Not a certified safety system; the platform never stores the text. Named `announce` / `*Intercom*`: the mesh already has an `intercom` frame.
+`announce({ wait: true })` also needs `intercom:read` (it polls `getAnnouncement`). Announce-only text spoken aloud on a hub's speakers. Not a certified safety system; the API does not store the text (keyed hash and length only). Named `announce` / `*Intercom*`: the mesh already has an `intercom` frame.
 
 | Call | Endpoint | Returns |
 |---|---|---|
@@ -73,7 +73,9 @@ Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): wait scop
 | `updateIntercomSpeaker(hubId, clientId, { receive?, room?, groups?, dnd? })` | `PATCH /v1/hubs/{id}/intercom/speakers/{client_id}` | `IntercomSpeaker` |
 | `announce(hubId, { text, targets, priority?, repeat?, lang?, idempotencyKey?, wait?, waitTimeoutMs?, pollIntervalMs? })` | `POST /v1/hubs/{id}/intercom/announce` | `Announcement` |
 | `getAnnouncement(hubId, id)` | `GET /v1/hubs/{id}/intercom/announcements/{id}` | `Announcement` |
+| `cancelAnnouncement(hubId, id)` | `POST /v1/hubs/{id}/intercom/announcements/{id}/cancel` (`intercom:send`; 409 `not_cancellable`) | `Announcement` (`status: "cancelled"`, optional `hub_confirmed`) |
 | `listAnnouncements(hubId, { limit?, cursor? })` | `GET /v1/hubs/{id}/intercom/announcements` | `AnnouncementList` |
 
-- Models: `src/intercom.ts`. Errors (`src/errors.ts`): `ThalovantIntercomDisabledError`, `ThalovantHubUnreachableError` (502; the text may or may not have been spoken: retry with the same `idempotencyKey`), `ThalovantRateLimitedError`; the plan error is HTTP 402 or 403 `plan_limit` (`ThalovantPlanError`).
+- Models: `src/intercom.ts`. Errors (`src/errors.ts`): `ThalovantIntercomDisabledError`, `ThalovantHubUnreachableError` (502; the text may or may not have been spoken; `announcementId` names the `failed` record: read it before sending again, and use a new key), `ThalovantNotCancellableError` (409), `ThalovantRateLimitedError`; the plan error is HTTP 402 or 403 `plan_limit` (`ThalovantPlanError`).
+- Idempotency: one fresh `crypto.randomUUID()` key per announcement; the same key replays the stored result (`Idempotency-Replayed: true`) and never re-sends (a replayed `failed` stays `failed`). Ids (hub, client, announcement) that are `.`, `..`, empty or hold `/ ? #`, a backslash or a control character are refused before any request (`intercomId`, `src/intercom.ts`). No request timeout is set by the SDK.
 - Tests: `test/chat-apps.test.ts`.

@@ -255,11 +255,35 @@ export class ThalovantIntercomDisabledError extends ThalovantApiError {}
 /**
  * The API could not reach the hub to speak (502 `hub_unreachable`). Whether the
  * text was spoken is not guaranteed either way: the hub may have spoken it and
- * lost the answer. The API records the attempt. To retry, reuse the same
- * `idempotencyKey` that `announce` was given, so a retry is not said a second
- * time; a call made without one may be said twice.
+ * lost the answer. The API records the attempt as a `failed` announcement and
+ * names it in {@link announcementId}.
+ *
+ * **Do not resend blindly.** Read the announcement first
+ * (`getAnnouncement(hubId, error.announcementId)`). Reusing the same
+ * `idempotencyKey` does *not* retry: the API replays the stored `failed`
+ * record and never sends again. To send the text again on purpose, use a
+ * **new** key, once you know nothing was spoken.
  */
-export class ThalovantHubUnreachableError extends ThalovantApiError {}
+export class ThalovantHubUnreachableError extends ThalovantApiError {
+  /** The announcement the API recorded for the failed attempt (`announcement_id` in the problem), or undefined. */
+  get announcementId(): string | undefined {
+    const problem = this.problem;
+    if (!problem) return undefined;
+    for (const source of [problem, isRecord(problem.detail) ? problem.detail : {}]) {
+      const value = (source as Record<string, unknown>).announcement_id;
+      if (typeof value === "string" && value) return value;
+    }
+    return undefined;
+  }
+}
+
+/**
+ * An announcement cannot be cancelled (409 `not_cancellable`). Only an
+ * announcement that is still `sending` can be; one that has completed, failed
+ * or been cancelled already cannot. Read it with `getAnnouncement` to see what
+ * became of it.
+ */
+export class ThalovantNotCancellableError extends ThalovantApiError {}
 
 /**
  * Too many requests (429). `retryAfterSeconds` says how long to wait.

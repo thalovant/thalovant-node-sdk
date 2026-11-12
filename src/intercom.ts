@@ -2,22 +2,33 @@
  * Intercom: say a short text aloud on a household hub's speakers.
  *
  * An announcement is a text of at most 280 characters, spoken by each chosen
- * speaker's own text-to-speech. It is announce-only: no two-way audio, nothing
- * listens. **It is not a certified safety system** and does not replace smoke
- * or CO alarms, medical alert devices or emergency services.
+ * speaker's own text-to-speech. It is announce-only: no two-way audio.
+ * Intercom does not record or store speech; while an urgent alert sounds, the
+ * hub only checks whether a reply is an acknowledgement. **It is not a
+ * certified safety system** and does not replace smoke or CO alarms, medical
+ * alert devices or emergency services.
  *
- * The platform never stores the text: the API keeps its SHA-256 and length,
- * the targets, each speaker's result and the actor. This module holds the
- * models of the `/v1/hubs/{hub_id}/intercom` routes, their readers and the
- * request builders; the methods live on {@link ThalovantControlPlane}
- * (`announce()`, `getAnnouncement()`, `listAnnouncements()`,
+ * The API does not store the text: it keeps a keyed hash of it (HMAC-SHA256,
+ * server-side secret) and its length, the targets, each speaker's result and
+ * the actor. (The hub's own message bus and each speaker's text-to-speech are
+ * outside the platform's control.) This module holds the models of the
+ * `/v1/hubs/{hub_id}/intercom` routes, their readers and the request
+ * builders; the methods live on {@link ThalovantControlPlane} (`announce()`,
+ * `cancelAnnouncement()`, `getAnnouncement()`, `listAnnouncements()`,
  * `listIntercomSpeakers()`, `updateIntercomSpeaker()`, `getIntercomSettings()`
  * and `setIntercomSettings()`). The names say *announce* and *intercom*, never
  * a bare `intercom`: the HiveMind mesh already has an `intercom` frame, which
  * is a different thing.
  *
- * Scopes: `intercom:read` for the reads, `intercom:send` for `announce()`, and
- * `hubs:write` (owner or admin of the hub) for settings and speakers.
+ * Scopes: `intercom:read` for the reads, `intercom:send` for `announce()` and
+ * `cancelAnnouncement()`, and `hubs:write` (owner or admin of the hub) for
+ * settings and speakers.
+ *
+ * Idempotency: pass a fresh unique `idempotencyKey` (a `crypto.randomUUID()`)
+ * for each announcement you mean to send. The same key replays the stored
+ * answer (`Idempotency-Replayed: true`) and **never sends again**, whatever its
+ * status; a replayed `failed` announcement stays `failed`. To send the same
+ * text again on purpose, use a new key.
  *
  * Models keep the API's snake_case field names, as the chat apps models do.
  * Every status is an open enumeration: a value the SDK does not know yet is
@@ -32,8 +43,8 @@ type JsonRecord = Record<string, unknown>;
 export type IntercomUnavailableReason = "plan" | "kid_hub" | "public_hub" | (string & {});
 /** `normal` waits for the hub's answer; `urgent` may repeat until acknowledged. */
 export type IntercomPriority = "normal" | "urgent";
-/** `sending` while an urgent announcement is still repeating; open. */
-export type AnnouncementStatus = "completed" | "partial" | "failed" | "sending" | (string & {});
+/** `sending` while an urgent announcement is still repeating; `cancelled` after `cancelAnnouncement()`; open. */
+export type AnnouncementStatus = "completed" | "partial" | "failed" | "sending" | "cancelled" | (string & {});
 /** What happened for one speaker; open. */
 export type DeliveryStatus =
   | "delivered" | "acked" | "offline" | "skipped_dnd" | "skipped_not_receiving" | "failed" | (string & {});
@@ -107,6 +118,12 @@ export interface Announcement {
   created_at: string | null;
   deliveries: IntercomDelivery[];
   acked_by: string | null;
+  /**
+   * Only on the answer to `cancelAnnouncement()`: `false` means the hub could
+   * not confirm the cancel (the record is `cancelled` anyway), so speech
+   * already queued on the hub may still play. Absent on every other answer.
+   */
+  hub_confirmed?: boolean;
 }
 
 /** A page of announcements, newest first; `next_cursor` is null on the last page. */
@@ -143,7 +160,13 @@ export interface AnnounceOptions {
   /** Urgent only. */
   repeat?: IntercomRepeat;
   lang?: string;
-  /** Sent as `Idempotency-Key` when given; never generated. */
+  /**
+   * Sent as `Idempotency-Key` when given; never generated. Use a fresh unique
+   * key (a `crypto.randomUUID()`) per announcement you mean to send: the same
+   * key replays the stored result for 24 hours and never sends again, a
+   * replayed `failed` announcement stays `failed`, and to send again on purpose
+   * you need a new key.
+   */
   idempotencyKey?: string;
   /** Poll a `sending` announcement until it completes. */
   wait?: boolean;
@@ -170,6 +193,24 @@ export interface AnnouncementListOptions {
 
 const CONTROL = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]", "u");
 const CLOCK = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+const ID_UNSAFE = new RegExp("[/?#\\\\\\u0000-\\u001f\\u007f-\\u009f]", "u");
+
+/**
+ * @internal An id (hub, client or announcement) fit to be one path segment, or
+ * an error before any request. Refused: anything but a string, an empty or
+ * blank one, `.` and `..` (dot segments, which a URL resolver collapses into
+ * another path), and any id holding `/`, `?`, `#`, a backslash or a control
+ * character.
+ */
+export function intercomId(value: unknown, name: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new TypeError(`${name} must be a non-empty string.`);
+  if (value === "." || value === ".." || ID_UNSAFE.test(value)) {
+    throw new RangeError(
+      `${name} is not a valid id: it is a dot segment or holds '/', '?', '#', a backslash or a control character.`,
+    );
+  }
+  return value;
+}
 
 /** The text as it is sent: trimmed, 1-280 characters, no control characters. */
 export function announcementText(text: string): string {
@@ -369,6 +410,7 @@ export function announcementFromRecord(payload: unknown): Announcement {
       };
     }),
     acked_by: optionalText(row.acked_by),
+    ...(typeof row.hub_confirmed === "boolean" ? { hub_confirmed: row.hub_confirmed } : {}),
   };
 }
 

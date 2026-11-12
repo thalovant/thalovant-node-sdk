@@ -1,10 +1,22 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: CodeRabbit review of PR 112: a poll can fail after an accepted announcement; lenient settings reader kept.
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom amendment 2: open items (text in console.log of options, problem body, replayed flag).
 
 # Audit
 
+## Intercom (0.12.0): `AnnounceOptions` is a plain object, so `console.log(options)` prints the text (security review L4)
+
+`AnnounceOptions` (`src/intercom.ts`) is an interface the caller builds; a `console.log(options)` or a logger that serialises it prints `text`. The Rust SDK redacts its `Debug` (the contract names Rust and Go only); in Node the SDK cannot change how the caller's own object prints. Documented in the porting brief; no SDK code logs it (`test/intercom.test.ts`). Not changed.
+
+## Intercom (0.12.0): `ThalovantApiError.problem` keeps the whole API body (review L5), no cap on rooms, groups or key length (L6)
+
+The API strips `input` and `ctx` from `/intercom/` errors, so the text does not reach `problem` today; a regression would. Rooms and groups have no client-side cap (the API caps them at 50) and `idempotencyKey` is not checked against 128 characters (the API answers 422). Not in contract section J; proposed in `SUGGESTIONS.md`.
+
+## Intercom (0.12.0): a replayed announcement is not marked as replayed
+
+The API answers a replay with `Idempotency-Replayed: true`; `Announcement` does not carry it. The docs say what replay means (`README.md`, "Idempotency keys"). Proposed in `SUGGESTIONS.md`.
+
 ## Intercom (0.12.0): a poll that fails after the POST leaves an accepted announcement
 
-`ThalovantControlPlane.announce({ wait: true })` (`src/control.ts`) sends the POST, then polls `getAnnouncement`, which needs `intercom:read`. A token with only `intercom:send`, a 429 or a network error fails a poll after the announcement was accepted, and the rejection carries no announcement id (`test/intercom.test.ts`, "a failed poll rejects after the POST was accepted"). The answer is the `idempotencyKey`: reuse it to retry. Not fixed in the SDK because a rejection cannot also return the announcement; the README and the JSDoc say so.
+`ThalovantControlPlane.announce({ wait: true })` (`src/control.ts`) sends the POST, then polls `getAnnouncement`, which needs `intercom:read`. A token with only `intercom:send`, a 429 or a network error fails a poll after the announcement was accepted, and the rejection carries no announcement id (`test/intercom.test.ts`, "a failed poll rejects after the POST was accepted"). The answer is a fresh `idempotencyKey`: calling again with the same key replays the stored announcement (with its id) and does not send again. Not fixed in the SDK because a rejection cannot also return the announcement; the README and the JSDoc say so.
 
 ## Intercom (0.12.0): the settings reader is lenient
 

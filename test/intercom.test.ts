@@ -3,6 +3,7 @@
  * loopback fake API (a real HTTP server on 127.0.0.1).
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
@@ -13,10 +14,12 @@ import {
   ThalovantControlPlane,
   ThalovantHubUnreachableError,
   ThalovantIntercomDisabledError,
+  ThalovantNotCancellableError,
   ThalovantPlanError,
   ThalovantRateLimitedError,
+  type AnnouncementStatus,
 } from "../src/index.js";
-import { announceBody, speakerUpdateBody } from "../src/intercom.js";
+import { announceBody, intercomId, speakerUpdateBody } from "../src/intercom.js";
 
 const HUB = "0f8a7c3e-2b1d-4c5e-9a6f-1d2c3b4a5e6f";
 const ANN = "7a1d6c1e-6f0b-4f43-9d7e-3f4f0d9a7c11";
@@ -127,38 +130,38 @@ test("get and list announcements", async () => {
   } finally { await fake.close(); }
 });
 
-test("speakers; the patch sends only what is passed and escapes the id", async () => {
+test("speakers; the patch sends only what is passed", async () => {
   const fake = await fakeApi();
   try {
     const speaker = {
-      client_id: "c/1", slug: "kitchen", name: "Kitchen", online: true, last_seen_at: null,
+      client_id: "c-1", slug: "kitchen", name: "Kitchen", online: true, last_seen_at: null,
       intercom: { receive: true, room: "kitchen", groups: ["downstairs"],
         dnd: { enabled: true, quiet_hours: { start: "22:00", end: "07:00", timezone: null } } },
     };
     fake.reply("GET", `${BASE}/speakers`, [200, { items: [speaker] }]);
-    fake.reply("PATCH", `${BASE}/speakers/c%2F1`, [200, speaker]);
+    fake.reply("PATCH", `${BASE}/speakers/c-1`, [200, speaker]);
     const listed = await fake.api.listIntercomSpeakers(HUB);
     assert.equal(listed.items[0].online, true);
     assert.deepEqual(listed.items[0].intercom.dnd.quiet_hours, { start: "22:00", end: "07:00", timezone: null });
-    await fake.api.updateIntercomSpeaker(HUB, "c/1", { room: null, receive: true });
-    assert.equal(fake.seen.at(-1)!.path, `${BASE}/speakers/c%2F1`);
+    await fake.api.updateIntercomSpeaker(HUB, "c-1", { room: null, receive: true });
+    assert.equal(fake.seen.at(-1)!.path, `${BASE}/speakers/c-1`);
     assert.deepEqual(fake.seen.at(-1)!.body, { receive: true, room: null });
-    await fake.api.updateIntercomSpeaker(HUB, "c/1", { dnd: { enabled: true, quiet_hours: { start: "22:00", end: "07:00", timezone: "Europe/Paris" } } });
+    await fake.api.updateIntercomSpeaker(HUB, "c-1", { dnd: { enabled: true, quiet_hours: { start: "22:00", end: "07:00", timezone: "Europe/Paris" } } });
     assert.equal(fake.seen.at(-1)!.body.dnd.quiet_hours.timezone, "Europe/Paris");
   } finally { await fake.close(); }
 });
 
-test("settings, and an id is escaped as one path segment", async () => {
+test("settings, and an id is one percent-encoded path segment", async () => {
   const fake = await fakeApi();
   try {
     fake.reply("GET", `${BASE}/settings`, [200, { enabled: false, plan_allowed: false, unavailable_reason: "plan" }]);
     fake.reply("PUT", `${BASE}/settings`, [200, { enabled: true, plan_allowed: true, unavailable_reason: null }]);
-    fake.reply("GET", "/v1/hubs/a%2Fb%3Fc/intercom/settings", [200, { enabled: false, plan_allowed: true }]);
+    fake.reply("GET", "/v1/hubs/a%20b%25c/intercom/settings", [200, { enabled: false, plan_allowed: true }]);
     assert.equal((await fake.api.getIntercomSettings(HUB)).unavailable_reason, "plan");
     assert.equal((await fake.api.setIntercomSettings(HUB, true)).enabled, true);
     assert.deepEqual(fake.seen.at(-1)!.body, { enabled: true });
-    assert.equal((await fake.api.getIntercomSettings("a/b?c")).plan_allowed, true);
-    assert.equal(fake.seen.at(-1)!.path, "/v1/hubs/a%2Fb%3Fc/intercom/settings");
+    assert.equal((await fake.api.getIntercomSettings("a b%c")).plan_allowed, true);
+    assert.equal(fake.seen.at(-1)!.path, "/v1/hubs/a%20b%25c/intercom/settings");
   } finally { await fake.close(); }
 });
 
@@ -369,4 +372,175 @@ test("malformed answers are API errors", async () => {
     fake.reply("GET", `${BASE}/announcements`, [200, { nope: 1 }]);
     await assert.rejects(fake.api.listAnnouncements(HUB), ThalovantApiError);
   } finally { await fake.close(); }
+});
+
+
+// --- Amendment 2: cancel, replay, ids, the 502 announcement id, doc rules ---------------------------------
+
+const UNSAFE_IDS = [".", "..", "", "   ", "a/b", "/", "a?b", "a#b", "a\\b", "a\u0000b", "a\nb", "a\tb", "a\u007fb", "a\u0085b", "../x", "x/.."];
+
+test("dot segments and unsafe ids are refused before any request (hub, client, announcement)", async () => {
+  const fake = await fakeApi();
+  try {
+    for (const bad of UNSAFE_IDS) {
+      const calls: Array<() => Promise<unknown>> = [
+        () => fake.api.getIntercomSettings(bad),
+        () => fake.api.setIntercomSettings(bad, true),
+        () => fake.api.listIntercomSpeakers(bad),
+        () => fake.api.updateIntercomSpeaker(bad, "c1", { receive: true }),
+        () => fake.api.updateIntercomSpeaker(HUB, bad, { receive: true }),
+        () => fake.api.announce(bad, { text: "hi", targets: { all: true } }),
+        () => fake.api.getAnnouncement(bad, ANN),
+        () => fake.api.getAnnouncement(HUB, bad),
+        () => fake.api.cancelAnnouncement(bad, ANN),
+        () => fake.api.cancelAnnouncement(HUB, bad),
+        () => fake.api.listAnnouncements(bad),
+      ];
+      for (const call of calls) await assert.rejects(call(), (error) => error instanceof TypeError || error instanceof RangeError, JSON.stringify(bad));
+    }
+    assert.equal(fake.seen.length, 0);
+  } finally { await fake.close(); }
+});
+
+test("ordinary ids pass the id check", () => {
+  for (const good of [HUB, ANN, "client-1", "c_1", "a.b", "...", "a..b", ".hidden", "name with space", "x".repeat(200)]) {
+    assert.equal(intercomId(good, "id"), good);
+  }
+  for (const bad of [null, 5, {}, ["a"], undefined]) assert.throws(() => intercomId(bad, "id"), TypeError);
+});
+
+test("cancel posts to the cancel route and reads hub_confirmed", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announcements/${ANN}/cancel`, [200, announcement("cancelled", { priority: "urgent", hub_confirmed: true })]);
+    const result = await fake.api.cancelAnnouncement(HUB, ANN);
+    const request = fake.seen[0];
+    assert.equal(request.method, "POST");
+    assert.equal(request.path, `${BASE}/announcements/${ANN}/cancel`);
+    assert.equal(request.body, null); // no body: the id in the path is all the API needs
+    assert.equal(request.headers.authorization, "Bearer tok");
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.priority, "urgent");
+    assert.equal(result.hub_confirmed, true);
+    const status: AnnouncementStatus = "cancelled"; // part of the status type
+    assert.equal(status, result.status);
+  } finally { await fake.close(); }
+});
+
+for (const [sent, expected] of [[false, false], [true, true], ["yes", undefined], [1, undefined], [null, undefined]] as const) {
+  test(`hub_confirmed is a real boolean or absent: ${JSON.stringify(sent)}`, async () => {
+    const fake = await fakeApi();
+    try {
+      fake.reply("POST", `${BASE}/announcements/${ANN}/cancel`, [200, announcement("cancelled", { hub_confirmed: sent })]);
+      const result = await fake.api.cancelAnnouncement(HUB, ANN);
+      assert.equal(result.hub_confirmed, expected);
+      assert.equal("hub_confirmed" in result, expected !== undefined);
+    } finally { await fake.close(); }
+  });
+}
+
+test("hub_confirmed is optional on every other answer", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("GET", `${BASE}/announcements/${ANN}`, [200, announcement()]);
+    const got = await fake.api.getAnnouncement(HUB, ANN);
+    assert.equal(got.hub_confirmed, undefined);
+  } finally { await fake.close(); }
+});
+
+test("a cancel the hub could not confirm is still a cancelled announcement", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announcements/${ANN}/cancel`, [200, announcement("cancelled", { hub_confirmed: false })]);
+    const result = await fake.api.cancelAnnouncement(HUB, ANN);
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.hub_confirmed, false);
+  } finally { await fake.close(); }
+});
+
+test("cancel of a finished announcement is a typed 409 not_cancellable", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announcements/${ANN}/cancel`, [409, { code: "not_cancellable", detail: "It already completed." }]);
+    await assert.rejects(fake.api.cancelAnnouncement(HUB, ANN), (error: any) => {
+      assert.equal(error.constructor, ThalovantNotCancellableError);
+      assert.ok(error instanceof ThalovantApiError);
+      assert.equal(error.statusCode, 409);
+      assert.equal(error.code, "not_cancellable");
+      return true;
+    });
+    fake.reply("POST", `${BASE}/announcements/${ANN}/cancel`, [409, { code: "something_else", detail: "no" }]);
+    await assert.rejects(fake.api.cancelAnnouncement(HUB, ANN), (error: any) => error.constructor === ThalovantApiError);
+  } finally { await fake.close(); }
+});
+
+test("cancel without the scope is an auth error", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announcements/${ANN}/cancel`, [403, { detail: "Insufficient scopes" }]);
+    await assert.rejects(fake.api.cancelAnnouncement(HUB, ANN), ThalovantAuthError);
+  } finally { await fake.close(); }
+});
+
+test("a 502 names the announcement the API recorded", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announce`, [502, { code: "hub_unreachable", detail: "no hub", announcement_id: ANN }]);
+    await assert.rejects(fake.api.announce(HUB, { text: "hello", targets: { all: true }, idempotencyKey: "k-1" }), (error: any) => {
+      assert.ok(error instanceof ThalovantHubUnreachableError);
+      assert.equal(error.statusCode, 502);
+      assert.equal(error.announcementId, ANN);
+      assert.equal(error.problem?.announcement_id, ANN);
+      return true;
+    });
+    // FastAPI's envelope keeps the members inside `detail`.
+    fake.reply("POST", `${BASE}/announce`, [502, { detail: { code: "hub_unreachable", detail: "no hub", announcement_id: ANN } }]);
+    await assert.rejects(fake.api.announce(HUB, { text: "hello", targets: { all: true } }), (error: any) => error.announcementId === ANN);
+    for (const body of [{ code: "hub_unreachable", detail: "x" }, { code: "hub_unreachable", detail: "x", announcement_id: 7 }, { code: "hub_unreachable", detail: "x", announcement_id: "" }]) {
+      fake.reply("POST", `${BASE}/announce`, [502, body]);
+      await assert.rejects(fake.api.announce(HUB, { text: "hello", targets: { all: true } }), (error: any) => error.announcementId === undefined);
+    }
+    assert.equal(new ThalovantHubUnreachableError("x").announcementId, undefined);
+  } finally { await fake.close(); }
+});
+
+test("a replayed failed announcement is returned as failed and the key is sent each time", async () => {
+  // The API replays the stored announcement for the same (hub, key) with Idempotency-Replayed: true and
+  // never sends again: a replayed `failed` stays `failed`; the SDK neither rejects nor retries.
+  const fake = await fakeApi();
+  try {
+    const key = "11111111-1111-4111-8111-111111111111";
+    fake.reply("POST", `${BASE}/announce`, [200, announcement("failed"), { "Idempotency-Replayed": "true" }]);
+    const first = await fake.api.announce(HUB, { text: "Dinner is ready", targets: { all: true }, idempotencyKey: key });
+    const again = await fake.api.announce(HUB, { text: "Dinner is ready", targets: { all: true }, idempotencyKey: key });
+    assert.equal(first.status, "failed");
+    assert.equal(again.status, "failed");
+    assert.deepEqual(fake.seen.map((r) => r.headers["idempotency-key"]), [key, key]);
+    assert.equal(fake.seen.length, 2); // one POST per call: nothing is retried behind the caller's back
+  } finally { await fake.close(); }
+});
+
+const ROOT = new URL("../../", import.meta.url);
+const DOCS = ["README.md", "QUICK_FACTS.md", "FAQ.md"].map((name) => ({ name, text: readFileSync(new URL(name, ROOT), "utf8") }));
+
+test("no README or doc example uses a constant idempotency key", () => {
+  // A fixed key replays the stored announcement for 24 hours and sends nothing: examples generate a fresh one.
+  const offenders: string[] = [];
+  for (const { name, text } of DOCS) {
+    text.split("\n").forEach((line, index) => {
+      if (/idempotencyKey\s*:\s*["'`]/.test(line)) offenders.push(`${name}:${index + 1}: ${line.trim()}`);
+    });
+  }
+  assert.deepEqual(offenders, []);
+});
+
+test("the intercom docs do not over-promise and describe the controls", () => {
+  const readme = DOCS[0].text.toLowerCase();
+  for (const { text } of DOCS) {
+    const lowered = text.toLowerCase();
+    for (const phrase of ["nothing listens", "never listens", "spoken once", "stops every announcement at once", "retry with the same", "no two-way audio, nothing"]) {
+      assert.ok(!lowered.includes(phrase), phrase);
+    }
+  }
+  for (const word of ["randomuuid", "idempotency-replayed", "cancelannouncement", "new key", "announcementid"]) assert.ok(readme.includes(word), word);
 });

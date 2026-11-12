@@ -1,12 +1,24 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): wait scope and retry questions after the PR 112 review.
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom amendment 2: cancel, key replay, ids, wording.
 
 # FAQ
 
 **Is intercom a safety system, and why is there no `intercom()` method?**
-It is announce-only text spoken by each speaker's own text-to-speech, and **not a certified safety system**: it does not replace smoke or CO alarms, medical alert devices or emergency services. The mesh already has an `intercom` frame, so the HTTP calls are `announce`, `getAnnouncement`, `listAnnouncements` and `*Intercom*`. The platform never stores the text.
+It is announce-only text spoken by each speaker's own text-to-speech, and **not a certified safety system**: it does not replace smoke or CO alarms, medical alert devices or emergency services. The mesh already has an `intercom` frame, so the HTTP calls are `announce`, `getAnnouncement`, `listAnnouncements` and `*Intercom*`. The API does not store the text (a keyed hash and the length only), and intercom does not record or store speech; while an alert sounds it only checks whether a reply is an acknowledgement.
 
 **Why did `announce({ wait: true })` reject after the announcement was accepted?**
-`wait` polls `getAnnouncement`, which needs `intercom:read` as well as `intercom:send`; a poll can also fail on a 429 or the network. The announcement exists and the rejection has no id. Pass an `idempotencyKey` and reuse it to retry, so the text is not said twice.
+`wait` polls `getAnnouncement`, which needs `intercom:read` as well as `intercom:send`; a poll can also fail on a 429 or the network. The announcement exists and the rejection has no id. Pass a fresh `idempotencyKey` (`crypto.randomUUID()`) and call again with that same key: the API replays the stored announcement, with its id, and does not say it twice.
+
+**Why did my second announcement say nothing, and the result is the first one?**
+The same `idempotencyKey` replays the stored announcement (`Idempotency-Replayed: true`) for 24 hours and never sends again, whatever its status. You reused a key (or a constant like `"dinner"`). Use a fresh `crypto.randomUUID()` per announcement you mean to send; to send the same text again on purpose, use a new key.
+
+**`announce` rejected with `ThalovantHubUnreachableError`. Can I send again with the same key?**
+Not to send again: a replayed `failed` announcement stays `failed`. The hub may have spoken it. Read `getAnnouncement(hubId, error.announcementId)`, and only if nothing was spoken use a new key.
+
+**How do I stop an urgent announcement that is repeating?**
+`cancelAnnouncement(hubId, announcementId)` (`intercom:send`): status `cancelled`, `hub_confirmed: false` when the hub could not confirm. Only while `sending`, else `ThalovantNotCancellableError` (409). Other controls: the hub's switch, the platform kill switch, a speaker's `receive`, and somebody acknowledging by voice.
+
+**Why is `getAnnouncement(hubId, "..")` refused?**
+An id that is `.`, `..`, empty, or holds `/`, `?`, `#`, a backslash or a control character is refused before any request: a dot segment would change the route.
 
 **Why was nobody spoken to?**
 A speaker is skipped unless its `receive` is true (`skipped_not_receiving`, even for urgent); a normal announcement is skipped inside quiet hours (`skipped_dnd`; urgent bypasses them); an offline speaker is `offline`. `ThalovantIntercomDisabledError` means the hub's switch is off or it is a kid or public hub.

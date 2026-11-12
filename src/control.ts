@@ -40,6 +40,7 @@ import {
   announceBody,
   announcementFromRecord,
   announcementListFromRecord,
+  intercomId,
   intercomSettingsBody,
   intercomSettingsFromRecord,
   intercomSpeakerFromRecord,
@@ -66,6 +67,7 @@ import {
   ThalovantDeviceLoginPendingError,
   ThalovantHubUnreachableError,
   ThalovantIntercomDisabledError,
+  ThalovantNotCancellableError,
   ThalovantPlanError,
   ThalovantRateLimitedError,
   ThalovantTimeoutError,
@@ -2307,10 +2309,10 @@ export class ThalovantControlPlane {
   // Intercom: `/v1/hubs/{hub_id}/intercom`.
   //
   // Announce-only text spoken aloud on a hub's speakers; not a certified
-  // safety system. Reads need `intercom:read`, `announce()` `intercom:send`,
-  // settings and speakers `hubs:write`. The platform never stores the text.
-  // Named `announce` and `*Intercom*` because the mesh already has an
-  // `intercom` frame.
+  // safety system. Reads need `intercom:read`, `announce()` and
+  // `cancelAnnouncement()` `intercom:send`, settings and speakers
+  // `hubs:write`. The API does not store the text. Named `announce` and
+  // `*Intercom*` because the mesh already has an `intercom` frame.
   // -------------------------------------------------------------------------
 
   /** A hub's intercom switch and whether it can be turned on. Requires `intercom:read`. */
@@ -2347,8 +2349,8 @@ export class ThalovantControlPlane {
   /**
    * Say `text` aloud on a hub's speakers (`POST .../intercom/announce`). The
    * text is 1-280 characters, trimmed, with no control characters, and is
-   * spoken aloud in a home; the platform keeps only its hash and length.
-   * Not a certified safety system.
+   * spoken aloud in a home; the API keeps only a keyed hash of it and its
+   * length. Not a certified safety system.
    *
    * An urgent announcement may carry `repeat`; it is said again until somebody
    * acknowledges, and the call returns at once with status `sending`. A normal
@@ -2365,16 +2367,36 @@ export class ThalovantControlPlane {
    * the POST and then refused at the first poll, and a poll can fail for other
    * reasons (a 429, the network): the promise then rejects after the
    * announcement was accepted, and the caller has no announcement id. Always
-   * pass an `idempotencyKey` with `wait` and reuse it to retry, so a retry is
-   * not announced a second time.
+   * pass a fresh `idempotencyKey` with `wait`: calling again with that same
+   * key replays the stored announcement, with its id, and does not announce a
+   * second time.
    *
-   * `idempotencyKey`, when given, is sent as `Idempotency-Key`; keep it to
-   * retry after an uncertain outcome without speaking twice. Requires
-   * `intercom:send`. Intercom off is {@link ThalovantIntercomDisabledError}, an
-   * unreachable hub {@link ThalovantHubUnreachableError}, a rate limit
+   * **Idempotency.** `idempotencyKey`, when given, is sent as
+   * `Idempotency-Key`. Use a **fresh unique key** (`crypto.randomUUID()`) for
+   * each announcement you mean to send, and reuse it only to repeat the *same*
+   * attempt after a network drop or timeout. The key is scoped to the hub and
+   * lasts 24 hours: the same key replays the stored announcement (response
+   * header `Idempotency-Replayed: true`) and **never sends again**, whatever
+   * its status; a replayed `failed` announcement stays `failed`. To send the
+   * same text again on purpose, use a **new** key. After a
+   * {@link ThalovantHubUnreachableError} (502 `hub_unreachable`) read the
+   * announcement first (`error.announcementId`, then {@link getAnnouncement})
+   * before sending again: the hub may have spoken it. A constant key such as
+   * `"dinner"` would silence every later announcement for 24 hours.
+   *
+   * **Timeout.** The API waits up to ten seconds for the hub. This SDK sets no
+   * request timeout of its own; a `signal` that aborts sooner than twenty
+   * seconds can report a spoken announcement as failed, so give `announce` at
+   * least 20 s. If it rejects without an answer, the outcome is unknown: call
+   * again with the **same** key to find out.
+   *
+   * Requires `intercom:send`. Intercom off is
+   * {@link ThalovantIntercomDisabledError}, an unreachable hub
+   * {@link ThalovantHubUnreachableError}, a rate limit
    * {@link ThalovantRateLimitedError}.
    */
   async announce(hubId: string, options: AnnounceOptions): Promise<Announcement> {
+    const path = intercomPath(hubId, "announce"); // an invalid hub id is refused before anything is sent
     const body = announceBody(options);
     const pollMs = options.pollIntervalMs ?? 2000;
     if (typeof pollMs !== "number" || !Number.isFinite(pollMs) || pollMs <= 0) {
@@ -2392,7 +2414,7 @@ export class ThalovantControlPlane {
       headers["Idempotency-Key"] = options.idempotencyKey;
     }
     let announcement = announcementFromRecord(
-      await this.request("POST", intercomPath(hubId, "announce"), { body, headers, signal: options.signal }),
+      await this.request("POST", path, { body, headers, signal: options.signal }),
     );
     if (!options.wait || announcement.status !== "sending") return announcement;
     const repeat = body.repeat as { times: number; interval_seconds: number } | undefined;
@@ -2427,6 +2449,24 @@ export class ThalovantControlPlane {
   async getAnnouncement(hubId: string, announcementId: string, signal?: AbortSignal): Promise<Announcement> {
     const path = intercomPath(hubId, "announcements", intercomSegment(announcementId, "announcementId"));
     return announcementFromRecord(await this.request("GET", path, { signal }));
+  }
+
+  /**
+   * Stop an urgent announcement that is still repeating
+   * (`POST .../announcements/{id}/cancel`). Resolves with the announcement,
+   * status `cancelled`. Only while it is `sending`: one that already
+   * completed, failed or was cancelled is a
+   * {@link ThalovantNotCancellableError} (409 `not_cancellable`). The API asks
+   * the hub to stop repeating; a hub that cannot confirm still leaves the
+   * record `cancelled` and the answer has `hub_confirmed: false`: then speech
+   * already queued on the hub may still play, and the hub's own stop paths
+   * (the hub switch, the platform kill switch, somebody acknowledging) remain.
+   * Requires `intercom:send` (owner or admin of the hub); a hub-scoped token is
+   * honoured. Not a certified safety system.
+   */
+  async cancelAnnouncement(hubId: string, announcementId: string, signal?: AbortSignal): Promise<Announcement> {
+    const path = intercomPath(hubId, "announcements", intercomSegment(announcementId, "announcementId"), "cancel");
+    return announcementFromRecord(await this.request("POST", path, { signal }));
   }
 
   /** A hub's announcements, newest first; continue with `next_cursor`. Requires `intercom:read`. */
@@ -3023,13 +3063,11 @@ export class ThalovantControlPlane {
 }
 
 function intercomPath(hubId: string, ...rest: string[]): string {
-  if (typeof hubId !== "string" || !hubId.trim()) throw new TypeError("hubId must be a non-empty string.");
-  return [`/v1/hubs/${encodeURIComponent(hubId)}/intercom`, ...rest].join("/");
+  return [`/v1/hubs/${encodeURIComponent(intercomId(hubId, "hubId"))}/intercom`, ...rest].join("/");
 }
 
 function intercomSegment(value: string, name: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new TypeError(`${name} must be a non-empty string.`);
-  return encodeURIComponent(value);
+  return encodeURIComponent(intercomId(value, name));
 }
 
 function bridgePath(bridgeId: string): string {
@@ -3204,6 +3242,7 @@ function apiError(
   }
   if (error.code === "intercom_disabled") return new ThalovantIntercomDisabledError(message, options);
   if (status === 502 && error.code === "hub_unreachable") return new ThalovantHubUnreachableError(message, options);
+  if (status === 409 && error.code === "not_cancellable") return new ThalovantNotCancellableError(message, options);
   if (status === 429) return new ThalovantRateLimitedError(message, options);
   return error;
 }

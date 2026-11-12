@@ -267,40 +267,118 @@ A 402 (Free plan) and a 403 `plan_limit` (`problem.resource` is
 
 Say a short text aloud on a hub's speakers. Off by default at every level, announce-only,
 and **not a certified safety system**: it does not replace smoke or CO alarms, medical
-alert devices or emergency services. The platform never stores the text. (The names are
-`announce` and `*Intercom*`: the HiveMind mesh already has an `intercom` frame.)
-Scopes: `intercom:read`, `intercom:send` (plus `intercom:read` with `wait`), and `hubs:write` for settings and speakers.
+alert devices or emergency services. The API does not store the text (it keeps a keyed hash
+and the length), and intercom does not record or store speech: while an alert sounds, the hub
+only checks whether a reply is an acknowledgement. (The names are `announce` and `*Intercom*`:
+the HiveMind mesh already has an `intercom` frame.)
+Scopes: `intercom:read`, `intercom:send` (announce and cancel; plus `intercom:read` with `wait`), and `hubs:write` for settings and speakers.
 
 ```ts
 await api.setIntercomSettings(hubId, true);                                   // hubs:write
 const [speaker] = (await api.listIntercomSpeakers(hubId)).items;               // intercom:read; use its client_id
 await api.updateIntercomSpeaker(hubId, speaker.client_id, { receive: true, room: "kitchen" });
-const said = await api.announce(hubId, { text: "Dinner is ready", targets: { rooms: ["kitchen"] } });
+
+// A fresh unique key for each announcement you mean to send (see "Idempotency keys" below).
+const said = await api.announce(hubId, {
+  text: "Dinner is ready", targets: { rooms: ["kitchen"] }, idempotencyKey: crypto.randomUUID(),
+});
 console.log(said.status, said.deliveries.map((d) => `${d.name}: ${d.status}`));
 
 const urgent = await api.announce(hubId, {
   text: "Please answer", targets: { all: true }, priority: "urgent",
-  repeat: { times: 3, interval_seconds: 20 }, idempotencyKey: "please-answer-1",
+  repeat: { times: 3, interval_seconds: 20 }, idempotencyKey: crypto.randomUUID(),
   wait: true,                          // polls while `sending`; needs intercom:read as well
 });
 console.log(urgent.status, urgent.acked_by);
+
+// Changed your mind, or sent it to the wrong room? Stop it while it is still repeating.
+const sent = await api.announce(hubId, {
+  text: "Wake up", targets: { all: true }, priority: "urgent",
+  repeat: { times: 10, interval_seconds: 60 }, idempotencyKey: crypto.randomUUID(),
+});
+const stopped = await api.cancelAnnouncement(hubId, sent.id);   // intercom:send
+console.log(stopped.status, stopped.hub_confirmed);              // "cancelled", true when the hub confirmed
 ```
+
+### Idempotency keys: one fresh key per announcement
+
+Pass `idempotencyKey: crypto.randomUUID()` for every announcement you mean to send. The API
+scopes a key to `(hub, key)` and remembers it for 24 hours:
+
+- **The same key replays the stored announcement** (the response header is
+  `Idempotency-Replayed: true`) and **never sends again**, whatever its status. A replayed
+  `failed` announcement stays `failed`; it is not retried.
+- **A constant key silences you.** A literal key such as `"dinner"` sends once; every later
+  announcement with that key, for 24 hours, returns the first one's answer and nothing is
+  spoken. Never copy a literal key into real code, and never derive it from the text or the date.
+- **Reuse a key only for the same attempt**, after a network drop or a timeout: the call then
+  returns what the first attempt did (and its id) instead of speaking twice.
+- **To send the same text again on purpose, use a new key.**
+- **After a 502 `hub_unreachable`** (`ThalovantHubUnreachableError`) the hub may or may not have
+  spoken. The API recorded the attempt as a `failed` announcement and puts its id in the problem
+  body: `error.announcementId`. Read it with `getAnnouncement(hubId, error.announcementId)` and look
+  at the deliveries before you send again. Resending with the **same** key will not retry (it
+  replays the `failed` record); a deliberate second send needs a **new** key.
+
+```ts
+try {
+  await api.announce(hubId, { text: "Dinner is ready", targets: { rooms: ["kitchen"] }, idempotencyKey: key });
+} catch (error) {
+  if (error instanceof ThalovantHubUnreachableError && error.announcementId) {
+    const recorded = await api.getAnnouncement(hubId, error.announcementId);  // what did the hub do?
+    console.log(recorded.status, recorded.deliveries.map((d) => `${d.name}: ${d.status}`));
+  }
+}
+```
+
+### Stopping an announcement
+
+An urgent announcement that repeats can be stopped. These are the real controls:
+
+- **`cancelAnnouncement(hubId, announcementId)`** (`intercom:send`, owner or admin of the hub)
+  asks the hub to stop repeating and resolves with the announcement as `cancelled`. It works only
+  while the status is `sending`; for one that already completed, failed or was cancelled the API
+  answers 409 `not_cancellable` (`ThalovantNotCancellableError`). If the hub cannot confirm the
+  cancel, the record is still `cancelled` and `hub_confirmed` is `false`: speech already queued
+  on the hub may still play.
+- **The hub's Intercom switch** (`setIntercomSettings(hubId, false)`, `hubs:write`) takes effect
+  when the hub's runtime updates, which can take as long as a rollout; the hub's repeat loop
+  also stops by itself when it sees the switch off.
+- **The platform kill switch** (operator side) and a speaker whose `receive` is turned off also
+  stop the repeats.
+- **Somebody answering at a speaker.** An urgent announcement stops being repeated once it is
+  acknowledged by voice ("I'm okay", "got it", "stop").
+
+Nothing here is instant for sound that is already playing, and none of it makes intercom a
+safety system.
+
+### Ids and timeouts
+
+The hub id, a speaker's `client_id` and an announcement id are each one path segment. The SDK
+refuses, before any request, an id that is empty or blank, is `.` or `..` (dot segments), or
+holds `/`, `?`, `#`, a backslash or a control character (`TypeError` for a non-string or blank
+one, `RangeError` for the rest). The API waits up to ten seconds for the hub, and this SDK sets
+no request timeout of its own: if you pass a `signal` that aborts after a timeout, give
+`announce` at least 20 seconds.
 
 `wait: true` needs **`intercom:read` as well as `intercom:send`** (the polls are
 `getAnnouncement`), validates `waitTimeoutMs` (finite, not negative) and `pollIntervalMs`
 (finite, above zero) before anything is sent, and bounds each poll by the deadline; `signal`
 cancels the sleep at once. A poll can fail after the announcement was accepted (a token with
 only `intercom:send` is refused at the first poll; a 429; the network): the promise rejects and
-you have no announcement id, so always pass an `idempotencyKey` with `wait` and reuse it to retry.
+you have no announcement id, so always pass a fresh `idempotencyKey` with `wait`: calling again
+with that same key replays the stored announcement (with its id) and does not announce a second time.
 
 Targets are arrays of names (a bare string such as `{ speakers: "ab" }` is refused, never split
 into `a` and `b`), and a speaker's `dnd.enabled` must be a real boolean (the API replaces the
 whole do-not-disturb object, so a missing or non-boolean value is refused, not sent as `false`).
 
 Refusals are `ThalovantIntercomDisabledError` (switch off, kid or public hub),
-`ThalovantHubUnreachableError` (502: the text may or may not have been spoken; retry with
-the same `idempotencyKey`), `ThalovantRateLimitedError` (`retryAfterSeconds`) and
-`ThalovantPlanError` (HTTP 402, or 403 with `plan_limit`).
+`ThalovantHubUnreachableError` (502: the text may or may not have been spoken; `announcementId`
+names the recorded `failed` announcement: read it before sending again, and use a new key, because
+the same key replays the failed record), `ThalovantNotCancellableError` (409 `not_cancellable`),
+`ThalovantRateLimitedError` (`retryAfterSeconds`) and `ThalovantPlanError` (HTTP 402, or 403 with
+`plan_limit`).
 
 ## Documentation
 
