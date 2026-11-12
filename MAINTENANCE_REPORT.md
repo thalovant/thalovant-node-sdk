@@ -1,10 +1,16 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): announce, speakers and settings on the control plane.
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: CodeRabbit review of PR 112: wait validation and deadline, strict targets and DND, docs corrections; digest 66bfb1ac5879.
 
 # Maintenance report
 
+## 2026-11-11 - Intercom review fixes (CodeRabbit, PR 112; Python digest `66bfb1ac5879`)
+
+`announce({ wait: true })` validates `waitTimeoutMs` and `pollIntervalMs` (finite numbers; `waitTimeoutMs` not negative) before the POST; its sleep is `sleepAtLeast` on `options.signal` (abortable, re-armed on the monotonic clock) and each status read runs under `boundedSignal` for what is left of the wait, with no read once the sleep used the deadline; a read cut by the deadline returns the latest `sending` answer, a caller abort rejects with `AbortError`. A target list must be an array (a bare string is a `TypeError`, not split), and `dnd.enabled` must be a boolean (missing or invalid is a `TypeError`; the API replaces the whole DND object and stores a missing `enabled` as false). The package root now exports the intercom models and limits explicitly (the helpers `announceBody`, `speakerUpdateBody`, `intercomSettingsBody` and the readers are no longer exported; `test/intercom.test.ts` imports them from `src/intercom.js`). Docs: `wait` needs `intercom:read` too and a poll can fail after the POST (reuse the idempotency key), 402 is listed with 403 `plan_limit`, and the 502 `hub_unreachable` doc no longer says a retry is safe. Not changed: the reader's lenient booleans (`plan_allowed` absent reads as false), see AUDIT. Verification: `npm test`, `tsc`, parity check against the Python reference.
+
+Transparency Report: AI model Claude Sonnet 5.5; actions: fixed the review findings, added tests, refreshed the parity record; oversight: none yet, review pending.
+
 ## 2026-11-11 - Intercom (0.12.0)
 
-Ported the `intercom` capability from thalovant-python-sdk 0.12.0 (digest `690784dbb9af`): `src/intercom.ts`, seven `ThalovantControlPlane` methods, three errors, `test/intercom.test.ts` (loopback fake API), parity record, README, QUICK_FACTS, FAQ, AUDIT, CHANGELOG. Evidence hashes of `src/control.ts` and `src/errors.ts` were refreshed for the other capabilities after `npm test` passed: the change to both is additive.
+Ported the `intercom` capability from thalovant-python-sdk 0.12.0 (digest `690784dbb9af`, since moved to `66bfb1ac5879`): `src/intercom.ts`, seven `ThalovantControlPlane` methods, three errors, `test/intercom.test.ts` (loopback fake API), parity record, README, QUICK_FACTS, FAQ, AUDIT, CHANGELOG. Evidence hashes of `src/control.ts` and `src/errors.ts` were refreshed for the other capabilities after `npm test` passed: the change to both is additive.
 
 Transparency Report: AI model Claude Sonnet 5.5; actions: wrote the module, methods, tests, docs and parity record from the contract and the Python reference; oversight: none yet, review pending.
 

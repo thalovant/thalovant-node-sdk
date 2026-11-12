@@ -1,4 +1,4 @@
-<!-- Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): announce, speakers and settings on the control plane. -->
+<!-- Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: CodeRabbit review of PR 112: wait validation and deadline, strict targets and DND, docs corrections. -->
 
 <p align="center">
   <picture>
@@ -269,24 +269,38 @@ Say a short text aloud on a hub's speakers. Off by default at every level, annou
 and **not a certified safety system**: it does not replace smoke or CO alarms, medical
 alert devices or emergency services. The platform never stores the text. (The names are
 `announce` and `*Intercom*`: the HiveMind mesh already has an `intercom` frame.)
-Scopes: `intercom:read`, `intercom:send`, and `hubs:write` for settings and speakers.
+Scopes: `intercom:read`, `intercom:send` (plus `intercom:read` with `wait`), and `hubs:write` for settings and speakers.
 
 ```ts
 await api.setIntercomSettings(hubId, true);                                   // hubs:write
-await api.updateIntercomSpeaker(hubId, "kitchen", { receive: true, room: "kitchen" });
+const [speaker] = (await api.listIntercomSpeakers(hubId)).items;               // intercom:read; use its client_id
+await api.updateIntercomSpeaker(hubId, speaker.client_id, { receive: true, room: "kitchen" });
 const said = await api.announce(hubId, { text: "Dinner is ready", targets: { rooms: ["kitchen"] } });
 console.log(said.status, said.deliveries.map((d) => `${d.name}: ${d.status}`));
 
 const urgent = await api.announce(hubId, {
   text: "Please answer", targets: { all: true }, priority: "urgent",
-  repeat: { times: 3, interval_seconds: 20 }, wait: true,          // polls while `sending`
+  repeat: { times: 3, interval_seconds: 20 }, idempotencyKey: "please-answer-1",
+  wait: true,                          // polls while `sending`; needs intercom:read as well
 });
 console.log(urgent.status, urgent.acked_by);
 ```
 
+`wait: true` needs **`intercom:read` as well as `intercom:send`** (the polls are
+`getAnnouncement`), validates `waitTimeoutMs` (finite, not negative) and `pollIntervalMs`
+(finite, above zero) before anything is sent, and bounds each poll by the deadline; `signal`
+cancels the sleep at once. A poll can fail after the announcement was accepted (a token with
+only `intercom:send` is refused at the first poll; a 429; the network): the promise rejects and
+you have no announcement id, so always pass an `idempotencyKey` with `wait` and reuse it to retry.
+
+Targets are arrays of names (a bare string such as `{ speakers: "ab" }` is refused, never split
+into `a` and `b`), and a speaker's `dnd.enabled` must be a real boolean (the API replaces the
+whole do-not-disturb object, so a missing or non-boolean value is refused, not sent as `false`).
+
 Refusals are `ThalovantIntercomDisabledError` (switch off, kid or public hub),
-`ThalovantHubUnreachableError` (nothing was spoken), `ThalovantRateLimitedError`
-(`retryAfterSeconds`) and `ThalovantPlanError`.
+`ThalovantHubUnreachableError` (502: the text may or may not have been spoken; retry with
+the same `idempotencyKey`), `ThalovantRateLimitedError` (`retryAfterSeconds`) and
+`ThalovantPlanError` (HTTP 402, or 403 with `plan_limit`).
 
 ## Documentation
 

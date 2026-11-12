@@ -1,4 +1,4 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): announce, speakers and settings on the control plane.
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): wait scope after the PR 112 review.
 
 # Quick facts: @thalovant/sdk
 
@@ -63,7 +63,7 @@ Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): announce,
 
 ## Intercom (0.12.0; scopes `intercom:read`, `intercom:send`, `hubs:write`)
 
-Announce-only text spoken aloud on a hub's speakers. Not a certified safety system; the platform never stores the text. Named `announce` / `*Intercom*`: the mesh already has an `intercom` frame.
+`announce({ wait: true })` also needs `intercom:read` (it polls `getAnnouncement`). Announce-only text spoken aloud on a hub's speakers. Not a certified safety system; the platform never stores the text. Named `announce` / `*Intercom*`: the mesh already has an `intercom` frame.
 
 | Call | Endpoint | Returns |
 |---|---|---|
@@ -75,5 +75,5 @@ Announce-only text spoken aloud on a hub's speakers. Not a certified safety syst
 | `getAnnouncement(hubId, id)` | `GET /v1/hubs/{id}/intercom/announcements/{id}` | `Announcement` |
 | `listAnnouncements(hubId, { limit?, cursor? })` | `GET /v1/hubs/{id}/intercom/announcements` | `AnnouncementList` |
 
-- Models: `src/intercom.ts`. Errors (`src/errors.ts`): `ThalovantIntercomDisabledError`, `ThalovantHubUnreachableError`, `ThalovantRateLimitedError`.
+- Models: `src/intercom.ts`. Errors (`src/errors.ts`): `ThalovantIntercomDisabledError`, `ThalovantHubUnreachableError` (502; the text may or may not have been spoken: retry with the same `idempotencyKey`), `ThalovantRateLimitedError`; the plan error is HTTP 402 or 403 `plan_limit` (`ThalovantPlanError`).
 - Tests: `test/chat-apps.test.ts`.

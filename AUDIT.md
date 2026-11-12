@@ -1,6 +1,14 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): announce, speakers and settings on the control plane.
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: CodeRabbit review of PR 112: a poll can fail after an accepted announcement; lenient settings reader kept.
 
 # Audit
+
+## Intercom (0.12.0): a poll that fails after the POST leaves an accepted announcement
+
+`ThalovantControlPlane.announce({ wait: true })` (`src/control.ts`) sends the POST, then polls `getAnnouncement`, which needs `intercom:read`. A token with only `intercom:send`, a 429 or a network error fails a poll after the announcement was accepted, and the rejection carries no announcement id (`test/intercom.test.ts`, "a failed poll rejects after the POST was accepted"). The answer is the `idempotencyKey`: reuse it to retry. Not fixed in the SDK because a rejection cannot also return the announcement; the README and the JSDoc say so.
+
+## Intercom (0.12.0): the settings reader is lenient
+
+`intercomSettingsFromRecord()` (`src/intercom.ts`) reads a missing `plan_allowed` or `enabled` as `false`, as the Python reference does (`IntercomSettings.from_dict`), so a successful answer that omits one looks like a denial. Kept for parity (an unverified review finding): the API always sends both (`app/schemas/intercom.py`, `IntercomSettingsResource`), and changing one SDK alone would break the shared behaviour.
 
 ## Intercom (0.12.0): the text is in the request body
 

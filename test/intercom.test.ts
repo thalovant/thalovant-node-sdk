@@ -15,9 +15,8 @@ import {
   ThalovantIntercomDisabledError,
   ThalovantPlanError,
   ThalovantRateLimitedError,
-  announceBody,
-  speakerUpdateBody,
 } from "../src/index.js";
+import { announceBody, speakerUpdateBody } from "../src/intercom.js";
 
 const HUB = "0f8a7c3e-2b1d-4c5e-9a6f-1d2c3b4a5e6f";
 const ANN = "7a1d6c1e-6f0b-4f43-9d7e-3f4f0d9a7c11";
@@ -40,6 +39,7 @@ function announcement(status = "completed", extra: Record<string, unknown> = {})
 async function fakeApi() {
   const seen: Seen[] = [];
   const replies = new Map<string, Reply[]>();
+  const delays = new Map<string, number>();
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
     req.on("data", (c) => chunks.push(c));
@@ -49,8 +49,11 @@ async function fakeApi() {
       seen.push({ method: req.method ?? "", path, query, headers: req.headers, body: raw ? JSON.parse(raw) : null });
       const queue = replies.get(`${req.method} ${path}`) ?? [];
       const [status, body, headers] = (queue.length > 1 ? queue.shift() : queue[0]) ?? [404, { detail: "nope" }];
-      res.writeHead(status, { "content-type": "application/json", ...(headers ?? {}) });
-      res.end(JSON.stringify(body));
+      setTimeout(() => {
+        if (res.destroyed) return;
+        res.writeHead(status, { "content-type": "application/json", ...(headers ?? {}) });
+        res.end(JSON.stringify(body));
+      }, delays.get(`${req.method} ${path}`) ?? 0);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -59,6 +62,7 @@ async function fakeApi() {
     seen,
     api: new ThalovantControlPlane(url, { accessToken: "tok" }),
     reply: (method: string, path: string, ...queue: Reply[]) => { replies.set(`${method} ${path}`, queue); },
+    delay: (method: string, path: string, ms: number) => { delays.set(`${method} ${path}`, ms); },
     close: () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }),
   };
 }
@@ -164,6 +168,7 @@ const errorCases: Array<[number, Record<string, unknown>, Record<string, string>
   [502, { code: "hub_unreachable", detail: "no hub" }, {}, ThalovantHubUnreachableError],
   [429, { code: "rate_limited", detail: "slow" }, { "Retry-After": "30" }, ThalovantRateLimitedError],
   [403, { code: "plan_limit", detail: "plan" }, {}, ThalovantPlanError],
+  [402, { detail: "API access requires a paid plan." }, {}, ThalovantPlanError],
   [403, { detail: "Insufficient scopes" }, {}, ThalovantAuthError],
   [422, { code: "validation", detail: "bad" }, {}, ThalovantApiError],
 ];
@@ -175,6 +180,7 @@ for (const [status, body, headers, kind] of errorCases) {
       await assert.rejects(fake.api.announce(HUB, { text: "hello", targets: { all: true } }), (error: any) => {
         assert.equal(error.constructor, kind);
         assert.equal(error.statusCode, status);
+        if ("code" in body) assert.equal(error.code, body.code);
         if (status === 429) assert.equal(error.retryAfterSeconds, 30);
         return true;
       });
@@ -205,6 +211,146 @@ test("nothing is sent for invalid input", async () => {
     await assert.rejects(fake.api.setIntercomSettings(HUB, "yes" as any));
     assert.equal(fake.seen.length, 0);
   } finally { await fake.close(); }
+});
+
+const URGENT = { text: "x", targets: { all: true }, priority: "urgent", repeat: { times: 1, interval_seconds: 5 }, wait: true } as const;
+
+test("a bad waitTimeoutMs or pollIntervalMs is refused before the POST", async () => {
+  const fake = await fakeApi();
+  try {
+    for (const waitTimeoutMs of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, "5" as any, true as any, null as any]) {
+      await assert.rejects(fake.api.announce(HUB, { ...URGENT, waitTimeoutMs }), /waitTimeoutMs/);
+    }
+    for (const pollIntervalMs of [Number.NaN, Number.POSITIVE_INFINITY, 0, -5, "2" as any, true as any]) {
+      await assert.rejects(fake.api.announce(HUB, { ...URGENT, pollIntervalMs }), /pollIntervalMs/);
+    }
+    assert.equal(fake.seen.length, 0); // nothing was announced
+  } finally { await fake.close(); }
+});
+
+test("a zero waitTimeoutMs returns the sending answer without polling", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announce`, [202, announcement("sending", { priority: "urgent" })]);
+    const result = await fake.api.announce(HUB, { ...URGENT, waitTimeoutMs: 0 });
+    assert.equal(result.status, "sending");
+    assert.deepEqual(fake.seen.map((s) => s.method), ["POST"]);
+  } finally { await fake.close(); }
+});
+
+test("the wait deadline bounds a stalled status read", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announce`, [202, announcement("sending", { priority: "urgent" })]);
+    fake.reply("GET", `${BASE}/announcements/${ANN}`, [200, announcement("completed")]);
+    fake.delay("GET", `${BASE}/announcements/${ANN}`, 5000); // a read that never answers in time
+    const started = performance.now();
+    const result = await fake.api.announce(HUB, { ...URGENT, waitTimeoutMs: 300, pollIntervalMs: 10 });
+    assert.equal(result.status, "sending"); // the latest answer: not an error, not a hang
+    assert.equal(result.id, ANN);
+    assert.ok(performance.now() - started < 3000);
+  } finally { await fake.close(); }
+});
+
+test("no read starts once the deadline passed during the sleep", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announce`, [202, announcement("sending", { priority: "urgent" })]);
+    fake.reply("GET", `${BASE}/announcements/${ANN}`, [200, announcement("completed")]);
+    const started = performance.now();
+    const result = await fake.api.announce(HUB, { ...URGENT, waitTimeoutMs: 40, pollIntervalMs: 30_000 });
+    assert.equal(result.status, "sending"); // the sleep was cut to the deadline, and no read followed
+    assert.deepEqual(fake.seen.map((s) => s.method), ["POST"]);
+    assert.ok(performance.now() - started < 3000);
+  } finally { await fake.close(); }
+});
+
+test("an abort cancels the polling sleep at once", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announce`, [202, announcement("sending", { priority: "urgent" })]);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 60);
+    const started = performance.now();
+    await assert.rejects(
+      fake.api.announce(HUB, { ...URGENT, waitTimeoutMs: 120_000, pollIntervalMs: 60_000, signal: controller.signal }),
+      (error: any) => error.name === "AbortError",
+    );
+    assert.ok(performance.now() - started < 3000); // not the 60 s sleep
+    assert.deepEqual(fake.seen.map((s) => s.method), ["POST"]);
+  } finally { await fake.close(); }
+});
+
+test("an abort during a status read rejects with AbortError, not the latest answer", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announce`, [202, announcement("sending", { priority: "urgent" })]);
+    fake.reply("GET", `${BASE}/announcements/${ANN}`, [200, announcement("completed")]);
+    fake.delay("GET", `${BASE}/announcements/${ANN}`, 5000);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 150);
+    await assert.rejects(
+      fake.api.announce(HUB, { ...URGENT, waitTimeoutMs: 120_000, pollIntervalMs: 10, signal: controller.signal }),
+      (error: any) => error.name === "AbortError",
+    );
+  } finally { await fake.close(); }
+});
+
+test("a failed poll rejects after the POST was accepted (the key is how to retry)", async () => {
+  const fake = await fakeApi();
+  try {
+    fake.reply("POST", `${BASE}/announce`, [202, announcement("sending", { priority: "urgent" })]);
+    fake.reply("GET", `${BASE}/announcements/${ANN}`, [403, { detail: "Insufficient scopes" }]);
+    await assert.rejects(
+      fake.api.announce(HUB, { ...URGENT, idempotencyKey: "k-1", pollIntervalMs: 5 }),
+      (error: any) => error instanceof ThalovantAuthError && error.statusCode === 403,
+    );
+    assert.deepEqual(fake.seen.map((s) => s.method), ["POST", "GET"]);
+    assert.equal(fake.seen[0].headers["idempotency-key"], "k-1");
+  } finally { await fake.close(); }
+});
+
+test("scalar or wrong-typed targets are refused, never split into characters", async () => {
+  const fake = await fakeApi();
+  try {
+    const bad: any[] = [
+      { speakers: "ab" }, { rooms: "kitchen" }, { groups: "kids" }, { speakers: 5 }, { speakers: { a: 1 } },
+      { speakers: ["a", 3] }, { speakers: new Set(["a"]) }, { all: "yes" }, { all: 1 },
+      { all: "true", speakers: ["a"] },
+    ];
+    for (const targets of bad) {
+      await assert.rejects(fake.api.announce(HUB, { text: "hi", targets }), /targets|names|non-empty|exactly one/);
+    }
+    await assert.rejects(fake.api.announce(HUB, { text: "hi", targets: { speakers: "ab" } as any }), TypeError);
+    assert.equal(fake.seen.length, 0);
+  } finally { await fake.close(); }
+});
+
+test("targets accept real arrays of names", () => {
+  assert.deepEqual(announceBody({ text: "hi", targets: { speakers: ["ab"] } }).targets, { speakers: ["ab"] });
+  assert.deepEqual(announceBody({ text: "hi", targets: { rooms: ["a", "b"] } }).targets, { rooms: ["a", "b"] });
+  assert.deepEqual(announceBody({ text: "hi", targets: { all: true } }).targets, { all: true });
+});
+
+test("an invalid dnd.enabled is refused, never turned into false", async () => {
+  const fake = await fakeApi();
+  try {
+    const bad: any[] = [
+      { enabled: "true" }, { enabled: "false" }, { enabled: 1 }, { enabled: 0 }, { enabled: null }, {}, // missing: never stored as false
+      { quiet_hours: { start: "22:00", end: "07:00", timezone: null } }, null, "yes",
+    ];
+    for (const dnd of bad) await assert.rejects(fake.api.updateIntercomSpeaker(HUB, "c1", { dnd }), TypeError);
+    assert.equal(fake.seen.length, 0);
+  } finally { await fake.close(); }
+});
+
+test("dnd with a real boolean is sent as given", () => {
+  assert.deepEqual(speakerUpdateBody({ dnd: { enabled: true } }).dnd, { enabled: true });
+  assert.deepEqual(speakerUpdateBody({ dnd: { enabled: false } }).dnd, { enabled: false });
+  assert.deepEqual(
+    speakerUpdateBody({ dnd: { enabled: true, quiet_hours: { start: "21:00", end: "06:30", timezone: null } } }).dnd,
+    { enabled: true, quiet_hours: { start: "21:00", end: "06:30", timezone: null } },
+  );
 });
 
 test("body builders", () => {

@@ -238,7 +238,12 @@ export function speakerUpdateBody(changes: IntercomSpeakerChanges): JsonRecord {
     body.groups = [...changes.groups];
   }
   if (changes.dnd !== undefined) {
-    const dnd: JsonRecord = { enabled: changes.dnd.enabled === true };
+    if (typeof changes.dnd !== "object" || changes.dnd === null) throw new TypeError("dnd must be an object.");
+    // The API replaces the whole do-not-disturb object and stores a missing
+    // `enabled` as false, so a value that is not a real boolean (or is missing)
+    // is refused, never read as false: that would switch DND off unasked.
+    if (typeof changes.dnd.enabled !== "boolean") throw new TypeError("dnd.enabled must be true or false.");
+    const dnd: JsonRecord = { enabled: changes.dnd.enabled };
     const hours = changes.dnd.quiet_hours;
     if (hours !== undefined && hours !== null) {
       if (!CLOCK.test(hours.start) || !CLOCK.test(hours.end)) throw new RangeError("quiet_hours start and end must be HH:MM.");
@@ -265,6 +270,14 @@ function targetsBody(targets: IntercomTargets): JsonRecord {
   const known = ["all", "speakers", "rooms", "groups"];
   const unknown = Object.keys(record).filter((key) => !known.includes(key));
   if (unknown.length) throw new RangeError(`Unknown target kind: ${unknown[0]}.`);
+  // A target list is an array of names: a bare string is refused, never split
+  // into characters (`{ speakers: "ab" }` must not become speakers "a" and "b").
+  for (const key of ["speakers", "rooms", "groups"]) {
+    if (record[key] !== undefined && !Array.isArray(record[key])) {
+      throw new TypeError(`targets.${key} must be an array of names, not a single value.`);
+    }
+  }
+  if (record.all !== undefined && typeof record.all !== "boolean") throw new TypeError("targets.all must be true.");
   const chosen = known.filter((key) => (key === "all" ? record.all === true : Array.isArray(record[key]) && (record[key] as unknown[]).length > 0));
   if (chosen.length !== 1 || Object.keys(record).filter((k) => record[k] !== undefined).length !== 1) {
     throw new RangeError("Choose exactly one of all, speakers, rooms or groups as targets.");

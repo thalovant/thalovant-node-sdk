@@ -2353,8 +2353,20 @@ export class ThalovantControlPlane {
    * An urgent announcement may carry `repeat`; it is said again until somebody
    * acknowledges, and the call returns at once with status `sending`. A normal
    * one waits up to ten seconds for the hub. With `wait`, a `sending`
-   * announcement is polled with {@link getAnnouncement} until it completes or
-   * `waitTimeoutMs` passes (the latest answer is returned, still `sending`).
+   * announcement is polled with {@link getAnnouncement} every `pollIntervalMs`
+   * until it completes or `waitTimeoutMs` passes (the latest answer is
+   * returned, still `sending`). `waitTimeoutMs` (finite, not negative) and
+   * `pollIntervalMs` (finite, above zero) are checked before anything is sent.
+   * The deadline bounds each status read as well as the sleep between reads,
+   * and `signal` cancels the sleep at once.
+   *
+   * **`wait` needs `intercom:read` as well as `intercom:send`**: the polls are
+   * {@link getAnnouncement}. A token with only `intercom:send` is accepted by
+   * the POST and then refused at the first poll, and a poll can fail for other
+   * reasons (a 429, the network): the promise then rejects after the
+   * announcement was accepted, and the caller has no announcement id. Always
+   * pass an `idempotencyKey` with `wait` and reuse it to retry, so a retry is
+   * not announced a second time.
    *
    * `idempotencyKey`, when given, is sent as `Idempotency-Key`; keep it to
    * retry after an uncertain outcome without speaking twice. Requires
@@ -2366,7 +2378,11 @@ export class ThalovantControlPlane {
     const body = announceBody(options);
     const pollMs = options.pollIntervalMs ?? 2000;
     if (typeof pollMs !== "number" || !Number.isFinite(pollMs) || pollMs <= 0) {
-      throw new RangeError("pollIntervalMs must be a positive number of milliseconds.");
+      throw new RangeError("pollIntervalMs must be a finite, positive number of milliseconds.");
+    }
+    const waitMs = options.waitTimeoutMs;
+    if (waitMs !== undefined && (typeof waitMs !== "number" || !Number.isFinite(waitMs) || waitMs < 0)) {
+      throw new RangeError("waitTimeoutMs must be a finite, non-negative number of milliseconds.");
     }
     const headers: Record<string, string> = {};
     if (options.idempotencyKey !== undefined) {
@@ -2380,11 +2396,29 @@ export class ThalovantControlPlane {
     );
     if (!options.wait || announcement.status !== "sending") return announcement;
     const repeat = body.repeat as { times: number; interval_seconds: number } | undefined;
-    const timeoutMs = options.waitTimeoutMs ?? (repeat ? repeat.times * repeat.interval_seconds * 1000 : 0) + 15000;
-    const deadline = Date.now() + timeoutMs;
-    while (announcement.status === "sending" && Date.now() < deadline) {
-      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))));
-      announcement = await this.getAnnouncement(hubId, announcement.id, options.signal);
+    const timeoutMs = waitMs ?? (repeat ? repeat.times * repeat.interval_seconds * 1000 : 0) + 15000;
+    const deadline = performance.now() + timeoutMs;
+    while (announcement.status === "sending") {
+      const left = deadline - performance.now();
+      if (left <= 0) break;
+      // Abortable, and the whole of it on the monotonic clock: a timer that
+      // fires early is re-armed, so a sleep cut to the deadline ends at it.
+      await sleepAtLeast(Math.min(pollMs, left), options.signal);
+      // With nothing left after the sleep, no read starts at all.
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      // Each read is bounded by what is left of the wait: a read the API is
+      // slow to answer must not carry the wait past its deadline.
+      const read = boundedSignal(options.signal, remaining);
+      try {
+        announcement = await this.getAnnouncement(hubId, announcement.id, read.signal);
+      } catch (error) {
+        if (options.signal?.aborted) throw abortError();
+        if (read.expired()) break; // the latest answer, still `sending`
+        throw error;
+      } finally {
+        read.dispose();
+      }
     }
     return announcement;
   }

@@ -252,7 +252,13 @@ export class ThalovantPlanError extends ThalovantApiError {}
  */
 export class ThalovantIntercomDisabledError extends ThalovantApiError {}
 
-/** The API could not reach the hub to speak (502 `hub_unreachable`). Nothing was said aloud; trying again is safe. */
+/**
+ * The API could not reach the hub to speak (502 `hub_unreachable`). Whether the
+ * text was spoken is not guaranteed either way: the hub may have spoken it and
+ * lost the answer. The API records the attempt. To retry, reuse the same
+ * `idempotencyKey` that `announce` was given, so a retry is not said a second
+ * time; a call made without one may be said twice.
+ */
 export class ThalovantHubUnreachableError extends ThalovantApiError {}
 
 /**
