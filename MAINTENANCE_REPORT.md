@@ -1,5 +1,3 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-12 - Motive: Intercom review fixes, round 2 (CodeRabbit PR 112): wait deadline raced against a fetch that ignores abort, urgent-scope code before the generic scope refusal, docs aligned with the API; Python digest a0722fec2c54.
-
 # Maintenance report
 
 ## 2026-11-14 - Home bridges and link rules (0.13.0; Python digest `8687c8429e28`)

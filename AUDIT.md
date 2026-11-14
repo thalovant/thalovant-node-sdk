@@ -1,5 +1,3 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-12 - Motive: Intercom review round 2 (CodeRabbit PR 112): wait deadline vs a fetch that ignores abort, urgent-scope precedence, docs aligned with the API.
-
 # Audit
 
 ## Intercom (0.12.0): `AnnounceOptions` is a plain object, so `console.log(options)` prints the text (security review L4)

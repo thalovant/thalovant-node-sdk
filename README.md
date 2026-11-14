@@ -1,5 +1,3 @@
-<!-- Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: CodeRabbit review of PR 112: wait validation and deadline, strict targets and DND, docs corrections. -->
-
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thalovant/.github/main/profile/assets/thalovant-logo-dark.png">
