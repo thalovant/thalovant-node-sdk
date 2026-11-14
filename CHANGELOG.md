@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.0 — Unreleased
+
+Home bridges and the rules around links. Every addition is new API and safe against the current one: it depends on thalovant-api #521, which is not deployed yet, and against an API without it every new field is simply absent. Ports thalovant-python-sdk 0.13.0 (reference digest `8687c8429e28`; its `docs/home-link-porting.md`, section "connector-connections (0.13.0)", is the brief). No shared vectors: `test/connector-connections.test.ts` mirrors the Python cases.
+
+- **`CONNECTION_TYPE_CONNECTOR`** (`"connector"`): a home bridge, a second link kind next to `home_assistant`. Name what it serves in `spec: { connectors: ["music_assistant"] }`; the SDK does not validate the ids, the API does.
+- **Credentials come from the platform.** An `apiKey` or `password` in the spec is ignored by the API; the identity is the one in the answer's `initial_identify`. An answer with none that is not a replay keeps the old fallback.
+- **Replay.** A create answered from an earlier request with the same `idempotencyKey` (header `Idempotent-Replayed: true`, or a `replay` marker with `code: "idempotent_replay"`) carries no credentials. `createClientIdentity()` now rejects with `ThalovantCredentialsNotReplayedError` (`client` is the resource without credentials, `clientId` its id) and never returns an identity the SDK made up. `BootstrapIdentityResult.replayed` is always false on a result you hold. (Not the intercom header `Idempotency-Replayed`.)
+- **`serves`** on the create result: `serves` (`devices`, `count`, `warning`; undefined for other kinds and from an older API) and `servesWarning` (null when there is none).
+- **Typed errors**, by status and code, read at the top of the problem or inside an object `detail`: `ThalovantConnectionTypeUnavailableError` (422 `connection_type_unavailable`, `reason`; a kind of `ThalovantUnsupportedConnectionTypeError`, so existing handlers keep working), `ThalovantConnectorsInvalidError` (`reason`, `known`), `ThalovantOwnerOnlyBesideLinkError` (three 403 codes, `linkClientId`), `ThalovantHubScaleOutBreaksLinksError` (`links`), `ThalovantIdempotencyKeySpentError` and `ThalovantPrivateHubOnlyError` (`settings`). A code the SDK does not list is an ordinary `ThalovantApiError`. The codes are exported as `ConnectionProblemCode`.
+- Version: 0.12.0 is already published to npm, so this is the next minor.
+- The `connector-connections` parity capability is recorded (required); the evidence hashes of `src/control.ts` and `src/errors.ts` in the other entries are refreshed (both changed additively), and the Python reference digest is acknowledged beside the existing ones.
+
 ## 0.12.0 — Unreleased
 
 Intercom. Every addition is new API. Ports thalovant-python-sdk 0.12.0 (reference digest `69badc4fb072`; its `docs/intercom-porting.md` is the brief).

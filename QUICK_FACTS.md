@@ -5,7 +5,7 @@ Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom (0.12.0): wait scop
 | Fact | Value |
 | :--- | :--- |
 | Package | `@thalovant/sdk` (npm) |
-| Version | 0.12.0 (`package.json`, `src/version.ts` `SDK_VERSION`) |
+| Version | 0.13.0 (`package.json`, `src/version.ts` `SDK_VERSION`) |
 | Licence | MIT |
 | Runtime | Node.js 20 or newer; browsers through the package's `browser` map (`platform/node.js`, `loopback.js` and `transport-mqtt.js` swapped for their browser twins) |
 | Entry point | `dist/src/index.js` (ESM), types `dist/src/index.d.ts` |
