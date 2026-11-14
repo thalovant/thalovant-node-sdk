@@ -1,5 +1,3 @@
-Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Intercom amendment 2 and the final API: urgent scope, can_play, replayed, platform switch.
-
 # FAQ
 
 **Why does an urgent `announce` reject with `ThalovantUrgentScopeRequiredError`?**
