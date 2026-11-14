@@ -63,11 +63,16 @@ import {
   ThalovantApiError,
   ThalovantApiUnreachableError,
   ThalovantAuthError,
+  ThalovantConnectionTypeUnavailableError,
+  ThalovantConnectorsInvalidError,
+  ThalovantCredentialsNotReplayedError,
   ThalovantDeviceLoginDeniedError,
   ThalovantDeviceLoginExpiredError,
   ThalovantDeviceLoginPendingError,
   ThalovantHubLockedError,
+  ThalovantHubScaleOutBreaksLinksError,
   ThalovantHubUnreachableError,
+  ThalovantIdempotencyKeySpentError,
   ThalovantImpersonationNotAllowedError,
   ThalovantIntercomDisabledError,
   ThalovantIntercomNotConfiguredError,
@@ -76,7 +81,9 @@ import {
   ThalovantManagedClientError,
   ThalovantNotASpeakerError,
   ThalovantNotCancellableError,
+  ThalovantOwnerOnlyBesideLinkError,
   ThalovantPlanError,
+  ThalovantPrivateHubOnlyError,
   ThalovantRateLimitedError,
   ThalovantReservedNameError,
   ThalovantSkillNotInstalledError,
@@ -87,6 +94,7 @@ import {
   ThalovantUrgentBusyError,
   ThalovantUrgentScopeRequiredError,
 } from "./errors.js";
+import { ConnectionProblemCode } from "./errors.js";
 import { ThalovantIdentity } from "./identity.js";
 import { openExternalUrl, randomBytes, randomUUID } from "./platform/node.js";
 import {
@@ -140,6 +148,12 @@ export const HOME_ASSISTANT_SCOPES: readonly string[] = Object.freeze(["hubs:rea
 export const HOME_ASSISTANT_CLIENT_ID = "thalovant-home-assistant";
 /** `spec.connection_type` of a Home Assistant link. */
 export const CONNECTION_TYPE_HOME_ASSISTANT = "home_assistant";
+/**
+ * `spec.connection_type` of a home bridge: a link that serves the connector ids
+ * in `spec.connectors` (`music_assistant` today). Home Assistant has the kind
+ * above and is never one of a bridge's connectors.
+ */
+export const CONNECTION_TYPE_CONNECTOR = "connector";
 /** Milliseconds between two reads of an operation the caller is waiting on. */
 export const DEFAULT_OPERATION_POLL_INTERVAL_MS = 2_000;
 /**
@@ -202,6 +216,21 @@ export interface BootstrapIdentityResult {
    * returned one. `waitForAdmission()` follows it.
    */
   operation?: OperationResource;
+  /**
+   * True when the API answered from an earlier create with the same
+   * `Idempotency-Key`. A replay carries no credentials, so `createClientIdentity()`
+   * throws {@link ThalovantCredentialsNotReplayedError} instead of returning
+   * one: this is always false on a result you hold.
+   */
+  replayed: boolean;
+  /**
+   * What a new link will serve: `devices` (`id`, `name`, `connection_type`,
+   * `active`), `count` and `warning`. Present for a `home_assistant` or
+   * `connector` link; undefined for any other kind and from an API that does not say.
+   */
+  serves?: JsonRecord;
+  /** The warning in `serves` (this link will serve none of the account's devices), or null when there is none. */
+  servesWarning: string | null;
   asObject(options?: { includeSecrets?: boolean }): Record<string, unknown>;
 }
 
@@ -2781,13 +2810,17 @@ export class ThalovantControlPlane {
     // generated apiKey/password/cryptoKey can be scrubbed from any thrown
     // error: this route echoes the sent spec on validation failures.
     let client: JsonRecord;
+    let answerHeaders: Pick<Headers, "get"> | undefined;
     try {
-      client = await this.request("POST", "/v1/clients", {
+      ({ body: client, headers: answerHeaders } = await this.requestWithHeaders("POST", "/v1/clients", {
         body: payload,
         headers: { "Idempotency-Key": options.idempotencyKey ?? randomUUID() },
         redactSecrets: [apiKey, password],
-      });
+      }));
     } catch (error) {
+      // Only an error no typed mapping claimed gets the text check: a `connectors_invalid`
+      // whose detail names connection_type stays itself.
+      if (Object.getPrototypeOf(error) !== ThalovantApiError.prototype) throw error;
       if (connectionType !== undefined && error instanceof ThalovantApiError && refusesConnectionType(error)) {
         throw new ThalovantUnsupportedConnectionTypeError(
           `The Thalovant API cannot create a ${JSON.stringify(connectionType)} connection yet.`,
@@ -2795,6 +2828,15 @@ export class ThalovantControlPlane {
         );
       }
       throw error;
+    }
+    if (isReplay(client, answerHeaders)) {
+      throw new ThalovantCredentialsNotReplayedError(
+        "This create was answered from an earlier request with the same Idempotency-Key. " +
+          "The connection exists, but its credentials were in the first answer only and are " +
+          "not stored. Download its identity from the owner's session, or delete it and " +
+          "create it again with a new key.",
+        { client: withoutSecretKeys(client) },
+      );
     }
     if (connectionType !== undefined) await this.requireConnectionType(client, connectionType);
     const protocols = HubProtocolSettings.from(hubResource);
@@ -2820,6 +2862,7 @@ export class ThalovantControlPlane {
     });
     const clientSpec = isRecord(client.spec) ? client.spec : {};
     const operation = operationOrUndefined(client.operation);
+    const serves = isRecord(client.serves) ? { ...client.serves } : undefined;
     return {
       identity,
       hub: hubResource,
@@ -2829,6 +2872,9 @@ export class ThalovantControlPlane {
       clientId: typeof client.id === "string" && client.id ? client.id : undefined,
       connectionType: typeof clientSpec.connection_type === "string" ? clientSpec.connection_type : undefined,
       operation,
+      replayed: false,
+      serves,
+      servesWarning: typeof serves?.warning === "string" && serves.warning ? serves.warning : null,
       asObject(resultOptions: { includeSecrets?: boolean } = {}) {
         const includeSecrets = resultOptions.includeSecrets ?? false;
         return {
@@ -3336,9 +3382,38 @@ function apiError(
   if (status === 409 && error.code === "home_assistant_already_linked") {
     return new ThalovantAlreadyLinkedError(message, { ...options, clientId: linkedClientId(error.problem) });
   }
+  const connectionKind = error.code === undefined ? undefined : CONNECTION_ERROR_KINDS.get(`${status} ${error.code}`);
+  if (connectionKind !== undefined) return new connectionKind(message, options);
   if (intercomKind !== undefined) return new intercomKind(message, options);
   if (status === 429) return new ThalovantRateLimitedError(message, options);
   return error;
+}
+
+/** The typed error of each connection problem, by status and `code`. */
+const CONNECTION_ERROR_KINDS: ReadonlyMap<string, new (message?: string, options?: ConstructorParameters<typeof ThalovantApiError>[1]) => ThalovantApiError> =
+  new Map([
+    [`422 ${ConnectionProblemCode.CONNECTION_TYPE_UNAVAILABLE}`, ThalovantConnectionTypeUnavailableError],
+    [`422 ${ConnectionProblemCode.CONNECTION_TYPE_UNKNOWN}`, ThalovantUnsupportedConnectionTypeError],
+    [`422 ${ConnectionProblemCode.CONNECTION_TYPE_AMBIGUOUS}`, ThalovantUnsupportedConnectionTypeError],
+    [`422 ${ConnectionProblemCode.CONNECTORS_INVALID}`, ThalovantConnectorsInvalidError],
+    [`403 ${ConnectionProblemCode.DEVICE_OWNER_ONLY}`, ThalovantOwnerOnlyBesideLinkError],
+    [`403 ${ConnectionProblemCode.SETUP_SESSION_OWNER_ONLY}`, ThalovantOwnerOnlyBesideLinkError],
+    [`403 ${ConnectionProblemCode.DEVICE_IDENTITY_OWNER_ONLY}`, ThalovantOwnerOnlyBesideLinkError],
+    [`409 ${ConnectionProblemCode.HUB_SCALE_OUT_BREAKS_LINKS}`, ThalovantHubScaleOutBreaksLinksError],
+    [`409 ${ConnectionProblemCode.IDEMPOTENCY_KEY_SPENT}`, ThalovantIdempotencyKeySpentError],
+    [`422 ${ConnectionProblemCode.SKILL_CONFIG_PRIVATE_HUB_ONLY}`, ThalovantPrivateHubOnlyError],
+  ]);
+
+/** True when a create was answered from an earlier request: `Idempotent-Replayed: true` or a `replay` marker. */
+function isReplay(client: JsonRecord, headers: Pick<Headers, "get"> | undefined): boolean {
+  let header: string | null | undefined;
+  try {
+    header = headers?.get("Idempotent-Replayed");
+  } catch {
+    header = undefined;
+  }
+  if ((header ?? "").trim().toLowerCase() === "true") return true;
+  return isRecord(client.replay) && client.replay.code === ConnectionProblemCode.IDEMPOTENT_REPLAY;
 }
 
 /** The typed error of each intercom problem `code`, whatever the status. */

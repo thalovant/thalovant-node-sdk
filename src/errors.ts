@@ -518,6 +518,133 @@ export class ThalovantAlreadyLinkedError extends ThalovantApiError {
 export class ThalovantUnsupportedConnectionTypeError extends ThalovantApiError {}
 
 /**
+ * The `code` of every refusal the connection routes gained with home links and
+ * home bridges. Read `code` first; the typed error for each is named in its
+ * comment. A code not listed here is a plain {@link ThalovantApiError}, with
+ * `code` and `problem` either way.
+ */
+export const ConnectionProblemCode = Object.freeze({
+  /** 422: no link on this hub; `reason` is `hub_operated_by_another_account`. {@link ThalovantConnectionTypeUnavailableError} */
+  CONNECTION_TYPE_UNAVAILABLE: "connection_type_unavailable",
+  /** 422: the kind is not one the API creates; `known` lists the ones it does. {@link ThalovantUnsupportedConnectionTypeError} */
+  CONNECTION_TYPE_UNKNOWN: "connection_type_unknown",
+  /** 422: `connection_type` and `connectionType` were both sent and differ. {@link ThalovantUnsupportedConnectionTypeError} */
+  CONNECTION_TYPE_AMBIGUOUS: "connection_type_ambiguous",
+  /** 422: a home bridge's connector list is empty, repeated or names an id it may not serve. {@link ThalovantConnectorsInvalidError} */
+  CONNECTORS_INVALID: "connectors_invalid",
+  /** 403: only the account owner, from their own session, may add a device beside a home link. {@link ThalovantOwnerOnlyBesideLinkError} */
+  DEVICE_OWNER_ONLY: "device_owner_only_beside_home_link",
+  /** 403: the same, for a device's setup session. {@link ThalovantOwnerOnlyBesideLinkError} */
+  SETUP_SESSION_OWNER_ONLY: "setup_session_owner_only_beside_home_link",
+  /** 403: the same, for downloading a device's identity. {@link ThalovantOwnerOnlyBesideLinkError} */
+  DEVICE_IDENTITY_OWNER_ONLY: "device_identity_owner_only_beside_home_link",
+  /** 409: a hub with links does not scale out; `links` counts them. {@link ThalovantHubScaleOutBreaksLinksError} */
+  HUB_SCALE_OUT_BREAKS_LINKS: "hub_scale_out_breaks_links",
+  /** 409: the `Idempotency-Key` made something that was since removed; send a new key. {@link ThalovantIdempotencyKeySpentError} */
+  IDEMPOTENCY_KEY_SPENT: "idempotency_key_spent",
+  /** 422: the setting is not for a public hub; `settings` names them. {@link ThalovantPrivateHubOnlyError} */
+  SKILL_CONFIG_PRIVATE_HUB_ONLY: "skill_config_private_hub_only",
+  /** Not an error code: the `replay.code` of a connection answered from an earlier request with the same key. */
+  IDEMPOTENT_REPLAY: "idempotent_replay",
+} as const);
+
+/**
+ * A link cannot be made on this hub (422 `connection_type_unavailable`). A
+ * kind of {@link ThalovantUnsupportedConnectionTypeError}, so code that
+ * handles that keeps working. {@link reason} is `hub_operated_by_another_account`
+ * when another account runs the hub: a link (`home_assistant` or `connector`)
+ * is made only on your own hub or one Thalovant runs. Not retryable there.
+ */
+export class ThalovantConnectionTypeUnavailableError extends ThalovantUnsupportedConnectionTypeError {
+  /** Why (an open value), or undefined when the body did not say. */
+  get reason(): string | undefined {
+    return problemString(this.problem, "reason");
+  }
+}
+
+/**
+ * A home bridge's `spec.connectors` was refused (422 `connectors_invalid`).
+ * {@link reason} is `duplicate`, `own_kind` (`home_assistant` has a kind of its
+ * own) or `unknown_or_malformed`; {@link known} lists the ids a bridge may serve.
+ */
+export class ThalovantConnectorsInvalidError extends ThalovantApiError {
+  /** `duplicate`, `own_kind` or `unknown_or_malformed` (an open value), or undefined. */
+  get reason(): string | undefined {
+    return problemString(this.problem, "reason");
+  }
+
+  /** The connector ids a bridge may serve; empty when the body did not say. */
+  get known(): readonly string[] {
+    return problemStrings(this.problem, "known");
+  }
+}
+
+/**
+ * A device was added beside a home link by anybody but the account owner (403
+ * `device_owner_only_beside_home_link`, `setup_session_owner_only_beside_home_link`
+ * or `device_identity_owner_only_beside_home_link`). {@link linkClientId} names
+ * the link. The owner does it from their own session, never an impersonated one.
+ */
+export class ThalovantOwnerOnlyBesideLinkError extends ThalovantApiError {
+  /** The link that closes this, or undefined when the body did not say. */
+  get linkClientId(): string | undefined {
+    return problemString(this.problem, "link_client_id");
+  }
+}
+
+/**
+ * A hub's change would scale it out while it carries links (409
+ * `hub_scale_out_breaks_links`). {@link links} counts them. Remove the links first.
+ */
+export class ThalovantHubScaleOutBreaksLinksError extends ThalovantApiError {
+  /** How many links the hub carries, or undefined when the body did not say. */
+  get links(): number | undefined {
+    const value = problemMember(this.problem, "links");
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+  }
+}
+
+/** An `Idempotency-Key` made something that has since been removed (409 `idempotency_key_spent`). Send the request again with a new key. */
+export class ThalovantIdempotencyKeySpentError extends ThalovantApiError {}
+
+/**
+ * A setting is for a private hub only (422 `skill_config_private_hub_only`):
+ * the music skill's direct route is refused while the skill set serves a
+ * public hub. {@link settings} names them.
+ */
+export class ThalovantPrivateHubOnlyError extends ThalovantApiError {
+  /** The refused settings by name; empty when the body did not say. */
+  get settings(): readonly string[] {
+    return problemStrings(this.problem, "settings");
+  }
+}
+
+/**
+ * A connection create was answered from an earlier request with the same
+ * `Idempotency-Key` (header `Idempotent-Replayed: true`, or a `replay` marker
+ * in the body). The connection exists, but its credentials were in the first
+ * answer only and the platform does not store them. The SDK never hands back an
+ * identity it generated itself. {@link client} is the replayed resource without
+ * credentials: download the identity from the owner's session, or delete the
+ * connection and create it again with a new key.
+ */
+export class ThalovantCredentialsNotReplayedError extends ThalovantError {
+  /** The replayed resource, without credentials. */
+  readonly client: Record<string, unknown>;
+
+  constructor(message?: string, options?: ErrorOptions & { client?: Record<string, unknown> }) {
+    super(message, options);
+    this.client = isRecord(options?.client) ? { ...options.client } : {};
+  }
+
+  /** The connection's id. */
+  get clientId(): string | undefined {
+    const id = this.client.id;
+    return typeof id === "string" ? id : undefined;
+  }
+}
+
+/**
  * One device sign-in poll found nobody had decided yet.
  *
  * Poll again after `interval` seconds (`intervalMs` milliseconds), which a
