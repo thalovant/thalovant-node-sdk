@@ -249,3 +249,31 @@ test("an unlisted code stays a plain API error", async () => {
     assert.equal(Object.getPrototypeOf(error), ThalovantApiError.prototype);
   });
 });
+
+test("a connectors refusal that names connection_type stays itself", async () => {
+  const body = {
+    detail: "Invalid connectors for connection_type connector",
+    code: "connectors_invalid",
+    reason: "duplicate",
+    known: ["music_assistant"],
+  };
+  await serving({ status: 422, body }, async (api) => {
+    const error = await api
+      .createClientIdentity(HUB, { name: "Bridge", connectionType: "connector" })
+      .then(() => assert.fail("created"), (caught: unknown) => caught);
+    assert.ok(error instanceof ThalovantConnectorsInvalidError);
+    assert.equal(error.reason, "duplicate");
+    assert.deepEqual(error.known, ["music_assistant"]);
+  });
+});
+
+test("the unknown-kind codes are unsupported on any call", async () => {
+  for (const code of ["connection_type_unknown", "connection_type_ambiguous"]) {
+    await serving(problem(422, code), async (api) => {
+      const error = await api
+        .createClient({ hub_id: "hub-1", name: "x", spec: {} })
+        .then(() => assert.fail("created"), (caught: unknown) => caught);
+      assert.ok(error instanceof ThalovantUnsupportedConnectionTypeError);
+    });
+  }
+});

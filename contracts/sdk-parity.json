@@ -2,7 +2,7 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/control.ts": "2c6478a4b4574dbe08716b37d704c00c0c7765f9b47b43e5ce838ae84663fd98",
+        "src/control.ts": "229967366da8f1407c7bf9d7bea1e2c19e390654c1bcb76787b99f2707ebb081",
         "src/errors.ts": "df41a93b52768ce30bbce89dad95eb1c2c6020d2a36c0d47e987e2495983a227",
         "src/redact.ts": "4ee1dba0811e1ef920ab1b224057ce9665cd582a65d7bf2c913a27365540151f"
       },
@@ -40,7 +40,7 @@
     },
     "browser-login": {
       "implementation": {
-        "src/control.ts": "2c6478a4b4574dbe08716b37d704c00c0c7765f9b47b43e5ce838ae84663fd98",
+        "src/control.ts": "229967366da8f1407c7bf9d7bea1e2c19e390654c1bcb76787b99f2707ebb081",
         "src/errors.ts": "df41a93b52768ce30bbce89dad95eb1c2c6020d2a36c0d47e987e2495983a227",
         "src/loopback.browser.ts": "27a0f3f2afa43625c52787b237b49af6698c9e0d1c0056de2e116c9de973b1ef",
         "src/loopback.ts": "47692cdff6591a7c3ba9539dab89d11e480f080a8ed3c0e97e49b4704bca106c",
@@ -63,7 +63,7 @@
     "chat-apps": {
       "implementation": {
         "src/chat-apps.ts": "3028dd30586b0c3e36d28f188259238ddb62145eea097c348f82744dbbac1687",
-        "src/control.ts": "2c6478a4b4574dbe08716b37d704c00c0c7765f9b47b43e5ce838ae84663fd98",
+        "src/control.ts": "229967366da8f1407c7bf9d7bea1e2c19e390654c1bcb76787b99f2707ebb081",
         "src/errors.ts": "df41a93b52768ce30bbce89dad95eb1c2c6020d2a36c0d47e987e2495983a227"
       },
       "reason": "ThalovantControlPlane in src/control.ts calls every owner route under /v1/bridges (listChatAppConnectors, getBridgeNetworks, listBridges, createBridge, getBridge, updateBridge with If-Match only when an etag is given, replaceBridgeToken, replaceBridgeSecrets, listBridgeChats, sendBridgeTestMessage, getBridgeAvatar as bytes and content type, deleteBridge); src/chat-apps.ts holds the snake_case models, their readers (open enumerations, documented defaults for absent optional members), the request bodies (exactly one of token and secrets, refused locally otherwise; connector, never network) and SecretValue, which prints [redacted] in every form and is read with reveal() only to build a body. ThalovantApiError.fields in src/errors.ts reads the problem's fields at its top or inside an object detail, strings only. test/chat-apps.test.ts drives each route through a scripted fetch and proves a fake token or secret never reaches the SecretValue's printed forms, the caller's options, an error the API echoed it in, or a network failure.",
@@ -78,7 +78,7 @@
     },
     "connection-admission": {
       "implementation": {
-        "src/control.ts": "2c6478a4b4574dbe08716b37d704c00c0c7765f9b47b43e5ce838ae84663fd98",
+        "src/control.ts": "229967366da8f1407c7bf9d7bea1e2c19e390654c1bcb76787b99f2707ebb081",
         "src/errors.ts": "df41a93b52768ce30bbce89dad95eb1c2c6020d2a36c0d47e987e2495983a227"
       },
       "reason": "waitForAdmission() follows the create's operation with GET /v1/operations/{id}, every read bounded by what is left of the wait: ready resolves, failed and timed_out reject with ThalovantAdmissionFailedError(errorCode, no status), 404 and no operation resolve at once, a 5xx is ridden out, and a 429 waits max(poll interval, the problem's retry_after_seconds, else Retry-After, else RateLimit-Reset), a timeout at once when that is more than is left. 401 and 403 pass through as the API's own error (ThalovantAuthError), an API out of reach as ThalovantApiUnreachableError, and any other refusal of the wait is ThalovantAdmissionFailedError keeping statusCode, code, detail and problem. The deadline rejects with ThalovantAdmissionTimeoutError (instanceof both ThalovantConnectionError and ThalovantTimeoutError), ending \"it may still admit it later\"; waits are re-armed on the monotonic clock. A links.self on another origin (scheme, host, port) is never fetched. Run against the shared admission vectors over a loopback node:http peer that sends the case's headers, with {api_host}/{api_port} filled in and a closed port for an unreachable API.",
@@ -95,7 +95,7 @@
     },
     "connection-kinds": {
       "implementation": {
-        "src/control.ts": "2c6478a4b4574dbe08716b37d704c00c0c7765f9b47b43e5ce838ae84663fd98",
+        "src/control.ts": "229967366da8f1407c7bf9d7bea1e2c19e390654c1bcb76787b99f2707ebb081",
         "src/errors.ts": "df41a93b52768ce30bbce89dad95eb1c2c6020d2a36c0d47e987e2495983a227"
       },
       "reason": "createClientIdentity(hub, { connectionType }) sends spec.connection_type and requireConnectionType() deletes (If-Match: the answer's etag) and refuses a client whose answer does not repeat it; a 422 whose detail or code, or a validation error's loc or msg (never its echoed input), names connection_type is ThalovantUnsupportedConnectionTypeError, and apiError() classes 402/403 plan_limit as ThalovantPlanError, 409 home_assistant_already_linked as ThalovantAlreadyLinkedError with clientId, and 401/423/403 'Insufficient scopes' as ThalovantAuthError, all keeping statusCode, code and detail. deleteClient() reads the etag when none is given, retries one 412 and counts 404 as deleted. Run against the shared connection-kinds vectors over a loopback node:http peer that checks method, path, body subset and If-Match of every request.",
@@ -112,18 +112,18 @@
     },
     "connector-connections": {
       "implementation": {
-        "src/control.ts": "2c6478a4b4574dbe08716b37d704c00c0c7765f9b47b43e5ce838ae84663fd98",
+        "src/control.ts": "229967366da8f1407c7bf9d7bea1e2c19e390654c1bcb76787b99f2707ebb081",
         "src/errors.ts": "df41a93b52768ce30bbce89dad95eb1c2c6020d2a36c0d47e987e2495983a227"
       },
       "reason": "createClientIdentity() sends the connector ids in spec.connectors for CONNECTION_TYPE_CONNECTOR (a home bridge beside home_assistant) and takes the identity from the answer's initial_identify, since the platform issues the credentials (an answer with none that is not a replay keeps the locally generated fallback). An answer to a repeated Idempotency-Key, recognised by the response header Idempotent-Replayed: true (never the intercom spelling) or a replay marker whose code is idempotent_replay, rejects with ThalovantCredentialsNotReplayedError carrying the resource without credentials and its clientId, and never returns an identity the SDK made up. BootstrapIdentityResult gains replayed, serves (devices, count, warning) and servesWarning (null when none). apiError() maps by status and code, read at the top of the problem or inside an object detail: 422 connection_type_unavailable is ThalovantConnectionTypeUnavailableError (a kind of ThalovantUnsupportedConnectionTypeError, reason), 422 connectors_invalid ThalovantConnectorsInvalidError (reason, known), the three 403 owner-only codes ThalovantOwnerOnlyBesideLinkError (linkClientId), 409 hub_scale_out_breaks_links ThalovantHubScaleOutBreaksLinksError (links), 409 idempotency_key_spent ThalovantIdempotencyKeySpentError and 422 skill_config_private_hub_only ThalovantPrivateHubOnlyError (settings); any other code is an ordinary ThalovantApiError, and ConnectionProblemCode exports the codes. Additive and safe against an API without these fields. No shared vectors: test/connector-connections.test.ts mirrors the Python cases over a loopback node:http API.",
       "status": "required",
       "tests": {
-        "test/connector-connections.test.ts": "a2e845e9b8fe9ed4cf4ed2ce70ac9e8c31bb56bbd46736b9a6a4a24dfa12e189"
+        "test/connector-connections.test.ts": "c8e7403e42e5f767e19d51bff1997ff9cab06a8bf4ef815dae1f176223c340fe"
       }
     },
     "control": {
       "implementation": {
-        "src/control.ts": "2c6478a4b4574dbe08716b37d704c00c0c7765f9b47b43e5ce838ae84663fd98",
+        "src/control.ts": "229967366da8f1407c7bf9d7bea1e2c19e390654c1bcb76787b99f2707ebb081",
         "src/hubs.ts": "a433cc7fedc611068193d60c2568e0f94f93fcc8579b85c32f2247220606d98c",
         "src/native-auth.ts": "bcd3e1499966ba1c251e7dda8488d60eea58213ca29507290278b4bf80910c87",
         "src/slashes.ts": "887aebfc62b545e0343037416127d96496248b28fe1209f582c86bbb30e11f9d"
@@ -155,7 +155,7 @@
     },
     "device-login": {
       "implementation": {
-        "src/control.ts": "2c6478a4b4574dbe08716b37d704c00c0c7765f9b47b43e5ce838ae84663fd98",
+        "src/control.ts": "229967366da8f1407c7bf9d7bea1e2c19e390654c1bcb76787b99f2707ebb081",
         "src/errors.ts": "df41a93b52768ce30bbce89dad95eb1c2c6020d2a36c0d47e987e2495983a227"
       },
       "reason": "beginDeviceLogin() (an empty scope list left out, as in loginWithBrowser(); clientId sent as client_id when given, HOME_ASSISTANT_CLIENT_ID for Home Assistant, and left out otherwise, in both) returns a DeviceAuthorization (DeviceAuthorization.fromGrant refuses a verification URL that is not http(s), has no host or carries credentials); each pollDeviceLogin() is one POST /v1/auth/device/token that resolves with an ApiToken kept as accessToken and tokenId, or rejects with ThalovantDeviceLoginPendingError (interval lengthened by five seconds for good per device code on slow_down), ThalovantDeviceLoginExpiredError or ThalovantDeviceLoginDeniedError, every other failure through apiError() with the api-errors fields; revokeApiToken() revokes and forgets the token the SDK signed in with, a 401 on its own revoke counting as revoked and a second revoke sending nothing; every sign-in (device, password, native) resets tokenId. describeDeviceLogin(userCode) reads GET /v1/auth/device/codes/{userCode} into a DeviceLoginRequest whose clientVerified is true only with a clientId. A 2xx token answer that is not a JSON object is an error with no status. Neither the device code nor the token is printed by an error (a refused poll scrubs the device code from the message and from problem), console.log or util.inspect. Run against the shared device-login vectors, each served in order by a loopback node:http peer that checks every request (body, Authorization) and read back through the public control plane. loginWithBrowser() runs on a private deviceLogin() that interactiveLogin() shares; only interactiveLogin() passes it an AbortSignal, which pollDeviceToken() honours between polls and in its requests. loginWithBrowser()'s options, defaults, prints and errors are unchanged, as the device-login vectors show. A refused poll's problem (pending, denied, expired) is scrubbed of the device code once decoded, while the answer's kind is read from the body as sent. With interactiveLogin()'s signal, the authorize request and every poll (request and body) end on a cancel even when fetch ignores the signal, and a cancelled sign-in keeps no token that answers late.",
@@ -220,7 +220,7 @@
     },
     "intercom": {
       "implementation": {
-        "src/control.ts": "2c6478a4b4574dbe08716b37d704c00c0c7765f9b47b43e5ce838ae84663fd98",
+        "src/control.ts": "229967366da8f1407c7bf9d7bea1e2c19e390654c1bcb76787b99f2707ebb081",
         "src/errors.ts": "df41a93b52768ce30bbce89dad95eb1c2c6020d2a36c0d47e987e2495983a227",
         "src/intercom.ts": "519dccf3ad4181748c6363eb26710b60585c2a917d217181f961fe421e1f5cbc"
       },
@@ -380,7 +380,8 @@
     "a82b669bc2cbc499fe92ea549d3ea2535132f94bf35be0383fe786efd0284f6f",
     "69badc4fb072703e675ce50ae3a09765bf49cbf65efcc2fef5befb46f2b32a8c",
     "a0722fec2c5404d1b822e17b9da787370ad7630026c85c25d02f10dc66e8d003",
-    "8687c8429e2827ce098a22bfcdeee6545b8bfdf4a18d2ff4c1371eeb477b487c"
+    "8687c8429e2827ce098a22bfcdeee6545b8bfdf4a18d2ff4c1371eeb477b487c",
+    "45c675d3175249f07bc73589f88f049c8dbec34f0064515c8b176d5ef03c89fd"
   ],
   "schema_version": 1
 }

@@ -2818,7 +2818,9 @@ export class ThalovantControlPlane {
         redactSecrets: [apiKey, password],
       }));
     } catch (error) {
-      if (error instanceof ThalovantConnectionTypeUnavailableError) throw error;
+      // Only an error no typed mapping claimed gets the text check: a `connectors_invalid`
+      // whose detail names connection_type stays itself.
+      if (Object.getPrototypeOf(error) !== ThalovantApiError.prototype) throw error;
       if (connectionType !== undefined && error instanceof ThalovantApiError && refusesConnectionType(error)) {
         throw new ThalovantUnsupportedConnectionTypeError(
           `The Thalovant API cannot create a ${JSON.stringify(connectionType)} connection yet.`,
@@ -3391,6 +3393,8 @@ function apiError(
 const CONNECTION_ERROR_KINDS: ReadonlyMap<string, new (message?: string, options?: ConstructorParameters<typeof ThalovantApiError>[1]) => ThalovantApiError> =
   new Map([
     [`422 ${ConnectionProblemCode.CONNECTION_TYPE_UNAVAILABLE}`, ThalovantConnectionTypeUnavailableError],
+    [`422 ${ConnectionProblemCode.CONNECTION_TYPE_UNKNOWN}`, ThalovantUnsupportedConnectionTypeError],
+    [`422 ${ConnectionProblemCode.CONNECTION_TYPE_AMBIGUOUS}`, ThalovantUnsupportedConnectionTypeError],
     [`422 ${ConnectionProblemCode.CONNECTORS_INVALID}`, ThalovantConnectorsInvalidError],
     [`403 ${ConnectionProblemCode.DEVICE_OWNER_ONLY}`, ThalovantOwnerOnlyBesideLinkError],
     [`403 ${ConnectionProblemCode.SETUP_SESSION_OWNER_ONLY}`, ThalovantOwnerOnlyBesideLinkError],
