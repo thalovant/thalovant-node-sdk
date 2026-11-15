@@ -7,6 +7,7 @@ A create result no longer prints its credentials. Found by installing 0.13.1 fro
 - `BootstrapIdentityResult` has non-enumerable `toJSON()` (the redacted `asObject()`), `toString()` and a `util.inspect` hook, so `JSON.stringify(result)`, `console.log(result)`, `String(result)` and a template string show `[redacted]` for `identity`, `hub` and `client` secrets. `result.identity.accessKey`, `result.client` and `asObject({ includeSecrets: true })` return the real values on request. The members are not enumerable: a spread or `Object.keys` is unchanged.
 - `asObject()` (and so the display forms) also strips `user:pass@` from URLs inside the raw `hub` and `client` records, such as a data-plane endpoint.
 - The object `beginNativeSignIn()` returns hides `verifier` and `state`, and the `state` in its URL, from `console.log` and `String()`. `JSON.stringify` and the fields are unchanged, so an app can keep the attempt until the browser comes back.
+- Security hardening: upgrading from 0.13.1 is advised; 0.13.1 stays published. The connector ids named in the docs are `jellyfin` and `music_assistant`.
 - Unchanged by design: `JSON.stringify(identity)`, `JSON.stringify(apiToken)` and `JSON.stringify(deviceAuthorization)` keep their secrets, because that is how an app stores them (their `console.log` and `String()` redact). Evidence: `test/connector-connections.test.ts`.
 
 ## 0.13.0 — Unreleased
