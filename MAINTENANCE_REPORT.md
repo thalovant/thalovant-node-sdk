@@ -1,5 +1,13 @@
 # Maintenance report
 
+## 2026-11-15 - A create result printed its credentials (0.13.2)
+
+Installed `@thalovant/sdk` 0.13.1 from npm and ran the connector flow against a local mock: `JSON.stringify(result)` and `util.inspect(result)` of `createClientIdentity()` printed `identity.accessKey`, `identity.password` and the raw `client.initial_identify` / `client.spec` secrets (`src/control.ts`, the object literal returned by `createClientIdentity`; only `ThalovantIdentity` itself had an inspect hook, and its `JSON.stringify` keeps the values for persistence). Fix: `withRedactedDisplay()` adds non-enumerable `toJSON`, `toString` and `util.inspect.custom` to the result (backed by `asObject()`); `beginNativeSignIn()` (`src/native-auth.ts`) hides `verifier` and `state` from inspect and `String()`. `contracts/sdk-parity.json` has the new hashes for `src/control.ts`, `src/native-auth.ts` and the test file; the parity check passes. `VERSION`/`src/version.ts` are bumped by the Auto Release workflow (0.13.2).
+
+Verification: `npm test` (tsc build + `node --test`) 1089 tests, 1088 passed, 0 failed, 1 skipped; two are new (`test/connector-connections.test.ts`); `check-sdk-parity.py --consumer thalovant-node-sdk` verified. Not verified against a live API.
+
+Transparency Report: AI model Claude Sonnet 5.5; actions: reproduced the leak from the registry package, wrote `withRedactedDisplay`, the sign-in hook, tests and docs; oversight: PR review and CI only.
+
 ## 2026-11-14 - Home bridges and link rules (0.13.0; Python digest `8687c8429e28`)
 
 Ported `connector-connections` from thalovant-python-sdk 0.13.0: `CONNECTION_TYPE_CONNECTOR`, replay detection in `createClientIdentity()` (`ThalovantCredentialsNotReplayedError`), `serves`/`servesWarning`/`replayed` on `BootstrapIdentityResult`, six typed errors mapped in `apiError()` by status and code, and the `ConnectionProblemCode` constants (`src/control.ts`, `src/errors.ts`). Depends on thalovant-api #521 (not deployed); additive and safe against the old API. Version 0.12.0 to 0.13.0 (`package.json`, `package-lock.json`, `src/version.ts`). Tests: `test/connector-connections.test.ts` (19). Verification: `npm ci`, `npm test` 1085 tests, 1084 passed, 1 skipped, 0 failed (before: 1066); parity checker run against the Python worktree.

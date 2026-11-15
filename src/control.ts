@@ -112,6 +112,7 @@ import {
   redactSecretsInJsonNumbers,
   redactSecretsInString,
   redactUrlUserinfo,
+  withoutSecretKeysOrUrlCredentials,
   secretSpellings,
   withoutSecretKeys,
   type RedactOptions,
@@ -150,7 +151,7 @@ export const HOME_ASSISTANT_CLIENT_ID = "thalovant-home-assistant";
 export const CONNECTION_TYPE_HOME_ASSISTANT = "home_assistant";
 /**
  * `spec.connection_type` of a home bridge: a link that serves the connector ids
- * in `spec.connectors` (`music_assistant` today). Home Assistant has the kind
+ * in `spec.connectors` (`jellyfin` and `music_assistant` today). Home Assistant has the kind
  * above and is never one of a bridge's connectors.
  */
 export const CONNECTION_TYPE_CONNECTOR = "connector";
@@ -168,6 +169,26 @@ export const DEFAULT_ADMISSION_TIMEOUT_MS = 180_000;
  * browser-safe; browsers simply never call the method.
  */
 const customInspect: unique symbol = Symbol.for("nodejs.util.inspect.custom");
+
+/**
+ * Give a create result the display forms that never print a secret. The result
+ * holds the new connection's credentials (`identity`) and the raw `hub` and
+ * `client` records, which carry them too (`initial_identify`, the echoed spec
+ * `apiKey`/`password`), so `JSON.stringify(result)` and `console.log(result)`
+ * would otherwise print the access key and password. The three members are not
+ * enumerable, so they stay out of a spread or `Object.keys`; `asObject({
+ * includeSecrets: true })` and the fields themselves still return the real
+ * values on request.
+ */
+function withRedactedDisplay(result: BootstrapIdentityResult): BootstrapIdentityResult {
+  const redacted = (): string => `BootstrapIdentityResult ${JSON.stringify(result.asObject())}`;
+  Object.defineProperties(result, {
+    toJSON: { value: () => result.asObject(), enumerable: false },
+    toString: { value: redacted, enumerable: false },
+    [customInspect]: { value: redacted, enumerable: false },
+  });
+  return result;
+}
 
 /** Upper bound for the server detail kept in thrown API error messages. */
 const MAX_ERROR_DETAIL_LENGTH = 160;
@@ -2835,7 +2856,7 @@ export class ThalovantControlPlane {
           "The connection exists, but its credentials were in the first answer only and are " +
           "not stored. Download its identity from the owner's session, or delete it and " +
           "create it again with a new key.",
-        { client: withoutSecretKeys(client) },
+        { client: withoutSecretKeysOrUrlCredentials(client) },
       );
     }
     if (connectionType !== undefined) await this.requireConnectionType(client, connectionType);
@@ -2863,7 +2884,7 @@ export class ThalovantControlPlane {
     const clientSpec = isRecord(client.spec) ? client.spec : {};
     const operation = operationOrUndefined(client.operation);
     const serves = isRecord(client.serves) ? { ...client.serves } : undefined;
-    return {
+    const result: BootstrapIdentityResult = {
       identity,
       hub: hubResource,
       client,
@@ -2883,8 +2904,8 @@ export class ThalovantControlPlane {
           // initial_identify credential bundle plus the echoed spec apiKey/
           // password/cryptoKey), so both records are scrubbed unless the
           // caller explicitly opts in — the same gate the identity uses.
-          hub: includeSecrets ? hubResource : withoutSecretKeys(hubResource),
-          client: includeSecrets ? client : withoutSecretKeys(client),
+          hub: includeSecrets ? hubResource : withoutSecretKeysOrUrlCredentials(hubResource),
+          client: includeSecrets ? client : withoutSecretKeysOrUrlCredentials(client),
           selectedProtocol: endpoint?.protocol,
           // The endpoint can carry `user:pass@` userinfo, so the safe-to-log
           // form strips it, like the identity's own endpoints.
@@ -2893,6 +2914,7 @@ export class ThalovantControlPlane {
         };
       },
     };
+    return withRedactedDisplay(result);
   }
 
   /** Delete and refuse a connection the API did not make of the kind asked. */

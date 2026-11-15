@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.2 — Unreleased
+
+A create result no longer prints its credentials. Found by installing 0.13.1 from npm: `JSON.stringify(result)` and `console.log(result)` of `createClientIdentity()` printed the access key and password (the result is a plain object, so `identity`, `hub` and `client` were serialized as they are), although `asObject()` redacts. No exported signature changes.
+
+- `BootstrapIdentityResult` has non-enumerable `toJSON()` (the redacted `asObject()`), `toString()` and a `util.inspect` hook, so `JSON.stringify(result)`, `console.log(result)`, `String(result)` and a template string show `[redacted]` for `identity`, `hub` and `client` secrets. `result.identity.accessKey`, `result.client` and `asObject({ includeSecrets: true })` return the real values on request. The members are not enumerable: a spread or `Object.keys` is unchanged.
+- `asObject()` (and so the display forms) also strips `user:pass@` from URLs inside the raw `hub` and `client` records, such as a data-plane endpoint.
+- The object `beginNativeSignIn()` returns hides `verifier` and `state`, and the `state` in its URL, from `console.log` and `String()`. `JSON.stringify` and the fields are unchanged, so an app can keep the attempt until the browser comes back.
+- Security hardening: upgrading from 0.13.1 is advised; 0.13.1 stays published. The connector ids named in the docs are `jellyfin` and `music_assistant`.
+- Unchanged by design: `JSON.stringify(identity)`, `JSON.stringify(apiToken)` and `JSON.stringify(deviceAuthorization)` keep their secrets, because that is how an app stores them (their `console.log` and `String()` redact). Evidence: `test/connector-connections.test.ts`.
+
 ## 0.13.0 — Unreleased
 
 Home bridges and the rules around links. Every addition is new API and safe against the current one: it depends on thalovant-api #521, which is not deployed yet, and against an API without it every new field is simply absent. Ports thalovant-python-sdk 0.13.0 (reference digest `8687c8429e28`; its `docs/home-link-porting.md`, section "connector-connections (0.13.0)", is the brief). No shared vectors: `test/connector-connections.test.ts` mirrors the Python cases.

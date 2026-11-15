@@ -95,3 +95,9 @@
 - **Problem:** the MCP server (thalovant-mcp#125) needs the URL or the device code to answer its begin tool, and `interactiveLogin()` takes no `prompt`, as the reference's `interactive_login` takes none; MCP reads the URL from `openUrl` and the device code from its own `fetch`.
 - **Proposal:** add an optional `prompt` to the reference's `interactive_login` (and the brief's API table), receiving either the URL or the device grant with the method named, then port it. Adding it here alone would change an API shape the brief fixes.
 - **Impact:** medium for MCP; none for the vectors.
+
+## Make the persistence form of a secret an explicit call
+
+- **Problem:** `JSON.stringify(identity)`, `JSON.stringify(apiToken)` and `JSON.stringify(deviceAuthorization)` keep their secrets (a documented way to store them) and `login()` returns the API's raw token record; one stray `JSON.stringify` in a log line prints a token.
+- **Proposal:** make `toJSON()` redact and add an explicit `toPersistedJSON()` / `asObject({ includeSecrets: true })` for storage, in a minor release with a migration note.
+- **Impact:** removes the last silent route to a printed secret; a breaking change for callers that store with `JSON.stringify`.

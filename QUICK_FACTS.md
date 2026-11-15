@@ -56,6 +56,7 @@
 | `deleteBridge(bridgeId)` | `DELETE /v1/bridges/{id}` | `void` |
 
 - Models and open enumerations: `src/chat-apps.ts` (`Bridge`, `BridgeStatus`, `BridgeHold`, `ChatAppConnector`, `BridgeStatusReason` ...).
+- Create result display: `JSON.stringify(result)`, `console.log(result)`, `String(result)` print the redacted `asObject()` view (`withRedactedDisplay`, `src/control.ts`); `beginNativeSignIn()` hides `verifier`/`state` from inspect and `String()`.
 - Secrets: `SecretValue` (`src/chat-apps.ts`), printed as `[redacted]`, read with `reveal()`.
 - Errors: `ThalovantApiError.fields` (`src/errors.ts`), the setting or secret names a refusal is about.
 

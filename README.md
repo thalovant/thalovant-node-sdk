@@ -73,7 +73,8 @@ Keep `result.identity` secret: it holds the client credentials the hub uses. The
 raw hub and client records carry bootstrap credentials too. `result.asObject()`
 redacts the identity, hub and client credentials, and `result.asObject({
 includeSecrets: true })` returns the real ones, so use it only to persist the
-identity and never log it. The `selectedEndpoint` it reports is the URL as the
+identity and never log it. `JSON.stringify(result)`, `console.log(result)` and `String(result)` show
+the redacted view. The `selectedEndpoint` it reports is the URL as the
 API returned it, so do not log an endpoint that embeds credentials.
 
 ## Sign in

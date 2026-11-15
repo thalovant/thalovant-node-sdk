@@ -1,5 +1,9 @@
 # Audit
 
+## 2026-11-15 - Fixed in 0.13.2: `JSON.stringify(result)` / `console.log(result)` of a create result printed the credentials
+
+`createClientIdentity()` (`src/control.ts`) returned a plain object holding `identity`, `hub` and `client`; `asObject()` redacted, nothing else did. Now redacted by `withRedactedDisplay()`; tests in `test/connector-connections.test.ts` (`a create result never prints its credentials ...`). Open by design: `JSON.stringify(ThalovantIdentity)`, `ApiToken` and `DeviceAuthorization` keep their secrets because that is the documented way to store them (`test/sdk.test.ts` pins it for the identity); `login()` and `loginWithBrowser()` return the API's raw token record, which `console.log` prints as sent. Proposed in `SUGGESTIONS.md`.
+
 ## Intercom (0.12.0): `AnnounceOptions` is a plain object, so `console.log(options)` prints the text (security review L4)
 
 `AnnounceOptions` (`src/intercom.ts`) is an interface the caller builds; a `console.log(options)` or a logger that serialises it prints `text`. The Rust SDK redacts its `Debug` (the contract names Rust and Go only); in Node the SDK cannot change how the caller's own object prints. Documented in the porting brief; no SDK code logs it (`test/intercom.test.ts`). Not changed.

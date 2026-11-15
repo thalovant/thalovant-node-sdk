@@ -95,3 +95,7 @@ The configuration was unusable. A `token_endpoint` with a colon anywhere, or a `
 
 **Why does a callback's `error` sometimes not show in the error?**
 Only RFC 6749's seven codes (`invalid_request`, `unauthorized_client`, `access_denied`, `unsupported_response_type`, `invalid_scope`, `server_error`, `temporarily_unavailable`) are kept. Anything else was chosen by whoever opened the tab, and could be the state or a code.
+
+## Does `console.log(result)` or `JSON.stringify(result)` of `createClientIdentity()` print the access key and password?
+
+No (0.13.2 and later). The result prints `[redacted]` for `identity`, `hub` and `client` secrets through `toJSON()`, `toString()` and `util.inspect`; use `result.asObject({ includeSecrets: true })` or `result.identity.accessKey` on purpose to read them. Earlier versions printed them.
