@@ -5,7 +5,8 @@
 A create result no longer prints its credentials. Found by installing 0.13.1 from npm: `JSON.stringify(result)` and `console.log(result)` of `createClientIdentity()` printed the access key and password (the result is a plain object, so `identity`, `hub` and `client` were serialized as they are), although `asObject()` redacts. No exported signature changes.
 
 - `BootstrapIdentityResult` has non-enumerable `toJSON()` (the redacted `asObject()`), `toString()` and a `util.inspect` hook, so `JSON.stringify(result)`, `console.log(result)`, `String(result)` and a template string show `[redacted]` for `identity`, `hub` and `client` secrets. `result.identity.accessKey`, `result.client` and `asObject({ includeSecrets: true })` return the real values on request. The members are not enumerable: a spread or `Object.keys` is unchanged.
-- The object `beginNativeSignIn()` returns hides `verifier` and `state` from `console.log` and `String()`. `JSON.stringify` and the fields are unchanged, so an app can keep the attempt until the browser comes back.
+- `asObject()` (and so the display forms) also strips `user:pass@` from URLs inside the raw `hub` and `client` records, such as a data-plane endpoint.
+- The object `beginNativeSignIn()` returns hides `verifier` and `state`, and the `state` in its URL, from `console.log` and `String()`. `JSON.stringify` and the fields are unchanged, so an app can keep the attempt until the browser comes back.
 - Unchanged by design: `JSON.stringify(identity)`, `JSON.stringify(apiToken)` and `JSON.stringify(deviceAuthorization)` keep their secrets, because that is how an app stores them (their `console.log` and `String()` redact). Evidence: `test/connector-connections.test.ts`.
 
 ## 0.13.0 — Unreleased

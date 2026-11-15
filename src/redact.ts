@@ -66,6 +66,42 @@ export function withoutSecretKeys<T>(value: T): T {
 }
 
 /**
+ * Deep copy of a record with secret-named keys omitted ({@link withoutSecretKeys})
+ * and the `user:pass@` userinfo stripped from every string value that is a URL
+ * carrying it. The display form of a raw API record: it can hold a data-plane
+ * endpoint such as `wss://user:pass@host`.
+ */
+export function withoutSecretKeysOrUrlCredentials<T>(value: T): T {
+  if (typeof value === "string") {
+    return (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#\s]*@/.test(value) ? redactUrlUserinfo(value) : value) as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map(entry => withoutSecretKeysOrUrlCredentials(entry)) as unknown as T;
+  }
+  if (isRecord(value)) {
+    const result: UnknownRecord = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (isSecretKey(key)) continue;
+      result[key] = withoutSecretKeysOrUrlCredentials(entry);
+    }
+    return result as unknown as T;
+  }
+  return value;
+}
+
+/** Remove the `state` query parameter's value from an authorization URL, for display. */
+export function redactUrlState(value: string): string {
+  try {
+    const url = new URL(value);
+    if (!url.searchParams.has("state")) return value;
+    url.searchParams.set("state", REDACTED);
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Strip any `user:pass@` userinfo from a URL for display. Returns the input
  * unchanged when it carries no userinfo (or does not parse), so URLs without
  * credentials keep their exact original spelling — no trailing-slash churn.

@@ -112,6 +112,7 @@ import {
   redactSecretsInJsonNumbers,
   redactSecretsInString,
   redactUrlUserinfo,
+  withoutSecretKeysOrUrlCredentials,
   secretSpellings,
   withoutSecretKeys,
   type RedactOptions,
@@ -2855,7 +2856,7 @@ export class ThalovantControlPlane {
           "The connection exists, but its credentials were in the first answer only and are " +
           "not stored. Download its identity from the owner's session, or delete it and " +
           "create it again with a new key.",
-        { client: withoutSecretKeys(client) },
+        { client: withoutSecretKeysOrUrlCredentials(client) },
       );
     }
     if (connectionType !== undefined) await this.requireConnectionType(client, connectionType);
@@ -2903,8 +2904,8 @@ export class ThalovantControlPlane {
           // initial_identify credential bundle plus the echoed spec apiKey/
           // password/cryptoKey), so both records are scrubbed unless the
           // caller explicitly opts in — the same gate the identity uses.
-          hub: includeSecrets ? hubResource : withoutSecretKeys(hubResource),
-          client: includeSecrets ? client : withoutSecretKeys(client),
+          hub: includeSecrets ? hubResource : withoutSecretKeysOrUrlCredentials(hubResource),
+          client: includeSecrets ? client : withoutSecretKeysOrUrlCredentials(client),
           selectedProtocol: endpoint?.protocol,
           // The endpoint can carry `user:pass@` userinfo, so the safe-to-log
           // form strips it, like the identity's own endpoints.

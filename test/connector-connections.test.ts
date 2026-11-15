@@ -317,6 +317,21 @@ test("a begun browser sign-in does not print its PKCE verifier", async () => {
   const signIn = await beginNativeSignIn({ clientId: "sdk", redirectUri: "myapp://auth" });
   for (const view of [inspect(signIn), String(signIn), `${signIn}`]) {
     assert.ok(!view.includes(signIn.verifier), `a sign-in printed its verifier: ${view}`);
+    assert.ok(!view.includes(signIn.state), `a sign-in printed its state, which the URL carries too: ${view}`);
   }
   assert.equal(JSON.parse(JSON.stringify(signIn)).verifier, signIn.verifier);
+});
+
+test("a create result strips credentials embedded in a hub or client URL", async () => {
+  const { inspect } = await import("node:util");
+  const hub = { ...HUB, data_plane_endpoints: { wss: "wss://hubuser:HUBURL-LEAK@home.example.com" } };
+  const body = created("connector", { callback: "https://cbuser:CBURL-LEAK@cb.example.com/path" });
+  await serving({ status: 201, body }, async (api) => {
+    const result = await api.createClientIdentity(hub, { name: "Bridge", connectionType: CONNECTION_TYPE_CONNECTOR, spec: { connectors: ["jellyfin"] } });
+    for (const view of [JSON.stringify(result), inspect(result), String(result), JSON.stringify(result.asObject())]) {
+      assert.ok(!view.includes("HUBURL-LEAK") && !view.includes("CBURL-LEAK") && !view.includes("hubuser") && !view.includes("cbuser"), view);
+    }
+    assert.match(JSON.stringify(result), /cb\.example\.com\/path/);
+    assert.match(JSON.stringify(result.asObject({ includeSecrets: true })), /CBURL-LEAK/);
+  });
 });
