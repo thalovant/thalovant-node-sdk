@@ -277,3 +277,46 @@ test("the unknown-kind codes are unsupported on any call", async () => {
     });
   }
 });
+
+test("a create result never prints its credentials in JSON, console.log, String or a template", async () => {
+  const { inspect } = await import("node:util");
+  await serving({ status: 201, body: created("connector", { spec: { version: "1", connection_type: "connector", apiKey: "spec-key-LEAK", password: "spec-password-LEAK" } }) }, async (api) => {
+    const result = await api.createClientIdentity(HUB, {
+      name: "Bridge",
+      connectionType: CONNECTION_TYPE_CONNECTOR,
+      spec: { connectors: ["music_assistant"] },
+    });
+    const views = [
+      JSON.stringify(result),
+      JSON.stringify({ wrapped: result }),
+      JSON.stringify([result]),
+      inspect(result),
+      inspect(result, { depth: 10, showHidden: true }),
+      inspect({ wrapped: result }),
+      String(result),
+      `${result}`,
+    ];
+    for (const view of views) {
+      for (const secret of ["platform-key", "platform-password", "spec-key-LEAK", "spec-password-LEAK"]) {
+        assert.ok(!view.includes(secret), `a create result printed ${secret}: ${view}`);
+      }
+    }
+    // What is not secret stays visible, and the secrets stay reachable on request.
+    assert.match(JSON.stringify(result), /client-1/);
+    assert.match(JSON.stringify(result), /home\.example\.com/);
+    assert.equal(result.identity.accessKey, "platform-key");
+    assert.equal((result.asObject({ includeSecrets: true }).identity as Json).access_key, "platform-key");
+    // The display members are not enumerable: a spread or Object.keys is unchanged.
+    assert.ok(!Object.keys(result).includes("toJSON"));
+  });
+});
+
+test("a begun browser sign-in does not print its PKCE verifier", async () => {
+  const { inspect } = await import("node:util");
+  const { beginNativeSignIn } = await import("../src/index.js");
+  const signIn = await beginNativeSignIn({ clientId: "sdk", redirectUri: "myapp://auth" });
+  for (const view of [inspect(signIn), String(signIn), `${signIn}`]) {
+    assert.ok(!view.includes(signIn.verifier), `a sign-in printed its verifier: ${view}`);
+  }
+  assert.equal(JSON.parse(JSON.stringify(signIn)).verifier, signIn.verifier);
+});

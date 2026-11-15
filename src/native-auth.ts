@@ -36,6 +36,7 @@
  */
 import { ThalovantApiError } from "./errors.js";
 import { hostName } from "./loopback.js";
+import { REDACTED } from "./redact.js";
 
 // `node:crypto` is not importable here: this package ships a browser bundle
 // and a test asserts the bundle pulls in no Node builtins. `globalThis.crypto`
@@ -177,12 +178,23 @@ export async function beginNativeSignIn(options: BeginNativeSignInOptions): Prom
     scope: scopes.join(" "),
     state,
   });
-  return {
+  const signIn: NativeSignIn = {
     authorizationUrl: `${dashboard}/authorize?${query.toString()}`,
     state,
     verifier,
     redirectUri,
   };
+  // The state and the PKCE verifier are this attempt's secrets: keep them out of
+  // console.log and String(). The members are not enumerable, so JSON.stringify
+  // (which an app may use to keep the attempt until the browser comes back) and
+  // the fields themselves are unchanged.
+  const redacted = (): string =>
+    `NativeSignIn ${JSON.stringify({ authorizationUrl: signIn.authorizationUrl, state: REDACTED, verifier: REDACTED, redirectUri })}`;
+  Object.defineProperties(signIn, {
+    toString: { value: redacted, enumerable: false },
+    [Symbol.for("nodejs.util.inspect.custom")]: { value: redacted, enumerable: false },
+  });
+  return signIn;
 }
 
 /**
